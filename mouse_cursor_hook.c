@@ -325,12 +325,32 @@ static uint8_t s_click_baseline[0x800];
 static int     s_click_watch_left = 0;
 static int     s_click_watch_logged_pos = 0;
 
+/* 2026-11-06: the Windows test PC reports Start/A+B still doesn't skip cutscenes on
+ * real hardware, even though his own debug log shows the hook correctly
+ * emitting Start/combo bytes. The one thing that log can't show is HOLD
+ * DURATION -- CLICK watch only logs the trigger frame's button byte, not
+ * how many consecutive frames the press stayed up. If a real keypress is
+ * landing as a single-frame blip (vs. the multi-frame holds this was
+ * verified against under Wine), that'd explain a skip-check that requires
+ * the press sustained across >1 frame. Log every frame's raw button byte
+ * for a short window after any edge so the next real log answers this
+ * directly instead of needing another guess-and-ship round trip. */
+#define BUTTON_HOLD_LOG_FRAMES 12
+static int s_button_hold_log_left = 0;
+
 static void click_watch_tick(FILE *log, uint8_t cur_buttons, uint8_t prev_buttons) {
     bool pressed_now = (cur_buttons & (BTN_A | BTN_B | BTN_START)) && !(prev_buttons & (BTN_A | BTN_B | BTN_START));
     if (pressed_now) {
         for (int a = 0; a < 0x800; a++) s_click_baseline[a] = *ram_byte((uint16_t)a);
         s_click_watch_left = CLICK_WATCH_FRAMES;
         s_click_watch_logged_pos = 0;
+        s_button_hold_log_left = BUTTON_HOLD_LOG_FRAMES;
+    }
+    if (log && s_button_hold_log_left > 0) {
+        fprintf(log, "HOLD frame+%d buttons=0x%02x\n", BUTTON_HOLD_LOG_FRAMES - s_button_hold_log_left, cur_buttons);
+        s_button_hold_log_left--;
+        if (s_button_hold_log_left == 0) fprintf(log, "HOLD watch done\n");
+        fflush(log);
     }
     if (s_click_watch_left <= 0 || !log) return;
     if (!s_click_watch_logged_pos) {
