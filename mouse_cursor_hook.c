@@ -126,21 +126,36 @@ static uint8_t *ram_byte(uint16_t addr) {
 #ifdef CYC_WITH_SDL
 static bool s_cursor_hidden = false;
 
-/* Writes the verb cursor's OAM position directly from the real mouse's
- * absolute position in its focused window, mapped through the same
- * letterbox math SDL_RenderSetLogicalSize(256,240) uses internally. No
- * cyc_sdl.c window handle needed -- SDL_GetMouseFocus() is a global query. */
-static void apply_absolute_cursor(void) {
+/* SDL_GetMouseFocus()/SDL_GetMouseState() require the window to actually
+ * hold OS mouse-focus (hover + active) -- if the game launches behind/
+ * alongside a console window and the player never clicks into the SDL
+ * window specifically, focus-gated queries silently return null/zero
+ * forever: frozen cursor AND dead buttons, exactly the 2026-11-06 report.
+ * SDL_GetGlobalMouseState() is focus-independent (real desktop cursor
+ * position + buttons, works whether or not this window is focused) so it's
+ * used for everything here instead. The one thing it can't give us is
+ * *which* window to measure against -- SDL_GetMouseFocus() is tried first
+ * since it's accurate when available, falling back to SDL_GetWindowFromID
+ * (window id 1 -- nes_game creates exactly one window) when focus hasn't
+ * been established yet, so cursor tracking and clicks work from frame one
+ * without requiring an extra focusing click. */
+static SDL_Window *find_game_window(void) {
+    SDL_Window *win = SDL_GetMouseFocus();
+    if (win) return win;
+    return SDL_GetWindowFromID(1);
+}
+
+static void apply_absolute_cursor(SDL_Window *win, int gx, int gy) {
     if (!s_cursor_hidden) {
         SDL_ShowCursor(SDL_DISABLE); /* the game draws its own cursor sprite */
         s_cursor_hidden = true;
     }
-    SDL_Window *win = SDL_GetMouseFocus();
-    if (!win) return; /* not focused: leave the cursor where it last was */
-    int ww = 0, wh = 0, mx = 0, my = 0;
+    if (!win) return; /* no window found at all yet: leave cursor where it was */
+    int ww = 0, wh = 0, wx = 0, wy = 0;
     SDL_GetWindowSize(win, &ww, &wh);
-    SDL_GetMouseState(&mx, &my);
+    SDL_GetWindowPosition(win, &wx, &wy);
     if (ww <= 0 || wh <= 0) return;
+    int mx = gx - wx, my = gy - wy; /* desktop coords -> window-relative */
     double sx = (double)ww / 256.0, sy = (double)wh / 240.0;
     double scale = sx < sy ? sx : sy;
     double off_x = (ww - 256.0 * scale) / 2.0;
@@ -154,8 +169,21 @@ static void apply_absolute_cursor(void) {
 }
 
 static uint8_t real_mouse_buttons(void) {
-    apply_absolute_cursor();
-    Uint32 buttons = SDL_GetMouseState(NULL, NULL);
+    int gx = 0, gy = 0;
+    Uint32 buttons = SDL_GetGlobalMouseState(&gx, &gy);
+    SDL_Window *win = find_game_window();
+    apply_absolute_cursor(win, gx, gy);
+
+    static uint32_t diag_n = 0;
+    if (diag_n < 20 || (diag_n % 120) == 0) {
+        int ww = -1, wh = -1, wx = -1, wy = -1;
+        if (win) { SDL_GetWindowSize(win, &ww, &wh); SDL_GetWindowPosition(win, &wx, &wy); }
+        fprintf(stderr, "[mouse-cursor][diag] win=%p size=%dx%d pos=%d,%d global=%d,%d buttons=0x%x cursorXY=$%02X,$%02X\n",
+            (void*)win, ww, wh, wx, wy, gx, gy, buttons,
+            *ram_byte(CURSOR_OAM_X), *ram_byte(CURSOR_OAM_Y));
+    }
+    diag_n++;
+
     uint8_t out = 0;
     if (buttons & SDL_BUTTON(SDL_BUTTON_LEFT)) out |= BTN_A;
     if (buttons & SDL_BUTTON(SDL_BUTTON_RIGHT)) out |= BTN_B; /* cutscene skip -- see below */
