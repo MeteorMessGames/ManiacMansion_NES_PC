@@ -526,11 +526,29 @@ static int joypad_poll_hook(uint16_t addr) {
      * relying on that routine (or its caller) to also populate $2F/$710E
      * from $02, it no longer happens -- explaining why Start-driven cutscene
      * skip works (reads $02/$04 directly) but A-button portrait/verb clicks
-     * never did anything. Mirror the hack: write the same bits directly. */
+     * never did anything. Mirror the hack: write the same bits directly.
+     *
+     * 2026-11-06 (follow-up): the reference hack only stores into these
+     * registers on a RISING EDGE of the real controller read (it checks
+     * InputBuffer, the previous frame's snapshot, was clear before storing
+     * the new one) -- this is a one-frame "fresh click" pulse, not the
+     * held/level state. Latching the raw held bit every frame (as below,
+     * originally) re-fires the click event on every single frame the mouse
+     * button stays down, which is enough to toggle a verb selection back
+     * off (or re-trigger) before a second click can land -- symptom:
+     * single-click menu buttons appeared to work (one frame of travel is
+     * enough), but two-step verb+object sequences (open door, get
+     * flashlight) never completed. Edge-detect our own synthetic state the
+     * same way: only pulse the bit on press, write 0 every other frame
+     * (including while still held), so the game sees exactly one click. */
+    static uint8_t prev_cur = 0;
+    uint8_t pressed_edge = (uint8_t)(cur & ~prev_cur);
+    prev_cur = cur;
+
     uint8_t *lower = ram_byte(0x002F);
     uint8_t *upper = cart_ram_byte(0x710E);
-    *lower = (uint8_t)(cur & (BTN_B | BTN_SELECT | BTN_START));
-    if (upper) *upper = (uint8_t)(cur & BTN_A);
+    *lower = (uint8_t)(pressed_edge & (BTN_B | BTN_SELECT | BTN_START));
+    if (upper) *upper = (uint8_t)(pressed_edge & BTN_A);
 
     if (fire_count < 10 || *ram_byte(0x02) != 0) {
         fprintf(stderr, "[mouse-cursor] poll #%u at $%04X -> pad1=$%02X pad2=$%02X\n",
