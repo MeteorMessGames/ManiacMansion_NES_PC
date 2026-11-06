@@ -219,9 +219,27 @@ static void apply_absolute_cursor(SDL_Window *win, int gx, int gy) {
     if (!ren) return;
     uint16_t y_addr, x_addr;
     if (!find_cursor_oam(&y_addr, &x_addr)) return; /* cursor sprite not active this frame */
-    int wx = 0, wy = 0;
+    int wx = 0, wy = 0, ww = 0, wh = 0;
     SDL_GetWindowPosition(win, &wx, &wy);
+    SDL_GetWindowSize(win, &ww, &wh);
     int mx = gx - wx, my = gy - wy; /* desktop coords -> window-relative */
+
+    /* SDL_SetWindowGrab's OS cursor confinement only engages once the
+     * window has real input focus (2026-11-06 report: grab had zero effect,
+     * global mouse stayed hundreds/thousands of px outside the window the
+     * whole session -- the window apparently never got focus in that run).
+     * Warping doesn't depend on focus at all, so pull the real OS cursor
+     * back to the nearest in-window pixel whenever it strays outside,
+     * guaranteeing capture regardless of whether the OS grab actually took
+     * hold. */
+    if (mx < 0 || mx >= ww || my < 0 || my >= wh) {
+        int cmx = mx < 0 ? 0 : (mx >= ww ? ww - 1 : mx);
+        int cmy = my < 0 ? 0 : (my >= wh ? wh - 1 : my);
+        SDL_WarpMouseInWindow(win, cmx, cmy);
+        mx = cmx;
+        my = cmy;
+    }
+
     float lx = 0.0f, ly = 0.0f;
     SDL_RenderWindowToLogical(ren, mx, my, &lx, &ly);
     if (lx < 0) lx = 0; else if (lx > 255) lx = 255;
@@ -244,7 +262,7 @@ static int     s_click_watch_left = 0;
 static int     s_click_watch_logged_pos = 0;
 
 static void click_watch_tick(FILE *log, uint8_t cur_buttons, uint8_t prev_buttons) {
-    bool pressed_now = (cur_buttons & (BTN_A | BTN_B)) && !(prev_buttons & (BTN_A | BTN_B));
+    bool pressed_now = (cur_buttons & (BTN_A | BTN_B | BTN_START)) && !(prev_buttons & (BTN_A | BTN_B | BTN_START));
     if (pressed_now) {
         for (int a = 0; a < 0x800; a++) s_click_baseline[a] = *ram_byte((uint16_t)a);
         s_click_watch_left = CLICK_WATCH_FRAMES;
@@ -296,15 +314,20 @@ static uint8_t real_mouse_buttons(void) {
     }
     diag_n++;
 
+    /* 2026-11-06: B didn't skip cutscenes in practice -- Start is the real
+     * skip input. RMB sends both A (context-sensitive action, same as LMB)
+     * and Start (cutscene skip) -- the original ask was "cursor + context
+     * sensitive right click", so RMB must still perform the game's normal
+     * context action, not just double as a skip button. */
     uint8_t out = 0;
     if (buttons & SDL_BUTTON(SDL_BUTTON_LEFT)) out |= BTN_A;
-    if (buttons & SDL_BUTTON(SDL_BUTTON_RIGHT)) out |= BTN_B; /* cutscene skip -- see below */
+    if (buttons & SDL_BUTTON(SDL_BUTTON_RIGHT)) out |= BTN_A | BTN_START;
 
-    /* Space also sends B (cutscene skip) -- for fast iteration while testing,
-     * so skipping doesn't require chasing the grabbed/confined cursor back
-     * to a precise right-click. */
+    /* Space also sends Start (cutscene skip) -- for fast iteration while
+     * testing, so skipping doesn't require chasing the grabbed/confined
+     * cursor back to a precise right-click. */
     const uint8_t *keys = SDL_GetKeyboardState(NULL);
-    if (keys[SDL_SCANCODE_SPACE]) out |= BTN_B;
+    if (keys[SDL_SCANCODE_SPACE]) out |= BTN_START;
 
     static uint8_t prev_out = 0;
     click_watch_tick(log, out, prev_out);
