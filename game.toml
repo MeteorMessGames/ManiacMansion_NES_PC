@@ -1,0 +1,62 @@
+[game]
+output_prefix = "maniac-mansion-proto"
+cycle_accurate = true
+
+# Joypad-read routine, confirmed by DIRECTLY INSTRUMENTING hw_bus_read()
+# (runner/cyc/hw_machine.c, reg==0x16/0x17 branch) to log cpu.pc on every
+# real $4016/$4017 access, run with --interp-only (plain cycle-accurate/
+# native-compiled runs give an unstable, build-dependent cpu.pc at the
+# moment of this log -- native spans don't sync cpu.pc per instruction, so
+# the same read showed up at different, non-instruction-boundary addresses
+# across builds; --interp-only steps one instruction at a time and gives a
+# cpu.pc that's always the true instruction-start address).
+#
+# Hooking the function's ENTRY ($FB73, LDA #$01) doesn't work: cyc_hooks_due
+# only fires on an exact cpu.pc match, and entry is never hit as an
+# instruction boundary from this call site (reached via a mid-routine jump,
+# not a JSR to the top). The actual LDA $4016,X -- the instruction that
+# reads the controller bit -- is at $FB7F, 12 bytes into the function, and
+# IS reliably hit (9224 times per 1800 frames in the --interp-only trace).
+# This hooks that instruction directly.
+#
+# The ROM also contains an identical copy of the whole routine in PRG bank 0
+# (mapped at $8000-$BFFF), entry $9EB6 / read instruction $9EC2, hit 4528
+# times/1800 frames -- also real, but less active; not hooked here. If the
+# mouse override needs to work from every game state (not just whichever
+# context uses the $FB7F copy), that second site needs its own
+# [[mod_function_hook]] + plugin registration later.
+#
+# Byte sequence at $FB7F:
+#   BD 16 40 29 01 15 02 95 02 CE 21 72 D0 F0 CA 10
+#   LDA $4016,X / AND #$01 / ORA $02,X / STA $02,X / DEC $7221 / BNE ... / DEX / BPL ...
+#
+# SUPERSEDED (2026-11-06): hooking mid-loop at $FB7F with a "handled" return
+# is broken -- confirmed via --interp-only experiment that cyc_hooks.c's
+# return_from_routine() always performs an RTS-style stack pop, which is
+# only correct at a genuine JSR entry. $FB7F is reached by a BNE loop-back,
+# not a JSR, so "handled" there pops the ORIGINAL caller's return address
+# (from the one real JSR into this whole polling routine) and aborts the
+# entire 2-controller/8-bit loop after just one bit read, every time (cpu.x
+# observed stuck at 1 forever in the experiment). Moved the hook to the
+# routine's one real JSR entry point instead -- see below.
+
+# The whole joypad-poll routine's single real call site: byte search of
+# both PRG banks for "20 68 FB" (JSR $FB68) found exactly one hit, at PRG
+# offset 799 = CPU $831F (bank 0, mapped at $8000-$BFFF -- fixed-bank target
+# $FB68 is reachable regardless of which swappable bank is active there).
+# Context confirms real code, not a data false-positive:
+#   $8315: C6 AB        DEC $AB
+#   $8317: C6 AA        DEC $AA
+#   $8319: 20 8C C7     JSR $C78C
+#   $831C: 20 07 8C     JSR $8C07
+#   $831F: 20 68 FB     JSR $FB68      <- the joypad poll, called once/frame
+#   $8322: A9 00        LDA #$00       <- hook resumes here after "handled"
+# $FB68 is the routine's true entry (LDX #$01, first instruction of the
+# decoded loop -- see mmresume.md's full disassembly), so a "handled"
+# return's RTS-style pop is correct here: it pulls exactly the return
+# address this JSR just pushed, landing at $8322 same as a real RTS would.
+[[mod_function_hook]]
+id = "maniac-mansion.mouse-cursor.joypad-read"
+addr = 0xFB68
+length = 16
+crc32 = 0x5E74BE55
