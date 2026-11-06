@@ -145,27 +145,34 @@ static SDL_Window *find_game_window(void) {
     return SDL_GetWindowFromID(1);
 }
 
+/* Manual letterbox math (scale = min(w/256,h/240), center offset) was
+ * wrong in practice (2026-11-06 report: "cursor moves but not accurately")
+ * -- SDL_WINDOW_ALLOW_HIGHDPI means SDL_GetWindowSize() returns logical
+ * points while the renderer's actual output is in physical pixels, which
+ * can differ by the OS DPI scale factor, and SDL_RenderSetIntegerScale
+ * (if the user has that option on) clamps the real scale to a whole
+ * number our fractional math didn't know about -- either one throws off
+ * the magnitude (not direction) of the mapping, matching the symptom.
+ * SDL_RenderWindowToLogical (SDL >= 2.0.18, present in this project's
+ * bundled headers) does this conversion internally using the renderer's
+ * own actual state, so it's used instead of hand-rolled math. */
 static void apply_absolute_cursor(SDL_Window *win, int gx, int gy) {
     if (!s_cursor_hidden) {
         SDL_ShowCursor(SDL_DISABLE); /* the game draws its own cursor sprite */
         s_cursor_hidden = true;
     }
     if (!win) return; /* no window found at all yet: leave cursor where it was */
-    int ww = 0, wh = 0, wx = 0, wy = 0;
-    SDL_GetWindowSize(win, &ww, &wh);
+    SDL_Renderer *ren = SDL_GetRenderer(win);
+    if (!ren) return;
+    int wx = 0, wy = 0;
     SDL_GetWindowPosition(win, &wx, &wy);
-    if (ww <= 0 || wh <= 0) return;
     int mx = gx - wx, my = gy - wy; /* desktop coords -> window-relative */
-    double sx = (double)ww / 256.0, sy = (double)wh / 240.0;
-    double scale = sx < sy ? sx : sy;
-    double off_x = (ww - 256.0 * scale) / 2.0;
-    double off_y = (wh - 240.0 * scale) / 2.0;
-    double nx = (mx - off_x) / scale;
-    double ny = (my - off_y) / scale;
-    if (nx < 0) nx = 0; else if (nx > 255) nx = 255;
-    if (ny < 0) ny = 0; else if (ny > 239) ny = 239;
-    *ram_byte(CURSOR_OAM_X) = (uint8_t)nx;
-    *ram_byte(CURSOR_OAM_Y) = (uint8_t)ny;
+    float lx = 0.0f, ly = 0.0f;
+    SDL_RenderWindowToLogical(ren, mx, my, &lx, &ly);
+    if (lx < 0) lx = 0; else if (lx > 255) lx = 255;
+    if (ly < 0) ly = 0; else if (ly > 239) ly = 239;
+    *ram_byte(CURSOR_OAM_X) = (uint8_t)lx;
+    *ram_byte(CURSOR_OAM_Y) = (uint8_t)ly;
 }
 
 static uint8_t real_mouse_buttons(void) {
