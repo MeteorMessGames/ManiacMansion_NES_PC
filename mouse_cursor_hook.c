@@ -46,17 +46,13 @@
  * "default verb for the object under the cursor" feature a real
  * reverse-engineering project on its own, not attempted here).
  *
- * RIGHT-CLICK -> cutscene skip (2026-11-06, narrower ask): RMB -> BTN_START.
- * Mirrors the original PC SCUMM version's own convention (right mouse
- * button / Esc skips a cutscene there -- confirmed via web search of the
- * PC manual). The NES port's actual skip button is NOT independently
- * confirmed from this ROM's disassembly or direct testing -- one itch.io
- * page (describing what may be a fan project, not necessarily this
- * cartridge) says Start skips the opening cutscene, and Start is also the
- * conventional "skip/pause" button across NES games generally, so it's
- * the reasonable first guess. Verify empirically next time the build is
- * tested against an actual cutscene; remap here if wrong (BTN_B is the
- * next candidate to try).
+ * RIGHT-CLICK -> cutscene skip (2026-11-06, updated): RMB -> BTN_B, i.e. the
+ * other NES face button from LMB's BTN_A (user request: "the other input
+ * than lmb either a or b"). Previously mapped to BTN_START as a guess --
+ * not independently confirmed from this ROM's disassembly or direct
+ * testing either way. Verify empirically next time the build is tested
+ * against an actual cutscene; BTN_START is the fallback candidate if B
+ * doesn't skip it.
  */
 #include "mod_function_hooks.h"
 #include "mod_runtime.h"
@@ -64,6 +60,7 @@
 #include "cyc_core.h"
 #include "cyc_host_extras.h"
 #include <stdio.h>
+#include <stdlib.h>
 #ifdef CYC_WITH_SDL
 #include <SDL.h>
 #endif
@@ -126,7 +123,7 @@ static uint8_t real_mouse_buttons(void) {
     dy += s_carry_dy;
     uint8_t out = 0;
     if (buttons & SDL_BUTTON(SDL_BUTTON_LEFT)) out |= BTN_A;
-    if (buttons & SDL_BUTTON(SDL_BUTTON_RIGHT)) out |= BTN_START; /* cutscene skip -- see below */
+    if (buttons & SDL_BUTTON(SDL_BUTTON_RIGHT)) out |= BTN_B; /* cutscene skip -- see below */
     if (dx <= -MOTION_DEADZONE_PX) { out |= BTN_LEFT; dx = 0; }
     else if (dx >= MOTION_DEADZONE_PX) { out |= BTN_RIGHT; dx = 0; }
     if (dy <= -MOTION_DEADZONE_PX) { out |= BTN_UP; dy = 0; }
@@ -144,8 +141,41 @@ static uint8_t real_mouse_buttons(void) {
 }
 #endif
 
+/* RE probe mode (temporary): NESRECOMP_RE_PROBE=<path> dumps a per-frame
+ * full-RAM diff (JSONL, same shape as the main_runner WRAM trace, which the
+ * cyc host never wires up) without taking over button state, so --input
+ * scripts still drive the real $4016 poll underneath. Used to locate the
+ * cursor-position bytes by correlating RAM deltas with real d-pad holds. */
+static FILE *s_re_probe_f = NULL;
+static int   s_re_probe_state = -1;
+static uint8_t s_re_probe_prev[0x800];
+
+static void re_probe_frame(void) {
+    if (s_re_probe_state < 0) {
+        const char *e = getenv("NESRECOMP_RE_PROBE");
+        s_re_probe_f = (e && *e) ? fopen(e, "w") : NULL;
+        s_re_probe_state = s_re_probe_f ? 1 : 0;
+    }
+    if (s_re_probe_state != 1) return;
+    static uint32_t frame_no = 0;
+    for (int a = 0; a < 0x800; a++) {
+        uint8_t v = *ram_byte((uint16_t)a);
+        if (v != s_re_probe_prev[a]) {
+            fprintf(s_re_probe_f, "{\"f\":%u,\"adr\":\"0x%04x\",\"old\":\"0x%02x\",\"val\":\"0x%02x\"}\n",
+                    frame_no, a, s_re_probe_prev[a], v);
+            s_re_probe_prev[a] = v;
+        }
+    }
+    frame_no++;
+    fflush(s_re_probe_f);
+}
+
 static int joypad_poll_hook(uint16_t addr) {
     static uint32_t fire_count = 0;
+    if (s_re_probe_state == 1 || getenv("NESRECOMP_RE_PROBE")) {
+        re_probe_frame();
+        return 0; /* let the real $4016 poll run underneath */
+    }
 
     uint8_t pad1_old = *ram_byte(0x02);
     uint8_t pad2_old = *ram_byte(0x03);
@@ -165,5 +195,8 @@ static int joypad_poll_hook(uint16_t addr) {
 
 NES_MOD_CONSTRUCTOR(register_mouse_cursor_hook) {
     nes_mod_register_function_entry_plugin(HOOK_ID, 0xFB68, joypad_poll_hook);
-    nes_mod_set_function_hook_enabled(HOOK_ID, 1);
+    /* RE experiments need stock $4016 polling so --input scripts drive the
+     * real controller path; NESRECOMP_MOUSE_HOOK_DISABLE=1 leaves the hook
+     * registered but inactive. Unset (the normal case) behaves as before. */
+    nes_mod_set_function_hook_enabled(HOOK_ID, getenv("NESRECOMP_MOUSE_HOOK_DISABLE") ? 0 : 1);
 }
