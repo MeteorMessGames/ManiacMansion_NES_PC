@@ -190,12 +190,19 @@ static SDL_Window *find_game_window(void) {
  * shows the normal arrow again and the user can wander off into other
  * windows (2026-11-06 report: "mouse stays behind screen and moves around
  * in windows"). SDL_SetWindowGrab confines the OS cursor to the window
- * while it has focus, same as any other windowed game's mouse capture. */
-static bool s_grab_set = false;
-static void ensure_grab(SDL_Window *win) {
-    if (!win || s_grab_set) return;
-    SDL_SetWindowGrab(win, SDL_TRUE);
-    s_grab_set = true;
+ * while it has focus, same as any other windowed game's mouse capture.
+ *
+ * Must track focus every call, not just set-once: an unconditional grab
+ * (and the warp in apply_absolute_cursor below) blocks Alt+Tab entirely --
+ * confirmed by 2026-11-06 report "can not alt tab out of game and mouse
+ * wont extend out from window". Releasing grab the instant the window
+ * loses focus lets the OS give focus to whatever's being switched to. */
+static bool s_grabbed = false;
+static void sync_grab(SDL_Window *win) {
+    bool focused = win && (SDL_GetWindowFlags(win) & SDL_WINDOW_INPUT_FOCUS);
+    if (focused == s_grabbed) return;
+    SDL_SetWindowGrab(win, focused ? SDL_TRUE : SDL_FALSE);
+    s_grabbed = focused;
 }
 
 /* Manual letterbox math (scale = min(w/256,h/240), center offset) was
@@ -224,15 +231,14 @@ static void apply_absolute_cursor(SDL_Window *win, int gx, int gy) {
     SDL_GetWindowSize(win, &ww, &wh);
     int mx = gx - wx, my = gy - wy; /* desktop coords -> window-relative */
 
-    /* SDL_SetWindowGrab's OS cursor confinement only engages once the
-     * window has real input focus (2026-11-06 report: grab had zero effect,
-     * global mouse stayed hundreds/thousands of px outside the window the
-     * whole session -- the window apparently never got focus in that run).
-     * Warping doesn't depend on focus at all, so pull the real OS cursor
-     * back to the nearest in-window pixel whenever it strays outside,
-     * guaranteeing capture regardless of whether the OS grab actually took
-     * hold. */
-    if (mx < 0 || mx >= ww || my < 0 || my >= wh) {
+    /* Only warp while this window actually has input focus. Warping
+     * unconditionally (regardless of focus) is what blocked Alt+Tab and
+     * kept the mouse pinned inside the window even when the user was
+     * trying to leave it (2026-11-06 report) -- once focus is gone (e.g.
+     * mid Alt+Tab), leave the real OS cursor alone so the switch can
+     * complete and the user can get the mouse out onto another window. */
+    bool focused = (SDL_GetWindowFlags(win) & SDL_WINDOW_INPUT_FOCUS) != 0;
+    if (focused && (mx < 0 || mx >= ww || my < 0 || my >= wh)) {
         int cmx = mx < 0 ? 0 : (mx >= ww ? ww - 1 : mx);
         int cmy = my < 0 ? 0 : (my >= wh ? wh - 1 : my);
         SDL_WarpMouseInWindow(win, cmx, cmy);
@@ -295,7 +301,7 @@ static uint8_t real_mouse_buttons(void) {
     int gx = 0, gy = 0;
     Uint32 buttons = SDL_GetGlobalMouseState(&gx, &gy);
     SDL_Window *win = find_game_window();
-    ensure_grab(win);
+    sync_grab(win);
     apply_absolute_cursor(win, gx, gy);
 
     FILE *log = dbg_log();
@@ -328,6 +334,7 @@ static uint8_t real_mouse_buttons(void) {
      * cursor back to a precise right-click. */
     const uint8_t *keys = SDL_GetKeyboardState(NULL);
     if (keys[SDL_SCANCODE_SPACE]) out |= BTN_START;
+    if (keys[SDL_SCANCODE_RETURN]) out |= BTN_START; /* Enter == Start, for now */
 
     static uint8_t prev_out = 0;
     click_watch_tick(log, out, prev_out);
