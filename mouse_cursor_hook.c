@@ -185,6 +185,19 @@ static SDL_Window *find_game_window(void) {
     return SDL_GetWindowFromID(1);
 }
 
+/* Without a grab, SDL_ShowCursor(SDL_DISABLE) only swaps the cursor while
+ * it's inside the window -- the instant it strays past the edge Windows
+ * shows the normal arrow again and the user can wander off into other
+ * windows (2026-11-06 report: "mouse stays behind screen and moves around
+ * in windows"). SDL_SetWindowGrab confines the OS cursor to the window
+ * while it has focus, same as any other windowed game's mouse capture. */
+static bool s_grab_set = false;
+static void ensure_grab(SDL_Window *win) {
+    if (!win || s_grab_set) return;
+    SDL_SetWindowGrab(win, SDL_TRUE);
+    s_grab_set = true;
+}
+
 /* Manual letterbox math (scale = min(w/256,h/240), center offset) was
  * wrong in practice (2026-11-06 report: "cursor moves but not accurately")
  * -- SDL_WINDOW_ALLOW_HIGHDPI means SDL_GetWindowSize() returns logical
@@ -264,6 +277,7 @@ static uint8_t real_mouse_buttons(void) {
     int gx = 0, gy = 0;
     Uint32 buttons = SDL_GetGlobalMouseState(&gx, &gy);
     SDL_Window *win = find_game_window();
+    ensure_grab(win);
     apply_absolute_cursor(win, gx, gy);
 
     FILE *log = dbg_log();
@@ -285,6 +299,12 @@ static uint8_t real_mouse_buttons(void) {
     uint8_t out = 0;
     if (buttons & SDL_BUTTON(SDL_BUTTON_LEFT)) out |= BTN_A;
     if (buttons & SDL_BUTTON(SDL_BUTTON_RIGHT)) out |= BTN_B; /* cutscene skip -- see below */
+
+    /* Space also sends B (cutscene skip) -- for fast iteration while testing,
+     * so skipping doesn't require chasing the grabbed/confined cursor back
+     * to a precise right-click. */
+    const uint8_t *keys = SDL_GetKeyboardState(NULL);
+    if (keys[SDL_SCANCODE_SPACE]) out |= BTN_B;
 
     static uint8_t prev_out = 0;
     click_watch_tick(log, out, prev_out);
