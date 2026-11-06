@@ -29,16 +29,43 @@
  * REAL INPUT WIRED (2026-11-06): the windowed-mods gap is closed (SDL
  * confirmed linked and the hook confirmed firing in a real windowed run --
  * see mmresume.md). LMB -> BTN_A (the verb-grid "select" button in Maniac
- * Mansion's interface); relative mouse motion -> BTN_LEFT/RIGHT/UP/DOWN,
- * using SDL_GetRelativeMouseState() (accumulates since the last poll,
- * works without needing the window handle -- cyc_sdl.c doesn't expose one
- * to HOST_EXTRAS code). A small pixel deadzone avoids jitter spamming the
- * d-pad on tiny untended mouse movement. This maps motion to discrete
- * taps, approximating a mouse cursor using the game's existing digital
- * cursor-movement speed -- not true 1:1 cursor tracking, which would need
- * the verb-cursor's RAM position and isn't implemented yet. In a headless
- * (no-SDL) build this falls back to a fixed test pattern so the project
- * still builds/runs there for regression-testing the hook plumbing.
+ * Mansion's interface); RMB -> BTN_B (see below).
+ *
+ * ABSOLUTE CURSOR POSITIONING (2026-11-06, ScummVM-style, supersedes the
+ * earlier relative-motion-to-d-pad-taps approximation): found the verb
+ * cursor's live screen position by scripting --input d-pad holds against a
+ * quiet static screen (the NES soft-reset safety menu, no idle animation to
+ * pollute the RAM diff) and diffing full zero-page+OAM state between a
+ * RIGHT-held run and a LEFT-held run -- see re/menu_{right,left,up,down}.txt
+ * and re/*.jsonl. The verb cursor is sprite OAM entry 1 ($0200-based table):
+ *   $0204 = cursor Y (sprite Y, clamped ~35-222 on that screen)
+ *   $0205 = cursor sprite tile index (unchanged by movement, left alone)
+ *   $0206 = cursor sprite attribute byte (unchanged by movement, left alone)
+ *   $0207 = cursor X (sprite X, clamped ~16-239 on that screen)
+ * Writing these two bytes directly from the real absolute mouse position
+ * every frame bypasses the ROM's own digital fixed-step-per-frame cursor
+ * movement code entirely -- the thing that made the earlier d-pad-tap
+ * approach structurally incapable of 1:1 tracking no matter how clean the
+ * input was (see mmresume.md's pivot note). This is the same trick ScummVM
+ * itself doesn't need (it has a real SCUMM interpreter with native mouse
+ * support) but is the closest equivalent inside a ROM we're not
+ * rewriting: drive the position register directly instead of emulating
+ * the original controller.
+ * Window->NES-pixel mapping: SDL_GetMouseFocus() + SDL_GetWindowSize() give
+ * the focused window's pixel size without needing cyc_sdl.c to hand us a
+ * window handle (global SDL call, no host-extras plumbing needed); the
+ * window is letterboxed by SDL_RenderSetLogicalSize(256,240) (stock
+ * non-widescreen aspect -- this game never calls nes_video_set_aspect_mode)
+ * so the inverse letterbox math (scale = min(w/256,h/240), center-offset)
+ * maps window pixels back to the 256x240 logical frame the ROM draws into.
+ * Clamped to [0,255]x[0,239] -- NOT the narrower ~16-239/35-222 box observed
+ * on the reset-menu screen, which is that specific screen's own UI-box
+ * bound enforced by the (now-bypassed) movement code, not a hardware limit;
+ * gameplay screens may want their own clamp if the cursor can visually
+ * leave the playfield under some verb-grid layout -- not yet confirmed
+ * either way, watch for it when next tested live.
+ * The OS cursor is hidden (SDL_ShowCursor(SDL_DISABLE)) since the game
+ * draws its own cursor sprite from these same bytes.
  *
  * RIGHT-CLICK / DOTT-style default-action: SCOPED BACK, not implemented
  * (see mmresume.md's "Right-click" section -- this NES port's classic
@@ -88,48 +115,50 @@ const CycHostExtras *cyc_host_extras(void) { return NULL; }
 #define BTN_LEFT   0x02
 #define BTN_RIGHT  0x01
 
-/* No deadzone (2026-11-06, user request): any nonzero accumulated
- * relative motion taps a d-pad direction. Was 2px to damp jitter from a
- * barely-moving mouse; removed because it made small/careful movements
- * feel unresponsive on top of the cursor's existing fixed-step-per-frame
- * speed cap (see the file header's accuracy note). */
-#define MOTION_DEADZONE_PX 1
+/* Cursor sprite OAM entry (RE'd 2026-11-06 -- see the file header). */
+#define CURSOR_OAM_Y    0x0204
+#define CURSOR_OAM_X    0x0207
 
 static uint8_t *ram_byte(uint16_t addr) {
     return (uint8_t *)&cyc_cpu_ram()[addr & 0x7FF];
 }
 
-/* Carries motion below MOTION_DEADZONE_PX forward instead of discarding it
- * each poll, so a slow/careful mouse movement still eventually registers
- * instead of never crossing the threshold in any single frame. */
-static int s_carry_dx = 0, s_carry_dy = 0;
-static bool s_relative_mode_set = false;
-
 #ifdef CYC_WITH_SDL
-static uint8_t real_mouse_buttons(void) {
-    if (!s_relative_mode_set) {
-        /* Capture the OS cursor so deltas aren't clamped/distorted by the
-         * window edge or OS pointer-acceleration curves -- without this,
-         * SDL_GetRelativeMouseState() still "works" but its input is the
-         * real, ballistics-adjusted, edge-clamped system cursor, not a
-         * clean raw delta. The game draws its own in-game cursor sprite,
-         * so hiding the OS one is correct here, not a regression. */
-        SDL_SetRelativeMouseMode(SDL_TRUE);
-        s_relative_mode_set = true;
+static bool s_cursor_hidden = false;
+
+/* Writes the verb cursor's OAM position directly from the real mouse's
+ * absolute position in its focused window, mapped through the same
+ * letterbox math SDL_RenderSetLogicalSize(256,240) uses internally. No
+ * cyc_sdl.c window handle needed -- SDL_GetMouseFocus() is a global query. */
+static void apply_absolute_cursor(void) {
+    if (!s_cursor_hidden) {
+        SDL_ShowCursor(SDL_DISABLE); /* the game draws its own cursor sprite */
+        s_cursor_hidden = true;
     }
-    int dx = 0, dy = 0;
-    Uint32 buttons = SDL_GetRelativeMouseState(&dx, &dy);
-    dx += s_carry_dx;
-    dy += s_carry_dy;
+    SDL_Window *win = SDL_GetMouseFocus();
+    if (!win) return; /* not focused: leave the cursor where it last was */
+    int ww = 0, wh = 0, mx = 0, my = 0;
+    SDL_GetWindowSize(win, &ww, &wh);
+    SDL_GetMouseState(&mx, &my);
+    if (ww <= 0 || wh <= 0) return;
+    double sx = (double)ww / 256.0, sy = (double)wh / 240.0;
+    double scale = sx < sy ? sx : sy;
+    double off_x = (ww - 256.0 * scale) / 2.0;
+    double off_y = (wh - 240.0 * scale) / 2.0;
+    double nx = (mx - off_x) / scale;
+    double ny = (my - off_y) / scale;
+    if (nx < 0) nx = 0; else if (nx > 255) nx = 255;
+    if (ny < 0) ny = 0; else if (ny > 239) ny = 239;
+    *ram_byte(CURSOR_OAM_X) = (uint8_t)nx;
+    *ram_byte(CURSOR_OAM_Y) = (uint8_t)ny;
+}
+
+static uint8_t real_mouse_buttons(void) {
+    apply_absolute_cursor();
+    Uint32 buttons = SDL_GetMouseState(NULL, NULL);
     uint8_t out = 0;
     if (buttons & SDL_BUTTON(SDL_BUTTON_LEFT)) out |= BTN_A;
     if (buttons & SDL_BUTTON(SDL_BUTTON_RIGHT)) out |= BTN_B; /* cutscene skip -- see below */
-    if (dx <= -MOTION_DEADZONE_PX) { out |= BTN_LEFT; dx = 0; }
-    else if (dx >= MOTION_DEADZONE_PX) { out |= BTN_RIGHT; dx = 0; }
-    if (dy <= -MOTION_DEADZONE_PX) { out |= BTN_UP; dy = 0; }
-    else if (dy >= MOTION_DEADZONE_PX) { out |= BTN_DOWN; dy = 0; }
-    s_carry_dx = dx;
-    s_carry_dy = dy;
     return out;
 }
 #else
