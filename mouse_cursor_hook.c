@@ -185,6 +185,25 @@ static SDL_Window *find_game_window(void) {
     return SDL_GetWindowFromID(1);
 }
 
+/* 2026-11-06 report: "enter is picked up by console" -- run.bat launches
+ * nes_game.exe directly inside the same cmd window it opened in (no
+ * `start`), and on this user's machine the console appears to keep OS
+ * input focus even after the SDL window is created and shown, so neither
+ * keyboard input nor mouse hover ever reaches the game window. A tested
+ * Wine+Xvfb run of this exact exe confirmed the hook logic itself is
+ * correct (cursor tracked, click and Start both produced real RAM
+ * changes) once the window actually has focus -- this is purely a
+ * focus-stealing problem on that machine, not a logic bug. SDL_RaiseWindow
+ * asks the OS to bring the window to the front and give it focus; done
+ * once, the first time we see a real window, so it doesn't fight the user
+ * if they deliberately switch away afterward. */
+static bool s_raised_once = false;
+static void raise_once(SDL_Window *win) {
+    if (!win || s_raised_once) return;
+    SDL_RaiseWindow(win);
+    s_raised_once = true;
+}
+
 /* Without a grab, SDL_ShowCursor(SDL_DISABLE) only swaps the cursor while
  * it's inside the window -- the instant it strays past the edge Windows
  * shows the normal arrow again and the user can wander off into other
@@ -301,6 +320,7 @@ static uint8_t real_mouse_buttons(void) {
     int gx = 0, gy = 0;
     Uint32 buttons = SDL_GetGlobalMouseState(&gx, &gy);
     SDL_Window *win = find_game_window();
+    raise_once(win);
     sync_grab(win);
     apply_absolute_cursor(win);
 
