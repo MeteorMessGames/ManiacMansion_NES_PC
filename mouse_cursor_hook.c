@@ -130,8 +130,38 @@ const CycHostExtras *cyc_host_extras(void) { return NULL; }
  * currently holds it -- correct regardless of where the engine puts it. */
 #define CURSOR_TILE 0xFA
 
+/* THE REAL FIX (2026-11-06, Mesen Lua RE via Wine on the Linux dev box, per
+ * user's "Test on the Linux box with wine" -- see mmresume.md): direct OAM writes
+ * above were silently overwritten every frame -- confirmed by actual
+ * before/after screenshots, not just RAM-diff logs (which only prove a
+ * write landed, not that it survived to render). Root cause: this engine's
+ * own per-frame routine (disassembled at $9539-$9545) re-copies the cursor
+ * position from cartridge WRAM into OAM every single frame:
+ *   LDA $7116 ; STA $0207   (X: WRAM -> OAM)
+ *   LDA $7118 ; STA $0204   (Y: WRAM -> OAM)
+ * so writing OAM directly just gets clobbered by this copy one frame later.
+ * $7116/$7118 are the actual authoritative position -- write there instead
+ * and let the game's own routine do the OAM copy (which also means we no
+ * longer need to scan OAM for the cursor's slot before positioning it). */
+#define CURSOR_SRC_X 0x7116
+#define CURSOR_SRC_Y 0x7118
+
 static uint8_t *ram_byte(uint16_t addr) {
     return (uint8_t *)&cyc_cpu_ram()[addr & 0x7FF];
+}
+
+/* Cartridge WRAM ($6000-$7FFF), NOT the 2KB console RAM ram_byte() above
+ * targets -- a completely different backing array in NESRecomp (hw_cart.wram
+ * via cyc_cart_ram()). Needed because the authoritative cursor position
+ * lives here, not in OAM -- see CURSOR_SRC_X/Y below. Returns NULL if addr
+ * is outside the cartridge's actual WRAM window. */
+static uint8_t *cart_ram_byte(uint16_t addr) {
+    if (addr < 0x6000) return NULL;
+    size_t len = 0;
+    const uint8_t *wram = cyc_cart_ram(&len);
+    size_t off = (size_t)(addr - 0x6000);
+    if (!wram || off >= len) return NULL;
+    return (uint8_t *)&wram[off];
 }
 
 static bool find_cursor_oam(uint16_t *y_addr, uint16_t *x_addr) {
@@ -243,8 +273,9 @@ static void apply_absolute_cursor(SDL_Window *win) {
     if (!win) return; /* no window found at all yet: leave cursor where it was */
     SDL_Renderer *ren = SDL_GetRenderer(win);
     if (!ren) return;
-    uint16_t y_addr, x_addr;
-    if (!find_cursor_oam(&y_addr, &x_addr)) return; /* cursor sprite not active this frame */
+    uint8_t *src_x = cart_ram_byte(CURSOR_SRC_X);
+    uint8_t *src_y = cart_ram_byte(CURSOR_SRC_Y);
+    if (!src_x || !src_y) return; /* WRAM not mapped this build/frame */
 
     /* 2026-11-06: computing window-relative coords as
      * (SDL_GetGlobalMouseState() - SDL_GetWindowPosition()) never tracked
@@ -269,8 +300,8 @@ static void apply_absolute_cursor(SDL_Window *win) {
     SDL_RenderWindowToLogical(ren, mx, my, &lx, &ly);
     if (lx < 0) lx = 0; else if (lx > 255) lx = 255;
     if (ly < 0) ly = 0; else if (ly > 239) ly = 239;
-    *ram_byte(x_addr) = (uint8_t)lx;
-    *ram_byte(y_addr) = (uint8_t)ly;
+    *src_x = (uint8_t)lx;
+    *src_y = (uint8_t)ly;
 }
 
 /* After a click, diff the whole zero-page+OAM state against a baseline
