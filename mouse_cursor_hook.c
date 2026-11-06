@@ -115,12 +115,34 @@ const CycHostExtras *cyc_host_extras(void) { return NULL; }
 #define BTN_LEFT   0x02
 #define BTN_RIGHT  0x01
 
-/* Cursor sprite OAM entry (RE'd 2026-11-06 -- see the file header). */
-#define CURSOR_OAM_Y    0x0204
-#define CURSOR_OAM_X    0x0207
+/* Cursor sprite OAM entry (RE'd 2026-11-06 -- see the file header).
+ * NOT a fixed slot: the reset-menu screen (quiet, few sprites) the RE was
+ * done on happened to always place the cursor at OAM entry 1 ($0204-$0207),
+ * but a live-test report ("clicks logged, no movement") during real
+ * gameplay -- with far more active sprites (characters, scenery, objects)
+ * -- combined with the debug log proving $0204/$0207 writes land cleanly
+ * and uncontested every frame, means the game just isn't reading slot 1 as
+ * the cursor there: this NES engine evidently allocates OAM slots
+ * dynamically per frame based on which sprites are active, not a fixed
+ * table. Cursor tile index $FA was constant across every RE capture
+ * (menu AND gameplay), so instead of a fixed address this scans all 64 OAM
+ * entries each frame for tile==$FA and writes position to whichever slot
+ * currently holds it -- correct regardless of where the engine puts it. */
+#define CURSOR_TILE 0xFA
 
 static uint8_t *ram_byte(uint16_t addr) {
     return (uint8_t *)&cyc_cpu_ram()[addr & 0x7FF];
+}
+
+static bool find_cursor_oam(uint16_t *y_addr, uint16_t *x_addr) {
+    for (uint16_t base = 0x0200; base < 0x0300; base += 4) {
+        if (*ram_byte(base + 1) == CURSOR_TILE) {
+            *y_addr = base;
+            *x_addr = base + 3;
+            return true;
+        }
+    }
+    return false;
 }
 
 /* File log (2026-11-06, user request: "track it yourself" instead of
@@ -182,6 +204,8 @@ static void apply_absolute_cursor(SDL_Window *win, int gx, int gy) {
     if (!win) return; /* no window found at all yet: leave cursor where it was */
     SDL_Renderer *ren = SDL_GetRenderer(win);
     if (!ren) return;
+    uint16_t y_addr, x_addr;
+    if (!find_cursor_oam(&y_addr, &x_addr)) return; /* cursor sprite not active this frame */
     int wx = 0, wy = 0;
     SDL_GetWindowPosition(win, &wx, &wy);
     int mx = gx - wx, my = gy - wy; /* desktop coords -> window-relative */
@@ -189,8 +213,8 @@ static void apply_absolute_cursor(SDL_Window *win, int gx, int gy) {
     SDL_RenderWindowToLogical(ren, mx, my, &lx, &ly);
     if (lx < 0) lx = 0; else if (lx > 255) lx = 255;
     if (ly < 0) ly = 0; else if (ly > 239) ly = 239;
-    *ram_byte(CURSOR_OAM_X) = (uint8_t)lx;
-    *ram_byte(CURSOR_OAM_Y) = (uint8_t)ly;
+    *ram_byte(x_addr) = (uint8_t)lx;
+    *ram_byte(y_addr) = (uint8_t)ly;
 }
 
 /* After a click, diff the whole zero-page+OAM state against a baseline
@@ -215,8 +239,12 @@ static void click_watch_tick(FILE *log, uint8_t cur_buttons, uint8_t prev_button
     }
     if (s_click_watch_left <= 0 || !log) return;
     if (!s_click_watch_logged_pos) {
-        fprintf(log, "CLICK buttons=0x%02x cursorXY=$%02X,$%02X\n",
-            cur_buttons, *ram_byte(CURSOR_OAM_X), *ram_byte(CURSOR_OAM_Y));
+        uint16_t ya, xa;
+        if (find_cursor_oam(&ya, &xa))
+            fprintf(log, "CLICK buttons=0x%02x cursorXY=$%02X,$%02X (oam $%04X)\n",
+                cur_buttons, *ram_byte(xa), *ram_byte(ya), ya);
+        else
+            fprintf(log, "CLICK buttons=0x%02x cursorXY=<no $FA tile found in OAM>\n", cur_buttons);
         s_click_watch_logged_pos = 1;
     }
     for (int a = 0; a < 0x800; a++) {
@@ -243,9 +271,13 @@ static uint8_t real_mouse_buttons(void) {
     if (log && (diag_n < 20 || (diag_n % 120) == 0)) {
         int ww = -1, wh = -1, wx = -1, wy = -1;
         if (win) { SDL_GetWindowSize(win, &ww, &wh); SDL_GetWindowPosition(win, &wx, &wy); }
-        fprintf(log, "[diag] win=%p size=%dx%d pos=%d,%d global=%d,%d buttons=0x%x cursorXY=$%02X,$%02X\n",
-            (void*)win, ww, wh, wx, wy, gx, gy, buttons,
-            *ram_byte(CURSOR_OAM_X), *ram_byte(CURSOR_OAM_Y));
+        uint16_t ya, xa;
+        if (find_cursor_oam(&ya, &xa))
+            fprintf(log, "[diag] win=%p size=%dx%d pos=%d,%d global=%d,%d buttons=0x%x cursorXY=$%02X,$%02X (oam $%04X)\n",
+                (void*)win, ww, wh, wx, wy, gx, gy, buttons, *ram_byte(xa), *ram_byte(ya), ya);
+        else
+            fprintf(log, "[diag] win=%p size=%dx%d pos=%d,%d global=%d,%d buttons=0x%x cursorXY=<no $FA tile found>\n",
+                (void*)win, ww, wh, wx, wy, gx, gy, buttons);
         fflush(log);
     }
     diag_n++;
