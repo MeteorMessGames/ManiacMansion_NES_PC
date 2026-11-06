@@ -304,6 +304,23 @@ static void apply_absolute_cursor(SDL_Window *win) {
     int mx = 0, my = 0;
     SDL_GetMouseState(&mx, &my);
 
+    /* 2026-11-06: this write ran unconditionally every frame regardless of
+     * D-pad input, so it permanently fought (and always won against) any
+     * d-pad-driven cursor movement the ROM's own code tried to do -- the
+     * game would update its internal position in response to a D-pad
+     * press, then this immediately stomped it back to the stale mouse
+     * position on the very next frame, net result: zero visible movement.
+     * Confirmed on the character-select screen (arrow keys never moved
+     * the portrait highlight at all under the old unconditional write).
+     * Fix: only overwrite the position when the mouse has actually moved
+     * since the last frame -- an idle mouse no longer re-asserts a stale
+     * position over whatever the D-pad is doing. */
+    static int s_last_mx = -1, s_last_my = -1;
+    bool mouse_moved = (mx != s_last_mx) || (my != s_last_my);
+    s_last_mx = mx;
+    s_last_my = my;
+    if (!mouse_moved) return;
+
     float lx = 0.0f, ly = 0.0f;
     SDL_RenderWindowToLogical(ren, mx, my, &lx, &ly);
     if (lx < 0) lx = 0; else if (lx > 255) lx = 255;
@@ -420,6 +437,23 @@ static uint8_t real_mouse_buttons(void) {
     if (keys[SDL_SCANCODE_SPACE]) out |= BTN_START;
     if (keys[SDL_SCANCODE_RETURN]) out |= BTN_START; /* Enter == Start, for now */
 
+    /* 2026-11-06: D-pad was defined (BTN_UP/DOWN/LEFT/RIGHT) but never
+     * wired to any input source -- this mod only ever drove A/B/Start.
+     * That's fine for verb-grid gameplay (absolute cursor positioning
+     * replaces needing a d-pad there), but screens like character select
+     * aren't driven by cursor position at all: the ROM's own portrait
+     * highlight is a focus INDEX that only moves on a real d-pad
+     * Left/Right press, with A confirming whichever portrait currently
+     * holds focus. No amount of clicking a portrait can satisfy that --
+     * confirmed by testing (clicking two portraits + Start never left
+     * the "PLEASE CHOOSE TWO OTHER KIDS" screen). Arrow keys here let
+     * that screen (and any other index-driven menu) work the original
+     * way, independent of the mouse-click path above. */
+    if (keys[SDL_SCANCODE_UP])    out |= BTN_UP;
+    if (keys[SDL_SCANCODE_DOWN])  out |= BTN_DOWN;
+    if (keys[SDL_SCANCODE_LEFT])  out |= BTN_LEFT;
+    if (keys[SDL_SCANCODE_RIGHT]) out |= BTN_RIGHT;
+
     static uint8_t prev_out = 0;
     click_watch_tick(log, out, prev_out);
     prev_out = out;
@@ -476,8 +510,27 @@ static int joypad_poll_hook(uint16_t addr) {
     *ram_byte(0x04) = pad1_old; /* edge-detect stash, same as the original */
     *ram_byte(0x05) = pad2_old;
 
-    *ram_byte(0x02) = real_mouse_buttons(); /* player 1: mouse-driven */
+    uint8_t cur = real_mouse_buttons();
+    *ram_byte(0x02) = cur;                  /* player 1: mouse-driven */
     *ram_byte(0x03) = 0x00;                 /* player 2: unused, no input */
+
+    /* 2026-11-06: $02/$03 is only the raw joypad-strobe snapshot. A known
+     * working SNES-mouse hack for this same ROM family (HonkeyKong's
+     * maniac_mousedriver.asm) confirms the game's menu/click hit-test code
+     * (character select, verb grid) actually reads two SEPARATE latched
+     * registers it calls LowerButtons ($002F, holds B/Select/Start) and
+     * UpperButtons ($710E, holds A) -- not the raw $02 snapshot. That hack
+     * ORs its injected mouse bits directly into those two addresses every
+     * frame rather than relying on $02 to propagate into them. We replaced
+     * the entire $FB68 raw-read routine, so if something downstream was
+     * relying on that routine (or its caller) to also populate $2F/$710E
+     * from $02, it no longer happens -- explaining why Start-driven cutscene
+     * skip works (reads $02/$04 directly) but A-button portrait/verb clicks
+     * never did anything. Mirror the hack: write the same bits directly. */
+    uint8_t *lower = ram_byte(0x002F);
+    uint8_t *upper = cart_ram_byte(0x710E);
+    *lower = (uint8_t)(cur & (BTN_B | BTN_SELECT | BTN_START));
+    if (upper) *upper = (uint8_t)(cur & BTN_A);
 
     if (fire_count < 10 || *ram_byte(0x02) != 0) {
         fprintf(stderr, "[mouse-cursor] poll #%u at $%04X -> pad1=$%02X pad2=$%02X\n",
