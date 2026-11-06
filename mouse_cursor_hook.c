@@ -216,7 +216,7 @@ static void sync_grab(SDL_Window *win) {
  * SDL_RenderWindowToLogical (SDL >= 2.0.18, present in this project's
  * bundled headers) does this conversion internally using the renderer's
  * own actual state, so it's used instead of hand-rolled math. */
-static void apply_absolute_cursor(SDL_Window *win, int gx, int gy) {
+static void apply_absolute_cursor(SDL_Window *win) {
     if (!s_cursor_hidden) {
         SDL_ShowCursor(SDL_DISABLE); /* the game draws its own cursor sprite */
         s_cursor_hidden = true;
@@ -226,25 +226,25 @@ static void apply_absolute_cursor(SDL_Window *win, int gx, int gy) {
     if (!ren) return;
     uint16_t y_addr, x_addr;
     if (!find_cursor_oam(&y_addr, &x_addr)) return; /* cursor sprite not active this frame */
-    int wx = 0, wy = 0, ww = 0, wh = 0;
-    SDL_GetWindowPosition(win, &wx, &wy);
-    SDL_GetWindowSize(win, &ww, &wh);
-    int mx = gx - wx, my = gy - wy; /* desktop coords -> window-relative */
 
-    /* Only warp while this window actually has input focus. Warping
-     * unconditionally (regardless of focus) is what blocked Alt+Tab and
-     * kept the mouse pinned inside the window even when the user was
-     * trying to leave it (2026-11-06 report) -- once focus is gone (e.g.
-     * mid Alt+Tab), leave the real OS cursor alone so the switch can
-     * complete and the user can get the mouse out onto another window. */
-    bool focused = (SDL_GetWindowFlags(win) & SDL_WINDOW_INPUT_FOCUS) != 0;
-    if (focused && (mx < 0 || mx >= ww || my < 0 || my >= wh)) {
-        int cmx = mx < 0 ? 0 : (mx >= ww ? ww - 1 : mx);
-        int cmy = my < 0 ? 0 : (my >= wh ? wh - 1 : my);
-        SDL_WarpMouseInWindow(win, cmx, cmy);
-        mx = cmx;
-        my = cmy;
-    }
+    /* 2026-11-06: computing window-relative coords as
+     * (SDL_GetGlobalMouseState() - SDL_GetWindowPosition()) never tracked
+     * at all in testing -- global position and window position can live in
+     * different coordinate spaces on a mixed-DPI/multi-monitor Windows
+     * setup (SDL_GetGlobalMouseState goes through GetCursorPos; window
+     * position/size under SDL_WINDOW_ALLOW_HIGHDPI can be reported in a
+     * different scale), so the subtraction landed thousands of px outside
+     * the window every single frame regardless of where the real cursor
+     * was on screen. SDL_GetMouseState() already returns window-relative
+     * coordinates directly (no subtraction, no cross-space mismatch
+     * possible) when this window has mouse focus -- this is what the very
+     * first build used, and it tracked (just needed the scale fix below).
+     * Only update while actually hovering this window; otherwise leave the
+     * cursor where it was rather than guess from a global position that
+     * may not correspond to this window at all. */
+    if (SDL_GetMouseFocus() != win) return;
+    int mx = 0, my = 0;
+    SDL_GetMouseState(&mx, &my);
 
     float lx = 0.0f, ly = 0.0f;
     SDL_RenderWindowToLogical(ren, mx, my, &lx, &ly);
@@ -302,7 +302,7 @@ static uint8_t real_mouse_buttons(void) {
     Uint32 buttons = SDL_GetGlobalMouseState(&gx, &gy);
     SDL_Window *win = find_game_window();
     sync_grab(win);
-    apply_absolute_cursor(win, gx, gy);
+    apply_absolute_cursor(win);
 
     FILE *log = dbg_log();
     static uint32_t diag_n = 0;
