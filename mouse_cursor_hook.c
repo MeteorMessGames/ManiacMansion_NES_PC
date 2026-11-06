@@ -123,6 +123,24 @@ static uint8_t *ram_byte(uint16_t addr) {
     return (uint8_t *)&cyc_cpu_ram()[addr & 0x7FF];
 }
 
+/* File log (2026-11-06, user request: "track it yourself" instead of
+ * relaying console text by hand): writes next to the exe so a developer
+ * can pull it over SSH after a play session instead of the player having
+ * to transcribe console output live. Opened lazily on first use, line-
+ * buffered via fflush after every write so a force-closed game (Alt+F4,
+ * crash) doesn't lose the tail of the session. */
+static FILE *s_dbg_log = NULL;
+static int   s_dbg_log_state = -1;
+
+static FILE *dbg_log(void) {
+    if (s_dbg_log_state < 0) {
+        s_dbg_log = fopen("mouse_debug.log", "a");
+        s_dbg_log_state = s_dbg_log ? 1 : 0;
+        if (s_dbg_log) fprintf(s_dbg_log, "=== session start ===\n");
+    }
+    return s_dbg_log_state == 1 ? s_dbg_log : NULL;
+}
+
 #ifdef CYC_WITH_SDL
 static bool s_cursor_hidden = false;
 
@@ -175,25 +193,71 @@ static void apply_absolute_cursor(SDL_Window *win, int gx, int gy) {
     *ram_byte(CURSOR_OAM_Y) = (uint8_t)ly;
 }
 
+/* After a click, diff the whole zero-page+OAM state against a baseline
+ * taken at the click frame for CLICK_WATCH_FRAMES frames, logging any byte
+ * that changes. Answers "does the game react to this click AT ALL" without
+ * needing the player to describe what they saw -- if NOTHING in RAM moves
+ * after a click lands at a given cursor position, the click isn't reaching
+ * game logic (wrong RAM byte, wrong click semantics, etc.); if things do
+ * change, the position is at least being read by *something*, narrowing
+ * the bug to "reads the click but picks the wrong verb/object" instead. */
+#define CLICK_WATCH_FRAMES 60
+static uint8_t s_click_baseline[0x800];
+static int     s_click_watch_left = 0;
+static int     s_click_watch_logged_pos = 0;
+
+static void click_watch_tick(FILE *log, uint8_t cur_buttons, uint8_t prev_buttons) {
+    bool pressed_now = (cur_buttons & (BTN_A | BTN_B)) && !(prev_buttons & (BTN_A | BTN_B));
+    if (pressed_now) {
+        for (int a = 0; a < 0x800; a++) s_click_baseline[a] = *ram_byte((uint16_t)a);
+        s_click_watch_left = CLICK_WATCH_FRAMES;
+        s_click_watch_logged_pos = 0;
+    }
+    if (s_click_watch_left <= 0 || !log) return;
+    if (!s_click_watch_logged_pos) {
+        fprintf(log, "CLICK buttons=0x%02x cursorXY=$%02X,$%02X\n",
+            cur_buttons, *ram_byte(CURSOR_OAM_X), *ram_byte(CURSOR_OAM_Y));
+        s_click_watch_logged_pos = 1;
+    }
+    for (int a = 0; a < 0x800; a++) {
+        uint8_t v = *ram_byte((uint16_t)a);
+        if (v != s_click_baseline[a]) {
+            fprintf(log, "  +%2d $%04X: $%02X -> $%02X\n",
+                CLICK_WATCH_FRAMES - s_click_watch_left, a, s_click_baseline[a], v);
+            s_click_baseline[a] = v;
+        }
+    }
+    s_click_watch_left--;
+    if (s_click_watch_left == 0) fprintf(log, "CLICK watch done\n");
+    fflush(log);
+}
+
 static uint8_t real_mouse_buttons(void) {
     int gx = 0, gy = 0;
     Uint32 buttons = SDL_GetGlobalMouseState(&gx, &gy);
     SDL_Window *win = find_game_window();
     apply_absolute_cursor(win, gx, gy);
 
+    FILE *log = dbg_log();
     static uint32_t diag_n = 0;
-    if (diag_n < 20 || (diag_n % 120) == 0) {
+    if (log && (diag_n < 20 || (diag_n % 120) == 0)) {
         int ww = -1, wh = -1, wx = -1, wy = -1;
         if (win) { SDL_GetWindowSize(win, &ww, &wh); SDL_GetWindowPosition(win, &wx, &wy); }
-        fprintf(stderr, "[mouse-cursor][diag] win=%p size=%dx%d pos=%d,%d global=%d,%d buttons=0x%x cursorXY=$%02X,$%02X\n",
+        fprintf(log, "[diag] win=%p size=%dx%d pos=%d,%d global=%d,%d buttons=0x%x cursorXY=$%02X,$%02X\n",
             (void*)win, ww, wh, wx, wy, gx, gy, buttons,
             *ram_byte(CURSOR_OAM_X), *ram_byte(CURSOR_OAM_Y));
+        fflush(log);
     }
     diag_n++;
 
     uint8_t out = 0;
     if (buttons & SDL_BUTTON(SDL_BUTTON_LEFT)) out |= BTN_A;
     if (buttons & SDL_BUTTON(SDL_BUTTON_RIGHT)) out |= BTN_B; /* cutscene skip -- see below */
+
+    static uint8_t prev_out = 0;
+    click_watch_tick(log, out, prev_out);
+    prev_out = out;
+
     return out;
 }
 #else
