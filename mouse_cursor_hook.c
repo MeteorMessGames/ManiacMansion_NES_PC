@@ -273,6 +273,16 @@ static void apply_absolute_cursor(SDL_Window *win) {
     if (!win) return; /* no window found at all yet: leave cursor where it was */
     SDL_Renderer *ren = SDL_GetRenderer(win);
     if (!ren) return;
+    /* 2026-11-06: writing $7116/$7118 unconditionally every frame (no gate)
+     * stomped WRAM during non-cursor screens (transitions, cutscenes) where
+     * this engine evidently reuses that address for something else entirely
+     * -- caused a hang into a black screen after picking a kid at the
+     * character-select screen. find_cursor_oam() (still scanning OAM for
+     * tile $FA, same heuristic the old OAM-direct-write approach used) is
+     * restored here as a cheap "is a live cursor actually on screen this
+     * frame" gate: only touch cartridge WRAM when it still is. */
+    uint16_t y_oam, x_oam;
+    if (!find_cursor_oam(&y_oam, &x_oam)) return;
     uint8_t *src_x = cart_ram_byte(CURSOR_SRC_X);
     uint8_t *src_y = cart_ram_byte(CURSOR_SRC_Y);
     if (!src_x || !src_y) return; /* WRAM not mapped this build/frame */
