@@ -73,13 +73,11 @@
  * "default verb for the object under the cursor" feature a real
  * reverse-engineering project on its own, not attempted here).
  *
- * RIGHT-CLICK -> cutscene skip (2026-11-06, updated): RMB -> BTN_B, i.e. the
- * other NES face button from LMB's BTN_A (user request: "the other input
- * than lmb either a or b"). Previously mapped to BTN_START as a guess --
- * not independently confirmed from this ROM's disassembly or direct
- * testing either way. Verify empirically next time the build is tested
- * against an actual cutscene; BTN_START is the fallback candidate if B
- * doesn't skip it.
+ * CUTSCENE SKIP (2026-11-06, updated again): LMB -> BTN_A, RMB -> BTN_B,
+ * each independent; holding both together ORs in BTN_START, matching the
+ * standard NES "hold A+B" skip convention instead of overloading RMB alone
+ * as a permanent Start-sender (which fired Start on every ordinary RMB
+ * context-click too, not just intentional skip attempts).
  */
 #include "mod_function_hooks.h"
 #include "mod_runtime.h"
@@ -381,14 +379,19 @@ static uint8_t real_mouse_buttons(void) {
     }
     diag_n++;
 
-    /* 2026-11-06: B didn't skip cutscenes in practice -- Start is the real
-     * skip input. RMB sends both A (context-sensitive action, same as LMB)
-     * and Start (cutscene skip) -- the original ask was "cursor + context
-     * sensitive right click", so RMB must still perform the game's normal
-     * context action, not just double as a skip button. */
+    /* 2026-11-06: switched to the standard NES A+B-held-together skip
+     * convention instead of RMB alone sending Start. LMB -> A, RMB -> B
+     * (each its own independent face button now, not bundled with Start),
+     * and holding both at once ORs in Start so a cutscene-skip is just
+     * "press both mouse buttons" -- no longer overloads RMB as a permanent
+     * Start-sender, which would have fired Start on every ordinary RMB
+     * context-click too. */
     uint8_t out = 0;
-    if (buttons & SDL_BUTTON(SDL_BUTTON_LEFT)) out |= BTN_A;
-    if (buttons & SDL_BUTTON(SDL_BUTTON_RIGHT)) out |= BTN_A | BTN_START;
+    bool lmb = buttons & SDL_BUTTON(SDL_BUTTON_LEFT);
+    bool rmb = buttons & SDL_BUTTON(SDL_BUTTON_RIGHT);
+    if (lmb) out |= BTN_A;
+    if (rmb) out |= BTN_B;
+    if (lmb && rmb) out |= BTN_START;
 
     /* Space also sends Start (cutscene skip) -- for fast iteration while
      * testing, so skipping doesn't require chasing the grabbed/confined
