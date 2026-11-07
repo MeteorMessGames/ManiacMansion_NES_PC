@@ -73,11 +73,11 @@
  * "default verb for the object under the cursor" feature a real
  * reverse-engineering project on its own, not attempted here).
  *
- * CUTSCENE SKIP (2026-11-06, updated again): LMB -> BTN_A, RMB -> BTN_B,
- * each independent; holding both together ORs in BTN_START, matching the
- * standard NES "hold A+B" skip convention instead of overloading RMB alone
- * as a permanent Start-sender (which fired Start on every ordinary RMB
- * context-click too, not just intentional skip attempts).
+ * CUTSCENE SKIP (2026-11-06, reverted back to this after a brief A+B-combo
+ * experiment in commit 0caf0d5 turned out broken): RMB -> BTN_A | BTN_START
+ * unconditionally. A right-click both performs the game's normal
+ * context action (A) and skips any active cutscene (Start) in the same
+ * press.
  */
 #include "mod_function_hooks.h"
 #include "mod_runtime.h"
@@ -416,19 +416,31 @@ static uint8_t real_mouse_buttons(void) {
     }
     diag_n++;
 
-    /* 2026-11-06: switched to the standard NES A+B-held-together skip
-     * convention instead of RMB alone sending Start. LMB -> A, RMB -> B
-     * (each its own independent face button now, not bundled with Start),
-     * and holding both at once ORs in Start so a cutscene-skip is just
-     * "press both mouse buttons" -- no longer overloads RMB as a permanent
-     * Start-sender, which would have fired Start on every ordinary RMB
-     * context-click too. */
+    /* 2026-11-06 (reverted the brief A+B-combo experiment from commit
+     * 0caf0d5 -- confirmed broken, user wants plain RMB-alone skip back):
+     * RMB -> BTN_A | BTN_START, so a right-click both performs the game's
+     * normal context action (A) and skips any active cutscene (Start) in
+     * the same press -- no combo required. Confirmed working for the
+     * title-card screen and in-game dialogue, but NOT for the opening
+     * Lucasfilm logo -- user confirmed Enter (plain BTN_START) skips that
+     * screen but RMB (BTN_A|BTN_START together) does not. That logo's
+     * skip-check is likely a one-off exact-equality test against Start
+     * alone (common for primitive pre-engine splash code), not a bitwise
+     * "Start is set" test like the in-game skip uses. Fix: on the first
+     * frame of a new RMB press, send a clean Start-only pulse (satisfies
+     * an exact-equality check); on subsequent held frames, fall back to
+     * A|Start as before (preserves the already-confirmed-working
+     * title-card/dialogue skip and ordinary RMB context-click). */
     uint8_t out = 0;
     bool lmb = buttons & SDL_BUTTON(SDL_BUTTON_LEFT);
     bool rmb = buttons & SDL_BUTTON(SDL_BUTTON_RIGHT);
+    static bool prev_rmb = false;
     if (lmb) out |= BTN_A;
-    if (rmb) out |= BTN_B;
-    if (lmb && rmb) out |= BTN_START;
+    if (rmb) {
+        if (!prev_rmb) out |= BTN_START;        /* first frame: Start alone */
+        else out |= BTN_A | BTN_START;          /* held: A + Start */
+    }
+    prev_rmb = rmb;
 
     /* Space also sends Start (cutscene skip) -- for fast iteration while
      * testing, so skipping doesn't require chasing the grabbed/confined

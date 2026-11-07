@@ -60,3 +60,15 @@ id = "maniac-mansion.mouse-cursor.joypad-read"
 addr = 0xFB68
 length = 16
 crc32 = 0x5E74BE55
+
+# ATTEMPTED (2026-11-06, REVERTED same day): hooking a second joypad-poll
+# entry at $9EAB (PRG bank 0, called from $9E62/$9E88 -- the opening "tree
+# scene" house/moon/meteor shot) to try to make that screen skippable.
+# Reverted because it broke something that was already confirmed working --
+# Dave's opening dialogue stopped skipping once this second hook was added,
+# even though that dialogue is driven through the unrelated $FB68 copy.
+# Root cause not yet understood (maybe $9EAB is ALSO called from somewhere
+# in the dialogue path and the handled-RTS convention collides there, or
+# NESRecomp's cycle-accurate codegen does something bank-sensitive with two
+# live function hooks). Don't re-add this hook without figuring out the
+# actual collision first -- see [[project-maniac-mansion-nes-mouse]] memory.
