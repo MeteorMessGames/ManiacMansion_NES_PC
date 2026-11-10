@@ -85,8 +85,15 @@
 #include "cyc_core.h"
 #include "cyc_host_extras.h"
 #include "cyc_mod.h"
+#include "cyc_state.h"
+#include "cyc_session.h"
+#include "cyc_overlay.h"
+#include "menu_render.h"
+#include <sys/stat.h>
+#include <time.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #ifdef CYC_WITH_SDL
 #include <SDL.h>
 #endif
@@ -100,10 +107,13 @@
  * the Windows cross-build failed with "undefined reference to
  * cyc_host_extras" until this was added; the native Linux build never
  * needed it (ELF weak-symbol resolution just worked there). */
-const CycHostExtras *cyc_host_extras(void) { return NULL; }
+/* 2026-11-09: now a real definition (the Escape save/load menu needs
+ * present/frame_end/event) -- see "Escape menu" below; defined at the end
+ * of the file. */
 
 #define HOOK_ID "maniac-mansion.mouse-cursor.joypad-read"
 #define HOOK_ID_BANK0 "maniac-mansion.mouse-cursor.joypad-read-bank0"
+#define HOOK_ID_GAME_SAVE "maniac-mansion.game-save-observer"
 
 /* Standard NES button bits, matching the assembled byte's layout. */
 #define BTN_A      0x80
@@ -331,6 +341,377 @@ static void apply_absolute_cursor(SDL_Window *win) {
     *src_y = (uint8_t)ly;
 }
 
+/* ------------------------------------------------------------------------
+ * 2026-11-09: Escape menu (SAVE GAME / LOAD GAME / RESUME).
+ *
+ * This build has no runtime menu (recomp-ui isn't compiled in), so Escape
+ * did nothing in the host. The menu is ours, drawn through
+ * CycHostExtras.present over a frozen copy of the frame:
+ *   - Opening takes an in-memory save state (cyc_state_save). The machine
+ *     keeps running behind the menu with all input withheld; RESUME (or
+ *     Escape) restores the snapshot, so the game is effectively paused.
+ *   - SAVE GAME writes that snapshot (the moment the menu opened) to
+ *     <exe dir>/ManiacMansion.state via cyc_state_save_file (atomic).
+ *   - LOAD GAME loads that file and closes the menu.
+ * A save state belongs to the exact executable that wrote it (cyc_state.h):
+ * a different build refuses it, reported as "different version". The
+ * game's own Start-menu battery save is unaffected and survives updates.
+ * ---------------------------------------------------------------------- */
+static uint8_t wram(uint16_t addr);   /* defined with the context-RMB code */
+#define MENU_W 256
+#define MENU_H 240
+/* PCSX2-style pause sidebar (user choice): translucent panel down the left,
+ * game lightly dimmed on the right, anti-aliased TrueType text rendered at
+ * the window's real resolution (menu_render.c). */
+enum { MI_RESUME, MI_SAVE, MI_LOAD, MI_EXIT, MI_COUNT };
+static const char *const k_menu_rows[MI_COUNT] = { "Resume Game", "Save State", "Load State", "Exit Game" };
+
+static int      s_game_saved_frames = -1;  /* -1 idle, else frames since the game's own save */
+static int      s_toast_frames = 0;        /* "SAVE FILE UPDATED" banner countdown */
+static bool     s_menu_open = false;
+static bool     s_menu_guard = false;          /* swallow input until all released */
+static int      s_menu_sel = 0;
+static int      s_menu_hover = -1;             /* row under the mouse, or -1 */
+static uint8_t *s_menu_snap = NULL;
+static size_t   s_menu_snap_len = 0;
+static uint32_t s_menu_frozen[MENU_W * MENU_H];
+static uint32_t s_menu_pic[MENU_W * MENU_H];   /* 256x240 toast picture */
+static uint32_t *s_hi_pic = NULL;              /* window-resolution menu picture */
+static int      s_hi_w = 0, s_hi_h = 0;        /* its size = the presented size */
+static char     s_menu_status[96] = "";
+static uint32_t s_menu_status_rgb = 0x7CE08A;
+/* queued from the event callback, run in frame_end (a frame boundary) */
+static bool     s_menu_req_toggle = false;
+static int      s_menu_req_activate = -1;
+
+static void save_path(char *out, size_t n) {
+    char *base = SDL_GetBasePath();
+    snprintf(out, n, "%sManiacMansion.state", base ? base : "");
+    if (base) SDL_free(base);
+}
+
+/* Sidebar geometry for a presented size (all derived from the height). */
+typedef struct { int sw, pad, item_y0, item_h, item_gap, title_y, sub_y, sep_y; float u; } MenuLayout;
+static MenuLayout menu_layout(int w, int h) {
+    MenuLayout L;
+    L.u = (float)h / 240.0f;
+    L.sw = (int)(w * 0.40f);
+    L.pad = (int)(10 * L.u);
+    L.title_y = (int)(16 * L.u);
+    L.sub_y = (int)(33 * L.u);
+    L.sep_y = (int)(46 * L.u);
+    L.item_y0 = (int)(58 * L.u);
+    L.item_h = (int)(19 * L.u);
+    L.item_gap = (int)(4 * L.u);
+    return L;
+}
+
+static int menu_row_at(int x, int y) {
+    if (s_hi_w <= 0) return -1;
+    MenuLayout L = menu_layout(s_hi_w, s_hi_h);
+    if (x < L.pad / 2 || x >= L.sw - L.pad / 2) return -1;
+    for (int i = 0; i < MI_COUNT; i++) {
+        int y0 = L.item_y0 + i * (L.item_h + L.item_gap);
+        if (y >= y0 && y < y0 + L.item_h) return i;
+    }
+    return -1;
+}
+
+static void menu_log(const char *what, const char *detail) {
+    FILE *log = dbg_log();
+    if (log) { fprintf(log, "[menu] %s%s%s\n", what, detail ? ": " : "", detail ? detail : ""); fflush(log); }
+}
+
+static void menu_os_cursor(bool on);
+
+static void menu_close(void) {
+    free(s_menu_snap);
+    s_menu_snap = NULL;
+    s_menu_snap_len = 0;
+    s_menu_open = false;
+    s_menu_guard = true;
+    menu_os_cursor(false);
+}
+
+/* After any state load: the hook's preview tracking must match the RAM the
+ * state brought back (a snapshot taken while hovering holds a preview verb). */
+static void after_state_load(void);
+
+static bool restore_snapshot(char *err, size_t n) {
+    if (!s_menu_snap) { snprintf(err, n, "no snapshot"); return false; }
+    if (!cyc_state_load(s_menu_snap, s_menu_snap_len, err, n)) return false;
+    cyc_session_state_loaded();
+    after_state_load();
+    return true;
+}
+
+static void menu_status(const char *msg, uint32_t rgb) {
+    snprintf(s_menu_status, sizeof s_menu_status, "%s", msg);
+    s_menu_status_rgb = rgb;
+}
+
+static void menu_open_now(void) {
+    char err[160];
+    uint8_t *buf = NULL;
+    size_t len = 0;
+    if (!cyc_state_save(&buf, &len, err, sizeof err)) { menu_log("open failed", err); return; }
+    s_menu_snap = buf;
+    s_menu_snap_len = len;
+    const uint32_t *f = cyc_frame_argb();
+    if (f) memcpy(s_menu_frozen, f, sizeof s_menu_frozen);
+    else memset(s_menu_frozen, 0, sizeof s_menu_frozen);
+    s_menu_open = true;
+    s_menu_sel = MI_RESUME;
+    s_menu_hover = -1;
+    s_menu_status[0] = 0;
+    menu_os_cursor(true);
+    menu_log("open", NULL);
+}
+
+static void menu_activate(int item) {
+    char err[160] = "", path[1100];
+    save_path(path, sizeof path);
+    if (item == MI_SAVE) {
+        /* rewind to the paused moment, then write it */
+        if (restore_snapshot(err, sizeof err) && cyc_state_save_file(path, err, sizeof err)) {
+            menu_status("Game saved", 0x7CE08A);
+            menu_log("saved", path);
+        } else {
+            menu_status("Save failed", 0xF07070);
+            menu_log("save failed", err);
+        }
+    } else if (item == MI_LOAD) {
+        FILE *f = fopen(path, "rb");
+        if (!f) {
+            menu_status("No save file yet", 0xF0C060);
+            menu_log("load: no file", path);
+            return;
+        }
+        fclose(f);
+        if (cyc_state_load_file(path, err, sizeof err)) {
+            cyc_session_state_loaded();
+            after_state_load();
+            menu_log("loaded", path);
+            menu_close();
+        } else {
+            menu_status("Save is from a different version", 0xF07070);
+            menu_log("load failed", err);
+        }
+    } else if (item == MI_EXIT) {
+        /* back to the paused moment first (the battery save the host writes
+         * on exit then matches what was on screen), then a normal quit */
+        if (!restore_snapshot(err, sizeof err)) menu_log("exit restore failed", err);
+        menu_log("exit", NULL);
+        menu_close();
+        SDL_Event q;
+        memset(&q, 0, sizeof q);
+        q.type = SDL_QUIT;
+        SDL_PushEvent(&q);
+    } else {
+        if (!restore_snapshot(err, sizeof err)) menu_log("resume restore failed", err);
+        menu_log("resume", NULL);
+        menu_close();
+    }
+}
+
+/* "Last saved" line from the save file's modification time. */
+static void last_saved_text(char *out, size_t n) {
+    char path[1100];
+    save_path(path, sizeof path);
+    struct stat st;
+    if (stat(path, &st) != 0) { snprintf(out, n, "No save file yet"); return; }
+    struct tm *tm = localtime(&st.st_mtime);
+    if (!tm) { snprintf(out, n, "Save file present"); return; }
+    char when[48];
+    strftime(when, sizeof when, "%b %d, %H:%M", tm);
+    snprintf(out, n, "Last saved %s", when);
+}
+
+/* Size to present the menu at: the window's real drawable, letterboxed to
+ * the game's 256:240 aspect, so the texture maps ~1:1 and text is crisp. */
+static void menu_target_size(int *w, int *h) {
+    int ow = 0, oh = 0;
+    SDL_Window *win = find_game_window();
+    SDL_Renderer *ren = win ? SDL_GetRenderer(win) : NULL;
+    if (ren) SDL_GetRendererOutputSize(ren, &ow, &oh);
+    if (ow < MENU_W || oh < MENU_H) { ow = MENU_W * 3; oh = MENU_H * 3; }
+    float sx = (float)ow / MENU_W, sy = (float)oh / MENU_H, sc = sx < sy ? sx : sy;
+    int tw = (int)(MENU_W * sc + 0.5f), th = (int)(MENU_H * sc + 0.5f);
+    if (tw > 4096) { th = th * 4096 / tw; tw = 4096; }
+    if (th > 4096) { tw = tw * 4096 / th; th = 4096; }
+    *w = tw;
+    *h = th;
+}
+
+static const uint32_t *menu_present(void *ctx, int *w, int *h) {
+    (void)ctx;
+    if (!s_menu_open) {
+        if (s_toast_frames <= 0) return NULL;
+        const uint32_t *f = cyc_frame_argb();
+        if (!f) return NULL;
+        memcpy(s_menu_pic, f, sizeof s_menu_pic);
+        cyc_overlay_toast(s_menu_pic, MENU_W, MENU_H, "SAVE FILE UPDATED", "");
+        *w = MENU_W;
+        *h = MENU_H;
+        return s_menu_pic;
+    }
+    int pw, ph;
+    menu_target_size(&pw, &ph);
+    if (pw != s_hi_w || ph != s_hi_h || !s_hi_pic) {
+        uint32_t *np = (uint32_t *)realloc(s_hi_pic, (size_t)pw * ph * 4);
+        if (!np) return NULL;
+        s_hi_pic = np;
+        s_hi_w = pw;
+        s_hi_h = ph;
+    }
+    uint32_t *d = s_hi_pic;
+    MenuLayout L = menu_layout(pw, ph);
+    float u = L.u;
+
+    mr_scale_nearest(d, pw, ph, s_menu_frozen, MENU_W, MENU_H, 170);   /* game, lightly dimmed */
+    mr_rect(d, pw, ph, 0, 0, L.sw, ph, 0x15161D, 236);                 /* sidebar */
+    mr_rect(d, pw, ph, L.sw, 0, (int)(2 * u) > 1 ? (int)(2 * u) : 1, ph, 0x2C6FE0, 200);  /* edge accent */
+
+    {   /* title, shrunk to fit the sidebar */
+        float tpx = 13.0f * u;
+        int avail = L.sw - 2 * L.pad;
+        int tw = mr_text_width(tpx, "Maniac Mansion");
+        if (tw > avail && tw > 0) tpx = tpx * avail / tw;
+        mr_text(d, pw, ph, L.pad, L.title_y, tpx, 0xFFFFFF, 255, "Maniac Mansion");
+    }
+    mr_text(d, pw, ph, L.pad, L.sub_y, 7.5f * u, 0x9AA0B4, 255, "Paused");
+    mr_rect(d, pw, ph, L.pad, L.sep_y, L.sw - 2 * L.pad, (int)u > 1 ? (int)u : 1, 0x3A3D4C, 255);
+
+    for (int i = 0; i < MI_COUNT; i++) {
+        int y0 = L.item_y0 + i * (L.item_h + L.item_gap);
+        bool sel = i == s_menu_sel;
+        bool hov = i == s_menu_hover;
+        if (sel) {
+            mr_round_rect(d, pw, ph, L.pad / 2, y0, L.sw - L.pad, L.item_h, (int)(4 * u), 0x2C6FE0, 215);
+        } else if (hov) {
+            mr_round_rect(d, pw, ph, L.pad / 2, y0, L.sw - L.pad, L.item_h, (int)(4 * u), 0xFFFFFF, 28);
+        }
+        float tpx = 8.5f * u;
+        mr_text(d, pw, ph, L.pad + (int)(6 * u), y0 + (int)((L.item_h - tpx) / 2), tpx,
+                sel ? 0xFFFFFF : 0xD6D9E4, 255, k_menu_rows[i]);
+    }
+
+    char info[96];
+    last_saved_text(info, sizeof info);
+    int foot_y = ph - (int)(58 * u);
+    if (s_menu_status[0]) mr_text(d, pw, ph, L.pad, foot_y - (int)(12 * u), 7.0f * u, s_menu_status_rgb, 255, s_menu_status);
+    mr_text(d, pw, ph, L.pad, foot_y, 6.5f * u, 0x9AA0B4, 255, info);
+    mr_rect(d, pw, ph, L.pad, ph - (int)(44 * u), L.sw - 2 * L.pad, (int)u > 1 ? (int)u : 1, 0x3A3D4C, 255);
+    static const char *const hints[3] = { "Esc   Resume", "Up / Down   Select", "Enter   Confirm" };
+    for (int i = 0; i < 3; i++)
+        mr_text(d, pw, ph, L.pad, ph - (int)((38 - i * 10) * u), 6.0f * u, 0x7D8296, 255, hints[i]);
+
+    *w = pw;
+    *h = ph;
+    return d;
+}
+
+static void menu_event(void *ctx, const void *event, int player) {
+    (void)ctx; (void)player;
+    const SDL_Event *ev = (const SDL_Event *)event;
+    if (ev->type == SDL_KEYDOWN && !ev->key.repeat) {
+        SDL_Scancode sc = ev->key.keysym.scancode;
+        if (sc == SDL_SCANCODE_ESCAPE) { s_menu_req_toggle = true; return; }
+        if (!s_menu_open) return;
+        if (sc == SDL_SCANCODE_UP)   s_menu_sel = (s_menu_sel + MI_COUNT - 1) % MI_COUNT;
+        if (sc == SDL_SCANCODE_DOWN) s_menu_sel = (s_menu_sel + 1) % MI_COUNT;
+        if (sc == SDL_SCANCODE_RETURN || sc == SDL_SCANCODE_SPACE || sc == SDL_SCANCODE_KP_ENTER)
+            s_menu_req_activate = s_menu_sel;
+        return;
+    }
+    if (!s_menu_open) return;
+    if (ev->type == SDL_MOUSEMOTION || ev->type == SDL_MOUSEBUTTONDOWN) {
+        /* Event coordinates arrive in the renderer's logical space, which is
+         * the size we present while the menu is open (SDL scales mouse
+         * events to the logical size; don't map them again). */
+        int x = ev->type == SDL_MOUSEMOTION ? ev->motion.x : ev->button.x;
+        int y = ev->type == SDL_MOUSEMOTION ? ev->motion.y : ev->button.y;
+        int row = menu_row_at(x, y);
+        s_menu_hover = row;
+        if (row >= 0) s_menu_sel = row;
+        if (ev->type == SDL_MOUSEBUTTONDOWN && ev->button.button == SDL_BUTTON_LEFT && row >= 0)
+            s_menu_req_activate = row;
+    }
+}
+
+/* While the menu is open the player uses the normal OS (Windows) cursor:
+ * release the window grab and show the system pointer (the hook normally
+ * hides it and confines it to the window for the game's own cursor; leaving
+ * that on boxed the pointer in, so the lower rows / right side of the menu
+ * were unreachable on the Windows test PC). Restored when the menu closes. */
+static void menu_os_cursor(bool on) {
+    SDL_Window *win = find_game_window();
+    if (on) {
+        if (win) SDL_SetWindowGrab(win, SDL_FALSE);
+        s_grabbed = false;
+        SDL_ShowCursor(SDL_ENABLE);
+        s_cursor_hidden = false;      /* apply_absolute_cursor re-hides it later */
+    } else {
+        SDL_ShowCursor(SDL_DISABLE);
+        s_cursor_hidden = true;       /* sync_grab re-grabs on the next poll */
+    }
+}
+
+/* ctx_busy / lmb_busy are defined further down; opening waits for them. */
+static bool menu_input_busy(void);
+
+/* The game's own save (Start menu -> Save game) also refreshes the single
+ * save file, newest wins. Its save routine runs inside the game's menu
+ * (room $32, verbs off, override armed), so wait until normal play has
+ * held for 30 frames (verbs on $6B0A bit 7, no override, cursor sprite
+ * visible) and snapshot then: loading it lands in play, not in that menu. */
+static void follow_game_save(void) {
+    static int good = 0;
+    if (s_toast_frames > 0) s_toast_frames--;
+    if (s_game_saved_frames < 0 || s_menu_open) return;
+    if (++s_game_saved_frames > 60 * 20) { s_game_saved_frames = -1; good = 0; menu_log("game save: gave up waiting for play", NULL); return; }
+    uint16_t ya, xa;
+    bool play = (wram(0x6B0A) & 0x80) && !(wram(0x6B06) | wram(0x6B07)) &&
+                find_cursor_oam(&ya, &xa) && *ram_byte(ya) < 0xEF;
+    good = play ? good + 1 : 0;
+    if (good < 30) return;
+    good = 0;
+    s_game_saved_frames = -1;
+    char path[1100], err[160];
+    save_path(path, sizeof path);
+    if (cyc_state_save_file(path, err, sizeof err)) { menu_log("game save -> save file updated", path); s_toast_frames = 120; }
+    else menu_log("game save -> save file write failed", err);
+}
+
+static void menu_frame_end(void *ctx) {
+    (void)ctx;
+    follow_game_save();
+    if (s_menu_req_toggle) {
+        s_menu_req_toggle = false;
+        if (s_menu_open) menu_activate(MI_RESUME);
+        else if (!menu_input_busy()) menu_open_now();
+    }
+    if (s_menu_req_activate >= 0) {
+        int item = s_menu_req_activate;
+        s_menu_req_activate = -1;
+        if (s_menu_open) menu_activate(item);
+    }
+}
+
+/* Input gate for real_mouse_buttons: true = send the game nothing. Holds
+ * after the menu closes until every key/button that could leak through
+ * (the activating Enter/Space/click, Escape) is released. */
+static bool menu_blocks_input(bool lmb, bool rmb) {
+    if (s_menu_open) return true;
+    if (s_menu_guard) {
+        const uint8_t *k = SDL_GetKeyboardState(NULL);
+        if (lmb || rmb || k[SDL_SCANCODE_RETURN] || k[SDL_SCANCODE_SPACE] ||
+            k[SDL_SCANCODE_ESCAPE] || k[SDL_SCANCODE_KP_ENTER]) return true;
+        s_menu_guard = false;
+    }
+    return false;
+}
+
 /* After a click, diff the whole zero-page+OAM state against a baseline
  * taken at the click frame for CLICK_WATCH_FRAMES frames, logging any byte
  * that changes. Answers "does the game react to this click AT ALL" without
@@ -494,31 +875,48 @@ static bool ctx_object_code(int slot, uint8_t *bank_out, uint16_t *addr_out) {
     return *addr_out >= 0x8000 && *addr_out < 0xC000;
 }
 
-/* Does the object's GET script actually pick it up? Verb tables include
- * joke handlers (GET door mat says "...leave it there."), so having a GET
- * entry is not enough. Real pickups contain SCUMM v2 pickupObject: opcode
- * $D0 with var $09 (VAR_ACTIVE_OBJECT1), or $50 + this object's number as a
- * direct word (opcodes $50/$D0 share handler b0F:CB4B). Checked against
- * room 01: key, stamps, package, contract, film = yes; door mat, bushes = no. */
+/* Does the object's GET script actually take it? Verb tables include joke
+ * handlers (GET door mat says "...leave it there."), so having a GET entry
+ * is not enough. Scans only the GET handler's own bytes (up to the next
+ * verb's entry or the end of the object) for SCUMM v2 ways of giving the
+ * player an item. Opcode families from the interpreter table at b0F:$FE97:
+ *   $D0 $09            pickupObject(VAR_ACTIVE_OBJECT1)   ($50/$D0 -> CB4B)
+ *   $50 lo hi          pickupObject(this object)
+ *   $69 lo hi $00      setOwnerOf(object <= $2FF, VAR_EGO) ($29/$69/$A9/$E9 -> CD41)
+ *   $E9 $09 $00        setOwnerOf(active object, VAR_EGO)
+ *   $42 $74            startScript($74), the shared take-item script (dimes)
+ *   $87/$C7 $09 $D7 $09 the state changes that hide a taken object
+ * Whole-ROM check (all rooms): 65 objects classify as takeable (keys, tapes,
+ * quarters, dimes, flashlight, food, radiation suit...), 34 as not (door
+ * mat, bushes, candles, nailed calendar, glued knives, coin boxes...). */
 static bool ctx_get_picks_up(int slot) {
-    uint8_t bank, b0, b1, v, off = 0;
+    uint8_t bank, b0, b1, v, o, off = 0;
     uint16_t p;
     if (!ctx_object_code(slot, &bank, &p)) return false;
     if (!prg_read(bank, p, &b0) || !prg_read(bank, (uint16_t)(p + 1), &b1)) return false;
     uint16_t size = (uint16_t)(b0 | (b1 << 8));
-    for (uint16_t q = (uint16_t)(p + 15); q < 0xC000; q = (uint16_t)(q + 2)) {
+    if (size > 1024) return false;
+    uint16_t end = size;
+    for (uint16_t q = (uint16_t)(p + 15); q < 0xC000 && q < p + 15 + 64; q = (uint16_t)(q + 2))
         if (!prg_read(bank, q, &v) || v == 0) break;
-        if (v == V_GET) { prg_read(bank, (uint16_t)(q + 1), &off); break; }
+        else if (v == V_GET) prg_read(bank, (uint16_t)(q + 1), &off);
+    if (!off || off >= size) return false;
+    for (uint16_t q = (uint16_t)(p + 15); q < 0xC000 && q < p + 15 + 64; q = (uint16_t)(q + 2)) {
+        if (!prg_read(bank, q, &v) || v == 0) break;
+        if (prg_read(bank, (uint16_t)(q + 1), &o) && o > off && o < end) end = o;
     }
-    if (!off || size > 1024 || off >= size) return false;
     uint8_t olo = wram((uint16_t)(0x64F2 + slot)), ohi = wram((uint16_t)(0x64CF + slot));
-    for (uint16_t k = off; k + 1 < size; k++) {
-        uint8_t a, b, c = 0xFF;
+    for (uint16_t k = off; k + 1 < end; k++) {
+        uint8_t b[4] = { 0, 0, 0xFF, 0xFF };
         uint16_t q = (uint16_t)(p + k);
-        if (q + 2 >= 0xC000 || !prg_read(bank, q, &a) || !prg_read(bank, (uint16_t)(q + 1), &b)) break;
-        prg_read(bank, (uint16_t)(q + 2), &c);
-        if (a == 0xD0 && b == 0x09) return true;
-        if (a == 0x50 && b == olo && c == ohi) return true;
+        if (q + 1 >= 0xC000) break;
+        for (int i = 0; i < 4 && k + i < end && q + i < 0xC000; i++) prg_read(bank, (uint16_t)(q + i), &b[i]);
+        if (b[0] == 0xD0 && b[1] == 0x09) return true;
+        if (b[0] == 0x50 && b[1] == olo && b[2] == ohi) return true;
+        if (b[0] == 0x69 && b[3] == 0x00 && b[2] <= 0x02) return true;
+        if (b[0] == 0xE9 && b[1] == 0x09 && b[2] == 0x00) return true;
+        if (b[0] == 0x42 && b[1] == 0x74) return true;
+        if ((b[0] == 0x87 || b[0] == 0xC7) && b[1] == 0x09 && b[2] == 0xD7 && b[3] == 0x09) return true;
     }
     return false;
 }
@@ -552,7 +950,7 @@ static bool has_verb(const uint8_t *v, int n, uint8_t want) {
  * table (object number -> verb) for objects where it still picks wrong.
  * Overrides only apply if the object actually has that verb. */
 static const struct { uint16_t obj; uint8_t verb; } k_ctx_overrides[] = {
-    { 0x0036, V_PULL },   /* door mat: pull it to find the key */
+    { 0x0036, V_GET },    /* door mat: user choice (its GET is a joke reply; PULL finds the key) */
     { 0x0232, V_PULL },   /* bushes (front yard, hide the grating) */
     { 0x0115, V_PULL },   /* bushes (other side) */
 };
@@ -628,6 +1026,15 @@ static bool ctx_busy = false;
 static uint8_t preview_verb = 0x0D;
 static bool lmb_busy = false;
 
+static bool menu_input_busy(void) { return ctx_busy || lmb_busy; }
+
+static void after_state_load(void) {
+    /* A preview verb sitting in $611A must be one the preview logic knows
+     * it owns, else it would stick (and LMB would adopt it). */
+    uint8_t ca = wram(0x6120), sv = wram(0x611A);
+    preview_verb = ca != 1 ? sv : 0x0D;
+}
+
 /* Replay a verb-box click: what click_verb + the frame loop would set. */
 static void ctx_select_verb(uint8_t verb) {
     uint8_t *cv = cart_ram_byte(0x6121), *cvh = cart_ram_byte(0x6021);
@@ -654,6 +1061,8 @@ static uint8_t real_mouse_buttons(void) {
      * neither sees the press (points somewhere else entirely, e.g. the
      * window not actually owning the click at the OS level). */
     SDL_PumpEvents();
+    /* Escape menu open: no grab, no cursor writes, no input to the game. */
+    if (s_menu_open) return 0;
     int gx = 0, gy = 0;
     Uint32 buttons = SDL_GetGlobalMouseState(&gx, &gy);
     SDL_Window *win = find_game_window();
@@ -707,6 +1116,9 @@ static uint8_t real_mouse_buttons(void) {
                (have_focus && (focused_buttons & SDL_BUTTON(SDL_BUTTON_LEFT)));
     bool rmb = (buttons & SDL_BUTTON(SDL_BUTTON_RIGHT)) ||
                (have_focus && (focused_buttons & SDL_BUTTON(SDL_BUTTON_RIGHT)));
+    /* 2026-11-09: Escape menu open (or its activating press still held):
+     * the game gets no input at all. */
+    if (menu_blocks_input(lmb, rmb)) return 0;
     /* 2026-11-07: the Windows test PC reports RMB "acts as LMB" -- i.e. the context
      * action (A) is visibly happening but no cutscene/dialogue skip is.
      * Root cause: the held-frame A|Start combo makes A's visible effect
@@ -760,8 +1172,8 @@ static uint8_t real_mouse_buttons(void) {
         uint8_t *ov_hi = cart_ram_byte(0x6B07);
         uint8_t *exit_key = cart_ram_byte(0x6128);
         bool skippable = ov_lo && ov_hi && exit_key && (*ov_lo | *ov_hi) && *exit_key;
-        bool skip_req = rmb || keys[SDL_SCANCODE_SPACE] || keys[SDL_SCANCODE_RETURN] ||
-                        keys[SDL_SCANCODE_ESCAPE];
+        /* (Escape removed 2026-11-09: it opens the save/load menu now) */
+        bool skip_req = rmb || keys[SDL_SCANCODE_SPACE] || keys[SDL_SCANCODE_RETURN];
         /* Once a skip press has been sent, the same physical press must not
          * turn into Start/A when the cutscene ends under it (the edge from
          * $40 to $10 would latch a fresh Start on the next screen, e.g.
@@ -1084,13 +1496,38 @@ static int joypad_poll_hook(uint16_t addr) {
     return 1; /* handled: RTS-style return to $8322, the real call site's next instruction */
 }
 
+/* The game's own save routine ran (b00:$9659, SCUMM saveLoadGame's save
+ * branch; $96C3 is restore). Observe only: return 0 so the original body runs. The Escape
+ * menu code writes ManiacMansion.state once the game is back in play. */
+static int game_save_observer(uint16_t addr) {
+    (void)addr;
+    s_game_saved_frames = 0;
+    FILE *log = dbg_log();
+    if (log) { fprintf(log, "[menu] game's own save routine ran\n"); fflush(log); }
+    return 0;
+}
+
 NES_MOD_CONSTRUCTOR(register_mouse_cursor_hook) {
     nes_mod_register_function_entry_plugin(HOOK_ID, 0xFB68, joypad_poll_hook);
     nes_mod_register_function_entry_plugin(HOOK_ID_BANK0, 0x9EAB, joypad_poll_hook);
+    nes_mod_register_function_entry_plugin(HOOK_ID_GAME_SAVE, 0x9659, game_save_observer);
     /* RE experiments need stock $4016 polling so --input scripts drive the
      * real controller path; NESRECOMP_MOUSE_HOOK_DISABLE=1 leaves the hook
      * registered but inactive. Unset (the normal case) behaves as before. */
     int enabled = getenv("NESRECOMP_MOUSE_HOOK_DISABLE") ? 0 : 1;
     nes_mod_set_function_hook_enabled(HOOK_ID, enabled);
     nes_mod_set_function_hook_enabled(HOOK_ID_BANK0, enabled);
+    nes_mod_set_function_hook_enabled(HOOK_ID_GAME_SAVE, 1); /* observer only, always on */
 }
+
+/* 2026-11-09: the host-extras surface, for the Escape menu (SDL builds). */
+#ifdef CYC_WITH_SDL
+static const CycHostExtras s_extras = {
+    .present = menu_present,
+    .frame_end = menu_frame_end,
+    .event = menu_event,
+};
+const CycHostExtras *cyc_host_extras(void) { return &s_extras; }
+#else
+const CycHostExtras *cyc_host_extras(void) { return NULL; }
+#endif

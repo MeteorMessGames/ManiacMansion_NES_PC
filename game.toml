@@ -82,3 +82,17 @@ id = "maniac-mansion.mouse-cursor.joypad-read-bank0"
 addr = 0x9EAB
 length = 16
 crc32 = 0xE3F45C3D
+
+# 2026-11-09: observer (never handles the call) on the game's own SAVE
+# routine, b00:$9659: copies live game state ($6000, $0C01 bytes) into the
+# battery save area at $72DB and stores a checksum. Reached from SCUMM op
+# saveLoadGame (op_22 b0F:D551); the other branch, b00:$96C3, is RESTORE
+# (checks the checksum, copies $72DB back to $6000). The hook records that
+# the game saved so the Escape menu's single save file (ManiacMansion.state)
+# is refreshed too: newest save wins either way.
+# Bytes: A9 A8 85 19 A9 00 85 1A A9 FA 85 1B A9 6B 85 1C
+[[mod_function_hook]]
+id = "maniac-mansion.game-save-observer"
+addr = 0x9659
+length = 16
+crc32 = 0x914380F9
