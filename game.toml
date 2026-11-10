@@ -61,14 +61,24 @@ addr = 0xFB68
 length = 16
 crc32 = 0x5E74BE55
 
-# ATTEMPTED (2026-11-06, REVERTED same day): hooking a second joypad-poll
-# entry at $9EAB (PRG bank 0, called from $9E62/$9E88 -- the opening "tree
-# scene" house/moon/meteor shot) to try to make that screen skippable.
-# Reverted because it broke something that was already confirmed working --
-# Dave's opening dialogue stopped skipping once this second hook was added,
-# even though that dialogue is driven through the unrelated $FB68 copy.
-# Root cause not yet understood (maybe $9EAB is ALSO called from somewhere
-# in the dialogue path and the handled-RTS convention collides there, or
-# NESRecomp's cycle-accurate codegen does something bank-sensitive with two
-# live function hooks). Don't re-add this hook without figuring out the
-# actual collision first -- see [[project-maniac-mansion-nes-mouse]] memory.
+# RE-ATTEMPTED (2026-11-07): hooking a second joypad-poll entry at $9EAB
+# (PRG bank 0, called from $9E62/$9E88 -- the opening "tree scene"
+# house/moon/meteor shot) so that screen is skippable too. This was tried
+# and reverted on 2026-11-06 because it broke Dave's opening dialogue skip
+# (driven through the unrelated $FB68 copy) for an unknown reason. Retrying
+# now that the TCP-debug-server + real-xdotool-input testing pipeline
+# (see mmresume.md "Automation pipeline") makes it possible to actually
+# verify both halves live instead of shipping blind. $9EAB bytes confirmed
+# via direct ROM read (PRG offset 16+(0x9EAB-0x8000)=7867):
+#   A2 01 B5 02 95 04 A9 08 8D 4E 03 A9 01 8D 16 40
+#   LDX #$01 / LDA $02,X / STA $04,X / LDA #$08 / STA $034E / LDA #$01 / STA $4016
+# Structurally identical to $FB68's entry (same LDX/LDA/STA/LDA/STA/LDA/STA
+# shape, just a different bit-counter zero-page address: $034E here vs
+# $7221 for $FB68) -- a real JSR-reachable entry point (called from $9E62/
+# $9E88), not a mid-loop address, so the "handled"-return RTS-style pop is
+# the correct convention here too, same reasoning as $FB68's hook above.
+[[mod_function_hook]]
+id = "maniac-mansion.mouse-cursor.joypad-read-bank0"
+addr = 0x9EAB
+length = 16
+crc32 = 0xE3F45C3D

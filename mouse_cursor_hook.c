@@ -84,6 +84,7 @@
 #include "cpu6502.h"
 #include "cyc_core.h"
 #include "cyc_host_extras.h"
+#include "cyc_mod.h"
 #include <stdio.h>
 #include <stdlib.h>
 #ifdef CYC_WITH_SDL
@@ -102,6 +103,7 @@
 const CycHostExtras *cyc_host_extras(void) { return NULL; }
 
 #define HOOK_ID "maniac-mansion.mouse-cursor.joypad-read"
+#define HOOK_ID_BANK0 "maniac-mansion.mouse-cursor.joypad-read-bank0"
 
 /* Standard NES button bits, matching the assembled byte's layout. */
 #define BTN_A      0x80
@@ -392,13 +394,275 @@ static void click_watch_tick(FILE *log, uint8_t cur_buttons, uint8_t prev_button
     fflush(log);
 }
 
+/* ------------------------------------------------------------------------
+ * 2026-11-09: context-sensitive RMB (DOTT-style default verb).
+ *
+ * Reverse-engineered with nes-explorer (names from its labels.json) and
+ * verified live; addresses are for the prototype ROM only:
+ *   - SCUMM v2 vars live at $6100+n (lo) / $6000+n (hi). $611A = current
+ *     sentence verb, $611E/$611F = VIRT_MOUSE_X/Y.
+ *   - $711A = UI box under the cursor (ui_hit_test b00:944B); box 20 is the
+ *     room area.
+ *   - find_object (b0F:E1E6) walks the room's object slots 1..$63D9:
+ *     $63DA x, $63FD y, $6420 w, $6443 h (8px tiles; y compared as
+ *     VIRT_MOUSE_Y>>2), $65E7 flags (bit $20 untouchable, bit $80 state),
+ *     $6515 parent slot, $6538 required parent state.
+ *   - Room directory b0F:$DC95 + 4*room ($63C5): [bank, ?, base lo, base hi].
+ *     Each object's code is at base + word($65A1 + 2*slot); its verb table
+ *     starts at +15 as (verb, offset) pairs ending in 0.
+ *   - Verb ids (from the verb box values $6ACE): OPEN 01, CLOSE 02, GIVE 03,
+ *     TURN ON 04, TURN OFF 05, NEW KID 07, PUSH 09, PULL 0A, USE 0B,
+ *     READ 0C, GO TO 0D, GET 0E.
+ * RMB over the room: pick a verb the object actually handles, write it to
+ * $611A, and send A, so the game builds and runs "<verb> <object>" itself.
+ * ---------------------------------------------------------------------- */
+enum { V_OPEN = 0x01, V_CLOSE = 0x02, V_TURN_ON = 0x04, V_TURN_OFF = 0x05,
+       V_PUSH = 0x09, V_PULL = 0x0A, V_USE = 0x0B, V_READ = 0x0C,
+       V_GOTO = 0x0D, V_GET = 0x0E };
+#define ROOM_BOX 20
+#ifndef CTX_SETTLE_POLLS
+#define CTX_SETTLE_POLLS 4
+#endif
+#define PRG_BANKS 16
+
+static const uint8_t *prg_image(void) {
+    static uint8_t *img = NULL;
+    static bool tried = false;
+    if (!tried) {
+        tried = true;
+        size_t need = cyc_mod_copy_cart_payload(NULL, 0);
+        if (need >= (size_t)PRG_BANKS * 0x4000) {
+            img = (uint8_t *)malloc(need);
+            if (img && cyc_mod_copy_cart_payload(img, need) != need) { free(img); img = NULL; }
+        }
+    }
+    return img;
+}
+
+/* Byte at CPU addr with `bank` mapped at $8000 (fixed last bank at $C000). */
+static bool prg_read(unsigned bank, uint16_t addr, uint8_t *v) {
+    const uint8_t *img = prg_image();
+    if (!img || addr < 0x8000) return false;
+    size_t off = addr >= 0xC000 ? (size_t)(PRG_BANKS - 1) * 0x4000 + (addr - 0xC000)
+                                : (size_t)bank * 0x4000 + (addr - 0x8000);
+    if (bank >= PRG_BANKS) return false;
+    *v = img[off];
+    return true;
+}
+
+static uint8_t wram(uint16_t addr) {
+    uint8_t *p = cart_ram_byte(addr);
+    return p ? *p : 0;
+}
+
+/* Same algorithm as the ROM's find_object (b0F:E1E6). Returns slot or 0. */
+static int ctx_find_object_slot(uint8_t x, uint8_t vy) {
+    uint8_t y = (uint8_t)(vy >> 2);
+    int n = wram(0x63D9);
+    if (n > 34) n = 34;
+    for (int i = 1; i <= n; i++) {
+        if (wram(0x65E7 + i) & 0x20) continue;            /* untouchable */
+        int b = i, guard = 0;
+        bool visible = false;
+        for (;;) {                                         /* parent chain */
+            uint8_t need = wram(0x6538 + b);
+            int p = wram(0x6515 + b);
+            if (p == 0) { visible = true; break; }
+            if ((wram(0x65E7 + p) & 0x80) != need || ++guard > 34) break;
+            b = p;
+        }
+        if (!visible) continue;
+        uint8_t ox = wram(0x63DA + i), oy = wram(0x63FD + i);
+        uint8_t ow = wram(0x6420 + i), oh = wram(0x6443 + i);
+        if (ox <= x && (uint8_t)(ox + ow) > x && oy <= y && (uint8_t)(oy + oh) > y)
+            return i;
+    }
+    return 0;
+}
+
+/* Verbs in the object's verb table. Returns count (0 if unreadable). */
+/* Locate the object's code (OBCD) in PRG: bank and CPU address. */
+static bool ctx_object_code(int slot, uint8_t *bank_out, uint16_t *addr_out) {
+    uint8_t room = wram(0x63C5), bank, lo, hi;
+    if (!prg_read(PRG_BANKS - 1, (uint16_t)(0xDC95 + 4 * room), &bank) ||
+        !prg_read(PRG_BANKS - 1, (uint16_t)(0xDC97 + 4 * room), &lo) ||
+        !prg_read(PRG_BANKS - 1, (uint16_t)(0xDC98 + 4 * room), &hi)) return false;
+    uint8_t olo = wram((uint16_t)(0x65A1 + 2 * slot));
+    uint8_t ohi = wram((uint16_t)(0x65A2 + 2 * slot));
+    *bank_out = bank;
+    *addr_out = (uint16_t)(((hi << 8) | lo) + ((ohi << 8) | olo));
+    return *addr_out >= 0x8000 && *addr_out < 0xC000;
+}
+
+/* Does the object's GET script actually pick it up? Verb tables include
+ * joke handlers (GET door mat says "...leave it there."), so having a GET
+ * entry is not enough. Real pickups contain SCUMM v2 pickupObject: opcode
+ * $D0 with var $09 (VAR_ACTIVE_OBJECT1), or $50 + this object's number as a
+ * direct word (opcodes $50/$D0 share handler b0F:CB4B). Checked against
+ * room 01: key, stamps, package, contract, film = yes; door mat, bushes = no. */
+static bool ctx_get_picks_up(int slot) {
+    uint8_t bank, b0, b1, v, off = 0;
+    uint16_t p;
+    if (!ctx_object_code(slot, &bank, &p)) return false;
+    if (!prg_read(bank, p, &b0) || !prg_read(bank, (uint16_t)(p + 1), &b1)) return false;
+    uint16_t size = (uint16_t)(b0 | (b1 << 8));
+    for (uint16_t q = (uint16_t)(p + 15); q < 0xC000; q = (uint16_t)(q + 2)) {
+        if (!prg_read(bank, q, &v) || v == 0) break;
+        if (v == V_GET) { prg_read(bank, (uint16_t)(q + 1), &off); break; }
+    }
+    if (!off || size > 1024 || off >= size) return false;
+    uint8_t olo = wram((uint16_t)(0x64F2 + slot)), ohi = wram((uint16_t)(0x64CF + slot));
+    for (uint16_t k = off; k + 1 < size; k++) {
+        uint8_t a, b, c = 0xFF;
+        uint16_t q = (uint16_t)(p + k);
+        if (q + 2 >= 0xC000 || !prg_read(bank, q, &a) || !prg_read(bank, (uint16_t)(q + 1), &b)) break;
+        prg_read(bank, (uint16_t)(q + 2), &c);
+        if (a == 0xD0 && b == 0x09) return true;
+        if (a == 0x50 && b == olo && c == ohi) return true;
+    }
+    return false;
+}
+
+static int ctx_object_verbs(int slot, uint8_t *verbs, int max) {
+    uint8_t bank;
+    uint16_t p;
+    if (!ctx_object_code(slot, &bank, &p)) return 0;
+    p = (uint16_t)(p + 15);
+    int n = 0;
+    for (int k = 0; k < 32 && n < max; k++) {
+        uint8_t v;
+        if (p >= 0xC000 || !prg_read(bank, p, &v) || v == 0) break;
+        verbs[n++] = v;
+        p = (uint16_t)(p + 2);
+    }
+    return n;
+}
+
+static bool has_verb(const uint8_t *v, int n, uint8_t want) {
+    for (int i = 0; i < n; i++) if (v[i] == want) return true;
+    return false;
+}
+
+/* Pick the default verb. State bit $80 of the slot flags is the object's
+ * open/on state (same bit find_object's parent check uses); with both
+ * halves of a pair available, pick the one that changes the state. */
+/* Verb tables list every verb an object has ANY script for, joke replies
+ * included (the door mat has TURN ON and READ), so a pure "first verb"
+ * rule picks silly actions. Generic priority below, plus a small override
+ * table (object number -> verb) for objects where it still picks wrong.
+ * Overrides only apply if the object actually has that verb. */
+static const struct { uint16_t obj; uint8_t verb; } k_ctx_overrides[] = {
+    { 0x0036, V_PULL },   /* door mat: pull it to find the key */
+    { 0x0232, V_PULL },   /* bushes (front yard, hide the grating) */
+    { 0x0115, V_PULL },   /* bushes (other side) */
+};
+
+static uint8_t ctx_choose_verb(int slot, const uint8_t *v, int n) {
+    /* User rule: anything that can actually be picked up defaults to GET. */
+    if (has_verb(v, n, V_GET) && ctx_get_picks_up(slot)) return V_GET;
+    uint16_t obj = (uint16_t)((wram((uint16_t)(0x64CF + slot)) << 8) | wram((uint16_t)(0x64F2 + slot)));
+    for (size_t i = 0; i < sizeof k_ctx_overrides / sizeof k_ctx_overrides[0]; i++)
+        if (k_ctx_overrides[i].obj == obj && has_verb(v, n, k_ctx_overrides[i].verb))
+            return k_ctx_overrides[i].verb;
+    bool on = (wram((uint16_t)(0x65E7 + slot)) & 0x80) != 0;
+    if (has_verb(v, n, V_OPEN) && has_verb(v, n, V_CLOSE)) return on ? V_CLOSE : V_OPEN;
+    if (has_verb(v, n, V_OPEN)) return V_OPEN;
+    if (has_verb(v, n, V_PUSH)) return V_PUSH;
+    if (has_verb(v, n, V_PULL)) return V_PULL;
+    if (has_verb(v, n, V_TURN_ON) && has_verb(v, n, V_TURN_OFF)) return on ? V_TURN_OFF : V_TURN_ON;
+    if (has_verb(v, n, V_TURN_ON)) return V_TURN_ON;
+    if (has_verb(v, n, V_READ)) return V_READ;
+    if (has_verb(v, n, V_USE)) return V_USE;
+    if (has_verb(v, n, V_GET)) return V_GET;   /* joke GET: still better than nothing */
+    return V_GOTO;
+}
+
+/* Called on a fresh RMB press in gameplay. Returns the verb to select for
+ * the room object under the cursor, or 0 for "just a plain click" (not over
+ * the room, or nothing better than GO TO).
+ *
+ * Writing $611A alone is NOT enough (tested: the game still ran GO TO; $611A
+ * is only the displayed sentence verb). So the caller replays a real verb
+ * click instead: CLICK_VERB/CLICK_AREA + the run-input-script flag, exactly
+ * what click_verb (b00:91D2) + the frame loop do, lets script 4 select the
+ * verb itself; the A click on the object follows once $611A shows it. */
+static uint8_t ctx_rmb_pick(FILE *log, int *slot_out) {
+    uint8_t hover = wram(0x711A);
+    if (hover != ROOM_BOX) {
+        if (log) fprintf(log, "[ctx] hover box %u, not room: plain click\n", hover);
+        return 0;
+    }
+    uint8_t x = wram(0x611E), vy = wram(0x611F);
+    int slot = ctx_find_object_slot(x, vy);
+    if (slot_out) *slot_out = slot;
+    uint8_t verb = V_GOTO;
+    uint8_t verbs[32];
+    int n = 0;
+    if (slot) {
+        n = ctx_object_verbs(slot, verbs, 32);
+        verb = ctx_choose_verb(slot, verbs, n);
+    }
+    if (log) {
+        fprintf(log, "[ctx] vmouse=%u,%u slot=%d obj=$%02X%02X flags=$%02X verbs=",
+                x, vy, slot, slot ? wram(0x64CF + slot) : 0, slot ? wram(0x64F2 + slot) : 0,
+                slot ? wram(0x65E7 + slot) : 0);
+        for (int i = 0; i < n; i++) fprintf(log, "%02X ", verbs[i]);
+        fprintf(log, "-> verb $%02X\n", verb);
+    }
+    return verb == V_GOTO ? 0 : verb;
+}
+
+/* Is SCUMM script `num` running in any of the 20 slots? ($63A1 = script
+ * number, $633D = status, 0 = free; see start_script b0F:C582.) */
+static bool ctx_script_running(uint8_t num) {
+    for (int s = 0; s < 20; s++)
+        if (wram((uint16_t)(0x633D + s)) != 0 && wram((uint16_t)(0x63A1 + s)) == num) return true;
+    return false;
+}
+
+/* True while a context click is in flight (verb requested, object click
+ * pending/held); the sentence preview stays out of the way meanwhile. */
+static bool ctx_busy = false;
+/* Verb the sentence-line preview last wrote (V_GOTO = no preview showing),
+ * and whether an LMB click is being converted back to GO TO. */
+static uint8_t preview_verb = 0x0D;
+static bool lmb_busy = false;
+
+/* Replay a verb-box click: what click_verb + the frame loop would set. */
+static void ctx_select_verb(uint8_t verb) {
+    uint8_t *cv = cart_ram_byte(0x6121), *cvh = cart_ram_byte(0x6021);
+    uint8_t *ca = cart_ram_byte(0x6120), *cah = cart_ram_byte(0x6020);
+    uint8_t *run = cart_ram_byte(0x6CAC);
+    if (cv) *cv = verb;
+    if (cvh) *cvh = 0;
+    if (ca) *ca = 1;          /* CLICK_AREA = verb */
+    if (cah) *cah = 0;
+    if (run) *run = 1;        /* main loop: start script 4 (b0F:F803) */
+}
+
 static uint8_t real_mouse_buttons(void) {
+    /* 2026-11-07: SDL_GetGlobalMouseState() was reported not to see real LMB
+     * presses at all on at least one dev machine, while the focus-gated
+     * SDL_GetMouseState() a few lines below (used only for cursor position)
+     * tracked fine. SDL_GetGlobalMouseState() queries the OS cursor
+     * directly (GetCursorPos/XQueryPointer) and should NOT need the SDL
+     * event queue pumped to see button state -- but SDL_PumpEvents() is
+     * cheap and rules out any event-queue-starvation explanation outright.
+     * Also now logging SDL_GetMouseState()'s OWN button mask alongside the
+     * global one below so a future log can show directly whether the two
+     * calls simply disagree (that would nail the diagnosis) or whether
+     * neither sees the press (points somewhere else entirely, e.g. the
+     * window not actually owning the click at the OS level). */
+    SDL_PumpEvents();
     int gx = 0, gy = 0;
     Uint32 buttons = SDL_GetGlobalMouseState(&gx, &gy);
     SDL_Window *win = find_game_window();
     raise_once(win);
     sync_grab(win);
     apply_absolute_cursor(win);
+
+    int fmx = 0, fmy = 0;
+    Uint32 focused_buttons = SDL_GetMouseState(&fmx, &fmy);
 
     FILE *log = dbg_log();
     static uint32_t diag_n = 0;
@@ -407,11 +671,11 @@ static uint8_t real_mouse_buttons(void) {
         if (win) { SDL_GetWindowSize(win, &ww, &wh); SDL_GetWindowPosition(win, &wx, &wy); }
         uint16_t ya, xa;
         if (find_cursor_oam(&ya, &xa))
-            fprintf(log, "[diag] win=%p size=%dx%d pos=%d,%d global=%d,%d buttons=0x%x cursorXY=$%02X,$%02X (oam $%04X)\n",
-                (void*)win, ww, wh, wx, wy, gx, gy, buttons, *ram_byte(xa), *ram_byte(ya), ya);
+            fprintf(log, "[diag] win=%p size=%dx%d pos=%d,%d global=%d,%d buttons=0x%x focused_buttons=0x%x cursorXY=$%02X,$%02X (oam $%04X)\n",
+                (void*)win, ww, wh, wx, wy, gx, gy, buttons, focused_buttons, *ram_byte(xa), *ram_byte(ya), ya);
         else
-            fprintf(log, "[diag] win=%p size=%dx%d pos=%d,%d global=%d,%d buttons=0x%x cursorXY=<no $FA tile found>\n",
-                (void*)win, ww, wh, wx, wy, gx, gy, buttons);
+            fprintf(log, "[diag] win=%p size=%dx%d pos=%d,%d global=%d,%d buttons=0x%x focused_buttons=0x%x cursorXY=<no $FA tile found>\n",
+                (void*)win, ww, wh, wx, wy, gx, gy, buttons, focused_buttons);
         fflush(log);
     }
     diag_n++;
@@ -431,16 +695,49 @@ static uint8_t real_mouse_buttons(void) {
      * an exact-equality check); on subsequent held frames, fall back to
      * A|Start as before (preserves the already-confirmed-working
      * title-card/dialogue skip and ordinary RMB context-click). */
+    /* 2026-11-07: OR in SDL_GetMouseState()'s button bits too (only
+     * meaningful while this window actually has focus, same gate
+     * apply_absolute_cursor() already uses for position) as a real fallback,
+     * not just a diagnostic -- if SDL_GetGlobalMouseState() is the one
+     * failing to see the press on some setups, the focused call picks up
+     * the slack instead of leaving LMB/RMB dead there. */
+    bool have_focus = (SDL_GetMouseFocus() == win);
     uint8_t out = 0;
-    bool lmb = buttons & SDL_BUTTON(SDL_BUTTON_LEFT);
-    bool rmb = buttons & SDL_BUTTON(SDL_BUTTON_RIGHT);
-    static bool prev_rmb = false;
+    bool lmb = (buttons & SDL_BUTTON(SDL_BUTTON_LEFT)) ||
+               (have_focus && (focused_buttons & SDL_BUTTON(SDL_BUTTON_LEFT)));
+    bool rmb = (buttons & SDL_BUTTON(SDL_BUTTON_RIGHT)) ||
+               (have_focus && (focused_buttons & SDL_BUTTON(SDL_BUTTON_RIGHT)));
+    /* 2026-11-07: the Windows test PC reports RMB "acts as LMB" -- i.e. the context
+     * action (A) is visibly happening but no cutscene/dialogue skip is.
+     * Root cause: the held-frame A|Start combo makes A's visible effect
+     * (interact/advance-dialogue-one-line) dominate, while Start's actual
+     * skip apparently never lands -- the mouse_debug.log HOLD trace from
+     * that machine shows the button byte going 0x10 (Start alone, first
+     * frame) then usually 0x90 (A|Start) exactly as designed, so this isn't
+     * an input-delivery bug, it's that A|Start doesn't actually trigger
+     * this prototype ROM's skip the way the old (differently-built, never
+     * actually re-verified end to end) A|Start claim assumed. Decoupled:
+     * RMB is now a pure Start-only skip button on every frame, first press
+     * or held, no A at all -- isolates skip from the context-click entirely
+     * so it can be verified on its own, and LMB (already the context-click
+     * button) is unaffected. If skip still doesn't visibly happen after
+     * this, the problem isn't the button combo at all and needs tracing
+     * further (e.g. this skip-check genuinely needs the OLD held level each
+     * frame tested differently, or it isn't a simple "Start is set" test in
+     * every screen the user is testing against). */
     if (lmb) out |= BTN_A;
-    if (rmb) {
-        if (!prev_rmb) out |= BTN_START;        /* first frame: Start alone */
-        else out |= BTN_A | BTN_START;          /* held: A + Start */
+    /* 2026-11-09: RMB = Start (skip) only during the pre-game screens
+     * (logo/credits/title) before the cursor sprite has EVER been visible.
+     * Once the cursor has appeared (new-game menu onward) the latch
+     * `game_started` stays set for the process lifetime and RMB is always A:
+     * Start in gameplay opens the save menu, and A advances/skips Dave's
+     * dialogue. Keyboard Enter/Space still send Start explicitly. */
+    static bool game_started = false;
+    {
+        uint16_t cya, cxa;
+        if (find_cursor_oam(&cya, &cxa) && *ram_byte(cya) < 0xEF) game_started = true;
     }
-    prev_rmb = rmb;
+    if (rmb) out |= game_started ? BTN_A : BTN_START;
 
     /* Space also sends Start (cutscene skip) -- for fast iteration while
      * testing, so skipping doesn't require chasing the grabbed/confined
@@ -448,6 +745,182 @@ static uint8_t real_mouse_buttons(void) {
     const uint8_t *keys = SDL_GetKeyboardState(NULL);
     if (keys[SDL_SCANCODE_SPACE]) out |= BTN_START;
     if (keys[SDL_SCANCODE_RETURN]) out |= BTN_START; /* Enter == Start, for now */
+
+    /* 2026-11-09: cutscene skip, root-caused with nes-explorer + live RAM.
+     * The ROM's key handler (b0F:F7B1) skips a cutscene only when the latched
+     * key byte ($2F) EQUALS the SCUMM var CUTSCENE_EXIT_KEY ($6128, which the
+     * game sets to $40 = B) AND the cutscene's override pointer ($6B06/$6B07)
+     * is non-zero. We used to send Start ($10), which the game just treats as
+     * a keypress, so the tree scene and Dave's yard speech never skipped even
+     * though both set an override. While an override is armed, RMB / Enter /
+     * Space / Esc send exactly the exit key (alone, so the equality holds).
+     * Outside cutscenes nothing changes. */
+    {
+        uint8_t *ov_lo = cart_ram_byte(0x6B06);
+        uint8_t *ov_hi = cart_ram_byte(0x6B07);
+        uint8_t *exit_key = cart_ram_byte(0x6128);
+        bool skippable = ov_lo && ov_hi && exit_key && (*ov_lo | *ov_hi) && *exit_key;
+        bool skip_req = rmb || keys[SDL_SCANCODE_SPACE] || keys[SDL_SCANCODE_RETURN] ||
+                        keys[SDL_SCANCODE_ESCAPE];
+        /* Once a skip press has been sent, the same physical press must not
+         * turn into Start/A when the cutscene ends under it (the edge from
+         * $40 to $10 would latch a fresh Start on the next screen, e.g.
+         * pressing START on character select). Swallow it until release. */
+        static bool skip_held = false;
+        if (!skip_req) skip_held = false;
+        if (skip_req && (skippable || skip_held)) {
+            out &= (uint8_t)~(BTN_A | BTN_B | BTN_SELECT | BTN_START);
+            if (skippable) {
+                out |= *exit_key;
+                skip_held = true;
+                if (log) fprintf(log, "[skip] override=$%02X%02X exit_key=$%02X -> out=$%02X\n",
+                                 *ov_hi, *ov_lo, *exit_key, out);
+            }
+        }
+    }
+
+    /* 2026-11-09: context RMB. On a fresh RMB press in gameplay that is still
+     * going out as A (i.e. not consumed by the cutscene skip above), preset
+     * the sentence verb for the object under the cursor. See ctx_rmb_apply. */
+    {
+        /* 0 idle, 1 verb requested (A held back), 2 A sent, swallow until release */
+        static int ctx_state = 0, ctx_wait = 0;
+        static uint8_t ctx_verb = 0;
+        static int ctx_slot = 0;
+        static bool prev_rmb = false;
+        if (ctx_state == 0 && rmb && !prev_rmb && game_started && (out & BTN_A)) {
+            uint8_t v = ctx_rmb_pick(log, &ctx_slot);
+            if (v) {
+                ctx_select_verb(v);
+                ctx_verb = v;
+                ctx_state = 1;
+                ctx_wait = 0;
+            }
+        }
+        if (ctx_state == 1) {
+            uint8_t *run = cart_ram_byte(0x6CAC);
+            /* Wait for script 4 to FINISH the verb selection: clicking the
+             * object while it still runs restarts it and the selection is
+             * lost (tested: $611A showed the verb after 2 polls, but the
+             * object click still ran GO TO). */
+            static int settle = 0;
+            bool ready = wram(0x611A) == ctx_verb && run && *run != 1 &&
+                         !ctx_script_running(4);
+            if (!ready) settle = 0;
+            else if (settle < CTX_SETTLE_POLLS) { settle++; ready = false; }
+            if (ready || ++ctx_wait > 120) {
+                settle = 0;
+                /* Selecting a verb clears the sentence object ($611B); the
+                 * game's hover logic only refills it when the hovered object
+                 * CHANGES, and the cursor hasn't moved, so the click would
+                 * land with no object and do nothing (tested). Put the
+                 * object back the way hovering would. */
+                uint8_t *olo = cart_ram_byte(0x611B), *ohi = cart_ram_byte(0x601B);
+                if (olo) *olo = wram((uint16_t)(0x64F2 + ctx_slot));
+                if (ohi) *ohi = wram((uint16_t)(0x64CF + ctx_slot));
+                out |= BTN_A;                 /* the object click */
+                ctx_state = 2;
+                if (log) fprintf(log, "[ctx] verb $%02X %s after %d polls, clicking object\n",
+                                 ctx_verb, ready ? "selected" : "TIMEOUT", ctx_wait);
+            } else {
+                out &= (uint8_t)~BTN_A;
+            }
+        } else if (ctx_state == 2) {
+            if (rmb) out &= (uint8_t)~BTN_A;  /* no second edge while held */
+            else ctx_state = 0;
+        }
+        prev_rmb = rmb;
+        ctx_busy = ctx_state != 0;
+    }
+
+    /* 2026-11-09: LMB on an object stays GO TO (user choice, DOTT-style).
+     * The preview below makes the game adopt the shown verb (tested: LMB on
+     * the sign ran READ while "READ SIGN" was showing), so on a fresh LMB
+     * while a preview is up: put GO TO back, force the hover redraw, hold
+     * the click until the hover script has redrawn ($61D8/$61D9 no longer
+     * our $FF), then send it. Preview stays paused until LMB is released. */
+    {
+        static int lmb_state = 0, lmb_wait = 0;
+        static bool prev_lmb = false;
+        uint8_t *sv = cart_ram_byte(0x611A);
+        uint8_t *h8 = cart_ram_byte(0x61D8), *h9 = cart_ram_byte(0x61D9);
+        if (lmb_state == 0 && lmb && !prev_lmb && game_started && !ctx_busy && (out & BTN_A) &&
+            sv && h8 && h9 && preview_verb != V_GOTO && *sv == preview_verb) {
+            *sv = V_GOTO;
+            *h8 = 0xFF;
+            *h9 = 0xFF;
+            preview_verb = V_GOTO;
+            lmb_state = 1;
+            lmb_wait = 0;
+            if (log) fprintf(log, "[lmb] preview cleared, GO TO before click\n");
+        }
+        if (lmb_state == 1) {
+            bool redrawn = h8 && h9 && *h8 != 0xFF && *h9 != 0xFF;
+            if (redrawn || ++lmb_wait > 30) {
+                out |= BTN_A;
+                lmb_state = 2;
+                if (log) fprintf(log, "[lmb] click after %d polls%s\n", lmb_wait, redrawn ? "" : " (TIMEOUT)");
+            } else {
+                out &= (uint8_t)~BTN_A;
+            }
+        } else if (lmb_state == 2) {
+            if (lmb) out &= (uint8_t)~BTN_A;   /* one click per press */
+            else lmb_state = 0;
+        }
+        prev_lmb = lmb;
+        lmb_busy = lmb_state != 0;
+    }
+
+    /* 2026-11-09: sentence-line preview of the RMB verb. While hovering a
+     * room object with no verb picked (sentence verb is GO TO, or our own
+     * previous preview), show "<context verb> <object>" so the player sees
+     * what RMB will do. $611A is display-only (writing it does not change
+     * what LMB executes - tested), but the line is only redrawn by the
+     * hover script's drawSentence (opcode $AC) when the hovered object
+     * changes, so we also clear its last-hovered var $61D9 to force that.
+     * Skipped while a verb was explicitly clicked (CLICK_AREA $6120 == 1),
+     * during a context click in progress, and outside gameplay/cutscenes. */
+    {
+        uint8_t *sv = cart_ram_byte(0x611A);
+        uint8_t *ov_lo = cart_ram_byte(0x6B06), *ov_hi = cart_ram_byte(0x6B07);
+        bool cutscene = ov_lo && ov_hi && (*ov_lo | *ov_hi);
+        if (sv && game_started && !cutscene && !ctx_busy && !lmb_busy && wram(0x6120) != 1 &&
+            (*sv == V_GOTO || *sv == preview_verb)) {
+            uint8_t want = V_GOTO;
+            if (wram(0x711A) == ROOM_BOX) {
+                int slot = ctx_find_object_slot(wram(0x611E), wram(0x611F));
+                if (slot) {
+                    uint8_t verbs[32];
+                    int n = ctx_object_verbs(slot, verbs, 32);
+                    want = ctx_choose_verb(slot, verbs, n);
+                }
+            }
+            if (want != *sv) {
+                *sv = want;
+                /* force the hover redraw: the hover script keeps the last
+                 * hovered object in vars $D8/$D9 (both seen tracking it) */
+                uint8_t *h8 = cart_ram_byte(0x61D8), *h9 = cart_ram_byte(0x61D9);
+                /* $FF never matches (0 would match "nothing hovered") */
+                if (h8) *h8 = 0xFF;
+                if (h9) *h9 = 0xFF;
+                if (log) fprintf(log, "[preview] sentence verb -> $%02X\n", want);
+            }
+            preview_verb = want;
+        }
+    }
+
+    /* 2026-11-07: live report -- in-game cursor sprite tracks the real
+     * mouse fine (confirms SDL_GetMouseState/window focus are all good),
+     * but LMB clicks never register at all (confirms SDL_GetGlobalMouseState
+     * -- the separate, focus-independent query used for buttons -- isn't
+     * seeing the press on this machine/setup, even though position tracking
+     * via the focus-gated SDL_GetMouseState a few lines up works every
+     * frame). Root cause not chased further; added Z as a keyboard-driven
+     * stand-in for BTN_A (matches common NES-emulator-on-keyboard
+     * convention) so the character-select screen -- and anything else
+     * gated on A -- is reachable regardless of that bug. */
+    if (keys[SDL_SCANCODE_Z]) out |= BTN_A;
+    if (keys[SDL_SCANCODE_TAB] || keys[SDL_SCANCODE_S]) out |= BTN_SELECT; /* RE aid: Select */
 
     /* 2026-11-06: D-pad was defined (BTN_UP/DOWN/LEFT/RIGHT) but never
      * wired to any input source -- this mod only ever drove A/B/Start.
@@ -465,6 +938,20 @@ static uint8_t real_mouse_buttons(void) {
     if (keys[SDL_SCANCODE_DOWN])  out |= BTN_DOWN;
     if (keys[SDL_SCANCODE_LEFT])  out |= BTN_LEFT;
     if (keys[SDL_SCANCODE_RIGHT]) out |= BTN_RIGHT;
+
+    /* 2026-11-07: TEMP diagnostic -- isolate whether SDL is even seeing
+     * synthetic arrow-key presses at all (vs. the game logic not reacting
+     * to a real $02 d-pad bit). Logs any frame where any arrow/Z scancode
+     * reads true. Remove once the live-arrow-key regression is understood. */
+    if (log && (keys[SDL_SCANCODE_UP] || keys[SDL_SCANCODE_DOWN] ||
+                keys[SDL_SCANCODE_LEFT] || keys[SDL_SCANCODE_RIGHT] ||
+                keys[SDL_SCANCODE_Z])) {
+        fprintf(log, "[keydiag] U=%d D=%d L=%d R=%d Z=%d out=0x%02x focus=%d\n",
+            keys[SDL_SCANCODE_UP], keys[SDL_SCANCODE_DOWN],
+            keys[SDL_SCANCODE_LEFT], keys[SDL_SCANCODE_RIGHT],
+            keys[SDL_SCANCODE_Z], out, have_focus);
+        fflush(log);
+    }
 
     static uint8_t prev_out = 0;
     click_watch_tick(log, out, prev_out);
@@ -559,21 +1046,51 @@ static int joypad_poll_hook(uint16_t addr) {
 
     uint8_t *lower = ram_byte(0x002F);
     uint8_t *upper = cart_ram_byte(0x710E);
-    *lower = (uint8_t)(pressed_edge & (BTN_B | BTN_SELECT | BTN_START));
-    if (upper) *upper = (uint8_t)(pressed_edge & BTN_A);
+    /* 2026-11-09: match the ROM exactly (b0F:FB90-FBAD): on a rising edge it
+     * stores the held B/Select/Start bits into $2F (and A into $710E) and
+     * otherwise LEAVES THE LATCH ALONE; the consumers read-and-clear it
+     * (read_clear_key_latch b0F:FBB7, read_clear_A_latch b0F:FBAE). We used
+     * to write the edge value every poll, i.e. 0 on every frame after the
+     * press, which erased presses before slow consumers (the main loop
+     * during cutscenes) ever saw them: cutscene skip never landed, and
+     * clicks were flaky. */
+    if (pressed_edge & (BTN_B | BTN_SELECT | BTN_START))
+        *lower = (uint8_t)(cur & (BTN_B | BTN_SELECT | BTN_START));
+    if (upper && (pressed_edge & BTN_A))
+        *upper = (uint8_t)(cur & BTN_A);
 
+    /* 2026-11-07: this used to only go to stderr, which a Windows GUI build
+     * has nowhere to send -- made it invisible in mouse_debug.log, so there
+     * was no way to tell whether the $9EAB bank-0 site was ever actually
+     * firing (vs. silently CRC-mismatching in cyc_hooks_fire()'s holds()
+     * check, e.g. because a different bank is swapped into $8000-$BFFF at
+     * that PC on the real call path) or just never being reached. Mirror
+     * into dbg_log() too, with a separate fire count per hook address so the
+     * two sites don't get confused in one counter. */
+    static uint32_t fire_count_fb68 = 0, fire_count_9eab = 0;
+    uint32_t *site_count = (addr == 0x9EAB) ? &fire_count_9eab : &fire_count_fb68;
     if (fire_count < 10 || *ram_byte(0x02) != 0) {
         fprintf(stderr, "[mouse-cursor] poll #%u at $%04X -> pad1=$%02X pad2=$%02X\n",
             fire_count, addr, *ram_byte(0x02), *ram_byte(0x03));
     }
+    FILE *log = dbg_log();
+    if (log && (*site_count < 10 || (*site_count % 300) == 0 || *ram_byte(0x02) != 0)) {
+        fprintf(log, "[mouse-cursor] poll #%u at $%04X -> pad1=$%02X pad2=$%02X\n",
+            *site_count, addr, *ram_byte(0x02), *ram_byte(0x03));
+        fflush(log);
+    }
+    (*site_count)++;
     fire_count++;
     return 1; /* handled: RTS-style return to $8322, the real call site's next instruction */
 }
 
 NES_MOD_CONSTRUCTOR(register_mouse_cursor_hook) {
     nes_mod_register_function_entry_plugin(HOOK_ID, 0xFB68, joypad_poll_hook);
+    nes_mod_register_function_entry_plugin(HOOK_ID_BANK0, 0x9EAB, joypad_poll_hook);
     /* RE experiments need stock $4016 polling so --input scripts drive the
      * real controller path; NESRECOMP_MOUSE_HOOK_DISABLE=1 leaves the hook
      * registered but inactive. Unset (the normal case) behaves as before. */
-    nes_mod_set_function_hook_enabled(HOOK_ID, getenv("NESRECOMP_MOUSE_HOOK_DISABLE") ? 0 : 1);
+    int enabled = getenv("NESRECOMP_MOUSE_HOOK_DISABLE") ? 0 : 1;
+    nes_mod_set_function_hook_enabled(HOOK_ID, enabled);
+    nes_mod_set_function_hook_enabled(HOOK_ID_BANK0, enabled);
 }
