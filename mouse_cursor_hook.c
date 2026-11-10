@@ -89,6 +89,10 @@
 #include "cyc_session.h"
 #include "cyc_overlay.h"
 #include "menu_render.h"
+#include "crt_filter.h"
+#include "crt_gpu.h"
+#include "cyc_render.h"
+#include "cyc_video.h"
 #include <sys/stat.h>
 #include <time.h>
 #include <stdio.h>
@@ -114,6 +118,7 @@
 #define HOOK_ID "maniac-mansion.mouse-cursor.joypad-read"
 #define HOOK_ID_BANK0 "maniac-mansion.mouse-cursor.joypad-read-bank0"
 #define HOOK_ID_GAME_SAVE "maniac-mansion.game-save-observer"
+#define HOOK_ID_UNCLAMP "maniac-mansion.cursor-unclamp"
 
 /* Standard NES button bits, matching the assembled byte's layout. */
 #define BTN_A      0x80
@@ -264,6 +269,30 @@ static void sync_grab(SDL_Window *win) {
     s_grabbed = focused;
 }
 
+enum { DI_MUSIC, DI_SFX, DI_FULLSCREEN, DI_FILTER, DI_SCALE, DI_BACK, DI_COUNT };
+/* 2026-11-10 (user): only Sharp and CRT. Sharp is pixel-perfect: the largest
+ * whole-number scale that fits (6x on 1440p, 4x on 1080p). Smooth and CRT
+ * Curved were removed; config values 1 (Smooth) / 3 (CRT Curved) load as
+ * Sharp / CRT. Saved as 0 = Sharp, 2 = CRT (the old numbers). */
+enum { FILTER_SHARP, FILTER_CRT, FILTER_COUNT };
+static const char *const k_filter_names[FILTER_COUNT] = { "Sharp", "CRT" };
+static int  s_filter = FILTER_SHARP;
+static int  s_music_vol = 100, s_sfx_vol = 100;   /* percent, steps of 5 */
+static int  s_vol_drag = -1;                      /* volume row being dragged */
+static int  s_vol_req_row = -1, s_vol_req_value = 0;   /* queued from events */
+static bool s_display_inited = false;
+static bool s_req_filter_cycle = false;
+/* 2026-11-10 (user): Sharp scale choice. 0 = Auto (largest whole scale that
+ * fits), else a fixed 2x..6x; a fixed scale that doesn't fit the screen uses
+ * Auto's. Saved as [Game] Scale. CRT always fills the window (ignores it). */
+static int  s_scale = 0;
+static int  s_scale_req_dir = 0;                  /* queued from events */
+/* what the last present handed the host, for mapping the mouse back */
+enum { PRES_HOST, PRES_CANVAS, PRES_CRT, PRES_MENU };
+static int  s_pres_kind = PRES_HOST;
+static int  s_pres_w = 256, s_pres_h = 240;    /* the picture (logical) size */
+static int  s_pres_cw = 256;                   /* the game canvas width under it */
+
 /* Manual letterbox math (scale = min(w/256,h/240), center offset) was
  * wrong in practice (2026-11-06 report: "cursor moves but not accurately")
  * -- SDL_WINDOW_ALLOW_HIGHDPI means SDL_GetWindowSize() returns logical
@@ -275,6 +304,99 @@ static void sync_grab(SDL_Window *win) {
  * SDL_RenderWindowToLogical (SDL >= 2.0.18, present in this project's
  * bundled headers) does this conversion internally using the renderer's
  * own actual state, so it's used instead of hand-rolled math. */
+/* 2026-11-10: keep the mouse inside the game picture (user: "only go to
+ * edge of graphics window, not beyond"): the black bars around the picture
+ * (fullscreen / resized window) are out of bounds. Window coordinates of
+ * the presented picture's game area, applied with SDL_SetWindowMouseRect
+ * while the game owns the mouse; cleared while the Esc menu is open. */
+static SDL_Rect s_confine = { 0, 0, 0, 0 };
+static bool     s_confined = false;
+
+static void confine_clear(SDL_Window *win) {
+    if (s_confined && win) SDL_SetWindowMouseRect(win, NULL);
+    s_confined = false;
+}
+
+static void confine_mouse(SDL_Window *win) {
+    if (!win) return;
+    SDL_Renderer *ren = SDL_GetRenderer(win);
+    if (!ren || !s_grabbed || s_pres_kind == PRES_MENU) { confine_clear(win); return; }
+    float x0 = 0, y0 = 0, w = (float)s_pres_w, h = (float)s_pres_h;
+    if (s_pres_kind == PRES_CRT) {
+        /* the CRT picture fits the game canvas into the window picture */
+        float sc = (float)s_pres_w / s_pres_cw < (float)s_pres_h / 240.0f ? (float)s_pres_w / s_pres_cw
+                                                                         : (float)s_pres_h / 240.0f;
+        w = s_pres_cw * sc;
+        h = 240.0f * sc;
+        x0 = ((float)s_pres_w - w) / 2;
+        y0 = ((float)s_pres_h - h) / 2;
+    }
+    int ax, ay, bx, by;
+    SDL_RenderLogicalToWindow(ren, x0, y0, &ax, &ay);
+    SDL_RenderLogicalToWindow(ren, x0 + w, y0 + h, &bx, &by);
+    SDL_Rect r = { ax, ay, bx - ax, by - ay };
+    if (r.w <= 0 || r.h <= 0) { confine_clear(win); return; }
+    /* Windows drops the cursor clip on some events (seen on the Windows test PC: the
+     * pointer reached x 3765, the next monitor), so re-apply it every 30
+     * calls even when the rect is unchanged */
+    static int refresh = 0;
+    bool same = s_confined && r.x == s_confine.x && r.y == s_confine.y && r.w == s_confine.w && r.h == s_confine.h;
+    if (same && ++refresh < 30) return;
+    refresh = 0;
+    if (SDL_SetWindowMouseRect(win, &r) == 0) { s_confine = r; s_confined = true; }
+}
+
+/* Backstop, every frame: if the pointer is outside the picture anyway, put
+ * it back on the nearest edge (global coordinates, so it also catches a
+ * pointer that already left the window). */
+static void confine_warp_back(SDL_Window *win) {
+    if (!win || !s_confined || !(SDL_GetWindowFlags(win) & SDL_WINDOW_INPUT_FOCUS)) return;
+    int wx = 0, wy = 0, gx = 0, gy = 0;
+    SDL_GetWindowPosition(win, &wx, &wy);
+    SDL_GetGlobalMouseState(&gx, &gy);
+    int x0 = wx + s_confine.x, y0 = wy + s_confine.y;
+    int x1 = x0 + s_confine.w - 1, y1 = y0 + s_confine.h - 1;
+    int nx = gx < x0 ? x0 : gx > x1 ? x1 : gx;
+    int ny = gy < y0 ? y0 : gy > y1 ? y1 : gy;
+    if (nx != gx || ny != gy) SDL_WarpMouseGlobal(nx, ny);
+}
+
+/* 2026-11-10: the room's drawn extent on screen. At the end of a scrolling
+ * room the view runs past the room (the yard at its right end shows one blank
+ * 8-px column), so the cursor must not go there (user: mouse went past the
+ * play window on scrolling screens, side depending on direction). From the
+ * frame the PPU drew: room-band lines (nametable rows 4-19, the lower
+ * nametables folded back, vertical mirroring), their scroll X, and the room
+ * width ($63B5; room column s = nametable column s+2). */
+static uint8_t wram(uint16_t addr);
+static bool room_extent(int *y0, int *y1, int *x0, int *x1) {
+    if (!wram(0x6D41)) return false;               /* no room/UI split: not a room */
+    int width = wram(0x63B5);
+    if (width < 1 || width > 62) return false;
+    int first = -1, last = -1, sx = 0;
+    bool clip = false;
+    for (int y = 0; y < 240; y++) {
+        uint8_t mask = cyc_render_line_mask(y);
+        if (!(mask & 0x08)) continue;
+        int sy = cyc_render_line_scroll_y(y);
+        if (sy >= 240) sy -= 240;
+        if (sy >= 240 || (sy >> 3) < 4 || (sy >> 3) > 19) continue;
+        if (first < 0) { first = y; sx = cyc_render_line_scroll_x(y); clip = !(mask & 0x02); }
+        last = y;
+    }
+    if (first < 0) return false;
+    int l = 16 - sx, r = (width + 2) * 8 - sx;
+    if (clip && l < 8) l = 8;
+    *x0 = l < 0 ? 0 : l;
+    *x1 = (r > 256 ? 256 : r) - 1;
+    *y0 = first;
+    *y1 = last;
+    return *x1 > *x0;
+}
+
+static uint8_t s_unclamp_x, s_unclamp_y;
+static bool    s_unclamp_on = false;   /* mouse is driving the cursor */
+
 static void apply_absolute_cursor(SDL_Window *win) {
     if (!s_cursor_hidden) {
         SDL_ShowCursor(SDL_DISABLE); /* the game draws its own cursor sprite */
@@ -335,10 +457,38 @@ static void apply_absolute_cursor(SDL_Window *win) {
 
     float lx = 0.0f, ly = 0.0f;
     SDL_RenderWindowToLogical(ren, mx, my, &lx, &ly);
+    /* 2026-11-10: logical space is the presented picture: the game canvas
+     * (wide when widescreen is on), or the CRT filter's window-resolution
+     * picture. Map back to the canvas, then to native columns. */
+    if (s_pres_kind == PRES_CRT) {
+        float cx = 0, cy = 0;
+        crt_map_point(s_pres_w, s_pres_h, s_pres_cw, 240, false, lx, ly, &cx, &cy);
+        lx = cx;
+        ly = cy;
+    }
+    if (s_pres_cw > 256) {
+        int ly_i = (int)ly;
+        (void)ly_i;
+        lx -= (float)((s_pres_cw - 256) / 2);
+    }
+    /* 2026-11-10: full screen reach (user). The game clamps the cursor to
+     * X 16..239 / Y 35..222 every frame in cursor_move_dpad; the
+     * cursor-unclamp hook at $9539 restores these values right after.
+     * Y stops at 238: a sprite at 239+ is hidden. */
     if (lx < 0) lx = 0; else if (lx > 255) lx = 255;
-    if (ly < 0) ly = 0; else if (ly > 239) ly = 239;
+    if (ly < 0) ly = 0; else if (ly > 238) ly = 238;
+    {   /* over the room: stay on the room's drawn columns */
+        int ry0, ry1, rx0, rx1;
+        if (room_extent(&ry0, &ry1, &rx0, &rx1) && ly >= ry0 && ly <= ry1) {
+            if (lx < rx0) lx = (float)rx0;
+            if (lx > rx1) lx = (float)rx1;
+        }
+    }
     *src_x = (uint8_t)lx;
     *src_y = (uint8_t)ly;
+    s_unclamp_x = (uint8_t)lx;
+    s_unclamp_y = (uint8_t)ly;
+    s_unclamp_on = true;
 }
 
 /* ------------------------------------------------------------------------
@@ -350,9 +500,8 @@ static void apply_absolute_cursor(SDL_Window *win) {
  *   - Opening takes an in-memory save state (cyc_state_save). The machine
  *     keeps running behind the menu with all input withheld; RESUME (or
  *     Escape) restores the snapshot, so the game is effectively paused.
- *   - SAVE GAME writes that snapshot (the moment the menu opened) to
- *     <exe dir>/ManiacMansion.state via cyc_state_save_file (atomic).
- *   - LOAD GAME loads that file and closes the menu.
+ *   - Save State / Load State open a slot list (6 slots,
+ *     with screenshots); see the slot notes below.
  * A save state belongs to the exact executable that wrote it (cyc_state.h):
  * a different build refuses it, reported as "different version". The
  * game's own Start-menu battery save is unaffected and survives updates.
@@ -363,31 +512,133 @@ static uint8_t wram(uint16_t addr);   /* defined with the context-RMB code */
 /* PCSX2-style pause sidebar (user choice): translucent panel down the left,
  * game lightly dimmed on the right, anti-aliased TrueType text rendered at
  * the window's real resolution (menu_render.c). */
-enum { MI_RESUME, MI_SAVE, MI_LOAD, MI_EXIT, MI_COUNT };
-static const char *const k_menu_rows[MI_COUNT] = { "Resume Game", "Save State", "Load State", "Exit Game" };
+enum { MI_RESUME, MI_SAVE, MI_LOAD, MI_DISPLAY, MI_EXIT, MI_COUNT };
+static const char *const k_menu_rows[MI_COUNT] = { "Resume Game", "Save State", "Load State", "Options", "Exit Game" };
+
+/* 2026-11-10: display options (Display sub-menu, F9 filter, F10 widescreen,
+ * F11 fullscreen via the host). Filters: Sharp = nearest + integer scale,
+ * Smooth = linear, CRT / CRT Curved = crt_filter.c at window resolution. */
+
+
+/* 2026-11-09: multiple save slots (user request), slots 1..6. The game's
+ * own Start-menu save also writes the most recently saved slot
+ * (follow_game_save; Slot 1 if none yet). Each slot = <exe dir>/ManiacMansion.<name>.state (cyc_state file)
+ * plus a .thumb sidecar (screenshot shown in the slot list). The old
+ * single-file ManiacMansion.state is no longer used (any snapshot only
+ * loads in the exe that wrote it anyway). */
+enum { MODE_MAIN, MODE_SAVE, MODE_LOAD, MODE_DISPLAY };
+#define NUM_SLOTS 6
+#define THUMB_W 128
+#define THUMB_H 120
+typedef struct {
+    bool     used;
+    time_t   mtime;
+    bool     thumb_ok;
+    uint32_t thumb[THUMB_W * THUMB_H];
+} SlotInfo;
+static SlotInfo s_slots[NUM_SLOTS + 1];
 
 static int      s_game_saved_frames = -1;  /* -1 idle, else frames since the game's own save */
-static int      s_toast_frames = 0;        /* "SAVE FILE UPDATED" banner countdown */
+static int      s_toast_frames = 0;        /* "SAVED TO SLOT N" banner countdown */
+static char     s_toast_text[32] = "";
+static int      s_game_thumb_frames = -1;  /* frames until the game-save slot's screenshot is taken */
+static int      s_game_thumb_slot = 0;
 static bool     s_menu_open = false;
 static bool     s_menu_guard = false;          /* swallow input until all released */
+static int      s_menu_mode = MODE_MAIN;
 static int      s_menu_sel = 0;
 static int      s_menu_hover = -1;             /* row under the mouse, or -1 */
+static int      s_confirm_slot = -1;           /* occupied slot armed for overwrite */
 static uint8_t *s_menu_snap = NULL;
 static size_t   s_menu_snap_len = 0;
-static uint32_t s_menu_frozen[MENU_W * MENU_H];
-static uint32_t s_menu_pic[MENU_W * MENU_H];   /* 256x240 toast picture */
+static uint32_t s_menu_frozen[CYC_VIDEO_MAX_WIDTH * MENU_H];   /* game canvas at open */
+static int      s_frozen_w = MENU_W;
+static uint64_t s_frozen_gen = 0;              /* bumps when s_menu_frozen changes */
+static uint32_t s_menu_native[MENU_W * MENU_H];  /* native frame at open (thumbnails) */
+static uint32_t s_wide_copy[CYC_VIDEO_MAX_WIDTH * MENU_H];     /* canvas + toast */
+static uint32_t *s_crt_pic = NULL;             /* CRT output at window resolution */
+static size_t   s_crt_cap = 0;
 static uint32_t *s_hi_pic = NULL;              /* window-resolution menu picture */
 static int      s_hi_w = 0, s_hi_h = 0;        /* its size = the presented size */
 static char     s_menu_status[96] = "";
 static uint32_t s_menu_status_rgb = 0x7CE08A;
 /* queued from the event callback, run in frame_end (a frame boundary) */
 static bool     s_menu_req_toggle = false;
+static bool     s_menu_req_back = false;
 static int      s_menu_req_activate = -1;
 
-static void save_path(char *out, size_t n) {
+static void slot_file(int slot, const char *ext, char *out, size_t n) {
     char *base = SDL_GetBasePath();
-    snprintf(out, n, "%sManiacMansion.state", base ? base : "");
+    snprintf(out, n, "%sManiacMansion.slot%d.%s", base ? base : "", slot, ext);
     if (base) SDL_free(base);
+}
+
+static void slot_name(int slot, char *out, size_t n) {
+    snprintf(out, n, "Slot %d", slot);
+}
+
+/* 256x240 frame -> 128x120 thumbnail (2x2 average). */
+static void make_thumb(const uint32_t *f, uint32_t *t) {
+    for (int y = 0; y < THUMB_H; y++)
+        for (int x = 0; x < THUMB_W; x++) {
+            const uint32_t *p = f + (size_t)(y * 2) * MENU_W + x * 2;
+            uint32_t q[4] = { p[0], p[1], p[MENU_W], p[MENU_W + 1] };
+            uint32_t r = 0, g = 0, b = 0;
+            for (int i = 0; i < 4; i++) { r += (q[i] >> 16) & 0xFF; g += (q[i] >> 8) & 0xFF; b += q[i] & 0xFF; }
+            t[y * THUMB_W + x] = 0xFF000000u | ((r / 4) << 16) | ((g / 4) << 8) | (b / 4);
+        }
+}
+
+static void write_thumb(int slot, const uint32_t *frame) {
+    static uint32_t t[THUMB_W * THUMB_H];
+    char path[1100];
+    if (!frame) return;
+    make_thumb(frame, t);
+    slot_file(slot, "thumb", path, sizeof path);
+    FILE *f = fopen(path, "wb");
+    if (!f) return;
+    fwrite("MMT1", 1, 4, f);
+    fwrite(t, sizeof t, 1, f);
+    fclose(f);
+}
+
+static void refresh_slots(void) {
+    for (int s = 0; s <= NUM_SLOTS; s++) {
+        SlotInfo *si = &s_slots[s];
+        char path[1100];
+        struct stat st;
+        slot_file(s, "state", path, sizeof path);
+        si->used = stat(path, &st) == 0;
+        si->mtime = si->used ? st.st_mtime : 0;
+        si->thumb_ok = false;
+        if (!si->used) continue;
+        slot_file(s, "thumb", path, sizeof path);
+        FILE *f = fopen(path, "rb");
+        if (!f) continue;
+        char magic[4];
+        si->thumb_ok = fread(magic, 1, 4, f) == 4 && !memcmp(magic, "MMT1", 4) &&
+                       fread(si->thumb, sizeof si->thumb, 1, f) == 1;
+        fclose(f);
+    }
+}
+
+static void slot_time_text(int slot, char *out, size_t n) {
+    if (!s_slots[slot].used) { snprintf(out, n, "Empty"); return; }
+    struct tm *tm = localtime(&s_slots[slot].mtime);
+    if (!tm) { snprintf(out, n, "Saved"); return; }
+    strftime(out, n, "%b %d, %H:%M", tm);
+}
+
+/* Rows per mode: slots 1..6 + Back. */
+static int menu_row_count(void) {
+    if (s_menu_mode == MODE_DISPLAY) return DI_COUNT;
+    if (s_menu_mode != MODE_MAIN) return NUM_SLOTS + 1;
+    return MI_COUNT;
+}
+/* slot for a row in the slot lists, -1 = Back */
+static int row_slot(int row) {
+    int slot = 1 + row;
+    return slot <= NUM_SLOTS ? slot : -1;
 }
 
 /* Sidebar geometry for a presented size (all derived from the height). */
@@ -396,13 +647,23 @@ static MenuLayout menu_layout(int w, int h) {
     MenuLayout L;
     L.u = (float)h / 240.0f;
     L.sw = (int)(w * 0.40f);
+    {   /* on a wide picture, keep the sidebar the width it has at 256:240 */
+        int cap = (int)(h * 256.0f / 240.0f * 0.40f);
+        if (L.sw > cap) L.sw = cap;
+    }
     L.pad = (int)(10 * L.u);
     L.title_y = (int)(16 * L.u);
     L.sub_y = (int)(33 * L.u);
     L.sep_y = (int)(46 * L.u);
-    L.item_y0 = (int)(58 * L.u);
-    L.item_h = (int)(19 * L.u);
-    L.item_gap = (int)(4 * L.u);
+    if (s_menu_mode == MODE_MAIN || s_menu_mode == MODE_DISPLAY) {
+        L.item_y0 = (int)(58 * L.u);
+        L.item_h = (int)(17 * L.u);
+        L.item_gap = (int)(3 * L.u);
+    } else {
+        L.item_y0 = (int)(54 * L.u);
+        L.item_h = (int)(14 * L.u);
+        L.item_gap = (int)(2 * L.u);
+    }
     return L;
 }
 
@@ -410,7 +671,8 @@ static int menu_row_at(int x, int y) {
     if (s_hi_w <= 0) return -1;
     MenuLayout L = menu_layout(s_hi_w, s_hi_h);
     if (x < L.pad / 2 || x >= L.sw - L.pad / 2) return -1;
-    for (int i = 0; i < MI_COUNT; i++) {
+    int n = menu_row_count();
+    for (int i = 0; i < n; i++) {
         int y0 = L.item_y0 + i * (L.item_h + L.item_gap);
         if (y >= y0 && y < y0 + L.item_h) return i;
     }
@@ -450,6 +712,35 @@ static void menu_status(const char *msg, uint32_t rgb) {
     s_menu_status_rgb = rgb;
 }
 
+static void menu_set_mode(int mode) {
+    s_menu_mode = mode;
+    s_menu_hover = -1;
+    s_confirm_slot = -1;
+    s_menu_status[0] = 0;
+    if (mode == MODE_MAIN) return;
+    if (mode == MODE_DISPLAY) { s_menu_sel = 0; return; }
+    refresh_slots();
+    /* start on the newest save (load) / first empty slot (save) */
+    int best = -1;
+    for (int s = 1; s <= NUM_SLOTS; s++) {
+        if (mode == MODE_SAVE && !s_slots[s].used) { best = s; break; }
+        if (mode == MODE_LOAD && s_slots[s].used && (best < 0 || s_slots[s].mtime > s_slots[best].mtime)) best = s;
+    }
+    if (best < 0) best = 1;
+    s_menu_sel = best - 1;
+}
+
+/* The composed game picture (wide when widescreen is on) behind the menu. */
+static void grab_frozen(void) {
+    int fw = 256, fh = 240;
+    const uint32_t *p = cyc_render_present(&fw, &fh);
+    if (!p || fw < 256 || fw > CYC_VIDEO_MAX_WIDTH || fh != MENU_H) { fw = 256; p = cyc_frame_argb(); }
+    if (p) memcpy(s_menu_frozen, p, (size_t)fw * MENU_H * 4);
+    else memset(s_menu_frozen, 0, (size_t)fw * MENU_H * 4);
+    s_frozen_w = fw;
+    s_frozen_gen++;
+}
+
 static void menu_open_now(void) {
     char err[160];
     uint8_t *buf = NULL;
@@ -457,46 +748,85 @@ static void menu_open_now(void) {
     if (!cyc_state_save(&buf, &len, err, sizeof err)) { menu_log("open failed", err); return; }
     s_menu_snap = buf;
     s_menu_snap_len = len;
+    grab_frozen();
     const uint32_t *f = cyc_frame_argb();
-    if (f) memcpy(s_menu_frozen, f, sizeof s_menu_frozen);
-    else memset(s_menu_frozen, 0, sizeof s_menu_frozen);
+    if (f) memcpy(s_menu_native, f, sizeof s_menu_native);
+    else memset(s_menu_native, 0, sizeof s_menu_native);
     s_menu_open = true;
+    menu_set_mode(MODE_MAIN);
+    refresh_slots();
     s_menu_sel = MI_RESUME;
-    s_menu_hover = -1;
-    s_menu_status[0] = 0;
     menu_os_cursor(true);
     menu_log("open", NULL);
 }
 
-static void menu_activate(int item) {
-    char err[160] = "", path[1100];
-    save_path(path, sizeof path);
-    if (item == MI_SAVE) {
+static void slot_activate(int slot) {
+    char err[160] = "", path[1100], name[32], msg[96];
+    slot_name(slot, name, sizeof name);
+    slot_file(slot, "state", path, sizeof path);
+    if (s_menu_mode == MODE_SAVE) {
+        if (s_slots[slot].used && s_confirm_slot != slot) {
+            s_confirm_slot = slot;
+            snprintf(msg, sizeof msg, "Click again to overwrite %s", name);
+            menu_status(msg, 0xF0C060);
+            return;
+        }
+        s_confirm_slot = -1;
         /* rewind to the paused moment, then write it */
         if (restore_snapshot(err, sizeof err) && cyc_state_save_file(path, err, sizeof err)) {
-            menu_status("Game saved", 0x7CE08A);
+            write_thumb(slot, s_menu_native);
+            menu_set_mode(MODE_MAIN);
+            s_menu_sel = MI_RESUME;
+            snprintf(msg, sizeof msg, "Saved to %s", name);
+            menu_status(msg, 0x7CE08A);
             menu_log("saved", path);
         } else {
             menu_status("Save failed", 0xF07070);
             menu_log("save failed", err);
         }
-    } else if (item == MI_LOAD) {
-        FILE *f = fopen(path, "rb");
-        if (!f) {
-            menu_status("No save file yet", 0xF0C060);
-            menu_log("load: no file", path);
+        refresh_slots();
+    } else {
+        if (!s_slots[slot].used) {
+            snprintf(msg, sizeof msg, "%s is empty", name);
+            menu_status(msg, 0xF0C060);
             return;
         }
-        fclose(f);
         if (cyc_state_load_file(path, err, sizeof err)) {
             cyc_session_state_loaded();
             after_state_load();
             menu_log("loaded", path);
+            menu_set_mode(MODE_MAIN);
             menu_close();
         } else {
-            menu_status("Save is from a different version", 0xF07070);
+            snprintf(msg, sizeof msg, "%s is from a different version", name);
+            menu_status(msg, 0xF07070);
             menu_log("load failed", err);
         }
+    }
+}
+
+static void menu_back(void);
+static void display_activate(int item);
+
+static void menu_activate(int item) {
+    char err[160] = "";
+    if (s_menu_mode == MODE_DISPLAY) {
+        if (item == DI_BACK) menu_back();
+        else display_activate(item);
+        return;
+    }
+    if (s_menu_mode != MODE_MAIN) {
+        int slot = row_slot(item);
+        if (slot < 0) { menu_back(); return; }
+        slot_activate(slot);
+        return;
+    }
+    if (item == MI_SAVE) {
+        menu_set_mode(MODE_SAVE);
+    } else if (item == MI_LOAD) {
+        menu_set_mode(MODE_LOAD);
+    } else if (item == MI_DISPLAY) {
+        menu_set_mode(MODE_DISPLAY);
     } else if (item == MI_EXIT) {
         /* back to the paused moment first (the battery save the host writes
          * on exit then matches what was on screen), then a normal quit */
@@ -514,47 +844,228 @@ static void menu_activate(int item) {
     }
 }
 
-/* "Last saved" line from the save file's modification time. */
+/* Leave a slot list (Esc / right-click / Back): back to the main rows. */
+static void menu_back(void) {
+    int from = s_menu_mode;
+    menu_set_mode(MODE_MAIN);
+    s_menu_sel = from == MODE_SAVE ? MI_SAVE : from == MODE_LOAD ? MI_LOAD : MI_DISPLAY;
+}
+
+/* "Last saved" line: the newest slot. */
 static void last_saved_text(char *out, size_t n) {
-    char path[1100];
-    save_path(path, sizeof path);
-    struct stat st;
-    if (stat(path, &st) != 0) { snprintf(out, n, "No save file yet"); return; }
-    struct tm *tm = localtime(&st.st_mtime);
-    if (!tm) { snprintf(out, n, "Save file present"); return; }
-    char when[48];
-    strftime(when, sizeof when, "%b %d, %H:%M", tm);
-    snprintf(out, n, "Last saved %s", when);
+    int best = -1;
+    for (int s = 0; s <= NUM_SLOTS; s++)
+        if (s_slots[s].used && (best < 0 || s_slots[s].mtime > s_slots[best].mtime)) best = s;
+    if (best < 0) { snprintf(out, n, "No saves yet"); return; }
+    char when[48], name[32];
+    slot_time_text(best, when, sizeof when);
+    slot_name(best, name, sizeof name);
+    snprintf(out, n, "Last saved %s (%s)", when, name);
 }
 
 /* Size to present the menu at: the window's real drawable, letterboxed to
- * the game's 256:240 aspect, so the texture maps ~1:1 and text is crisp. */
-static void menu_target_size(int *w, int *h) {
+ * the game picture's aspect, so the texture maps ~1:1 and text is crisp. */
+static void drawable_size(int *w, int *h) {
     int ow = 0, oh = 0;
     SDL_Window *win = find_game_window();
     SDL_Renderer *ren = win ? SDL_GetRenderer(win) : NULL;
     if (ren) SDL_GetRendererOutputSize(ren, &ow, &oh);
-    if (ow < MENU_W || oh < MENU_H) { ow = MENU_W * 3; oh = MENU_H * 3; }
-    float sx = (float)ow / MENU_W, sy = (float)oh / MENU_H, sc = sx < sy ? sx : sy;
-    int tw = (int)(MENU_W * sc + 0.5f), th = (int)(MENU_H * sc + 0.5f);
+    *w = ow;
+    *h = oh;
+}
+
+static void menu_target_size(int *w, int *h) {
+    int ow = 0, oh = 0, fw = s_frozen_w;
+    drawable_size(&ow, &oh);
+    if (ow < fw || oh < MENU_H) { ow = fw * 3; oh = MENU_H * 3; }
+    float sx = (float)ow / fw, sy = (float)oh / MENU_H, sc = sx < sy ? sx : sy;
+    int tw = (int)(fw * sc + 0.5f), th = (int)(MENU_H * sc + 0.5f);
     if (tw > 4096) { th = th * 4096 / tw; tw = 4096; }
     if (th > 4096) { tw = tw * 4096 / th; th = 4096; }
     *w = tw;
     *h = th;
 }
 
+/* Font size for s at up to px, shrunk so it fits in avail pixels. */
+static float fit_px(float px, int avail, const char *s) {
+    int tw = mr_text_width(px, s);
+    return (tw > avail && tw > 0) ? px * avail / tw : px;
+}
+
+/* Right-hand preview in the slot lists: the selected slot's screenshot. */
+static void draw_slot_preview(uint32_t *d, int pw, int ph, const MenuLayout *L) {
+    float u = L->u;
+    int slot = row_slot(s_menu_sel);
+    int area_x = L->sw, area_w = pw - L->sw;
+    int bw = (int)(area_w * 0.80f), bh = bw * MENU_H / MENU_W;
+    int bx = area_x + (area_w - bw) / 2, by = L->item_y0;
+    if (by + bh > ph - (int)(30 * u)) { bh = ph - (int)(30 * u) - by; bw = bh * MENU_W / MENU_H; bx = area_x + (area_w - bw) / 2; }
+    if (slot < 0) return;
+    int b = (int)u > 1 ? (int)u : 1;
+    mr_rect(d, pw, ph, bx - 2 * b, by - 2 * b, bw + 4 * b, bh + 4 * b, 0x15161D, 230);
+    mr_rect(d, pw, ph, bx - b, by - b, bw + 2 * b, bh + 2 * b, 0x2C6FE0, 220);
+    char name[32], when[48], cap[96];
+    slot_name(slot, name, sizeof name);
+    slot_time_text(slot, when, sizeof when);
+    if (s_slots[slot].used && s_slots[slot].thumb_ok) {
+        mr_blit_scaled(d, pw, ph, bx, by, bw, bh, s_slots[slot].thumb, THUMB_W, THUMB_H);
+    } else {
+        mr_rect(d, pw, ph, bx, by, bw, bh, 0x0C0D12, 255);
+        const char *t = s_slots[slot].used ? "No preview" : "Empty slot";
+        float px = 9.0f * u;
+        mr_text(d, pw, ph, bx + (bw - mr_text_width(px, t)) / 2, by + (bh - (int)px) / 2, px, 0x7D8296, 255, t);
+    }
+    snprintf(cap, sizeof cap, "%s   %s", name, when);
+    mr_text(d, pw, ph, bx, by + bh + (int)(6 * u), fit_px(7.0f * u, bw, cap), 0xFFFFFF, 255, cap);
+}
+
+/* Gameplay picture: the host's own (NULL), the canvas with a toast on it,
+ * or the CRT filter's at window resolution. */
+static const uint32_t *display_present(int *w, int *h) {
+    bool crt = s_filter == FILTER_CRT;
+    int cw = 256, ch = 240;
+    /* no window yet: the host sizes the new window from this first picture,
+     * so give it the plain one */
+    SDL_Window *win = find_game_window();
+    if (!win || !SDL_GetRenderer(win)) crt = false;
+    if (!crt && s_toast_frames <= 0) {
+        s_pres_kind = PRES_HOST;
+        s_pres_cw = s_pres_w = cyc_video_width();
+        s_pres_h = 240;
+        return NULL;
+    }
+    const uint32_t *pic = cyc_render_present(&cw, &ch);
+    if (!pic || cw > CYC_VIDEO_MAX_WIDTH || ch != 240) return NULL;
+    if (s_toast_frames > 0) {
+        memcpy(s_wide_copy, pic, (size_t)cw * ch * 4);
+        cyc_overlay_toast(s_wide_copy, cw, ch, s_toast_text, "");
+        pic = s_wide_copy;
+    }
+    if (!crt) {
+        s_pres_kind = PRES_CANVAS;
+        s_pres_cw = s_pres_w = cw;
+        s_pres_h = ch;
+        *w = cw;
+        *h = ch;
+        return pic;
+    }
+    int dw = 0, dh = 0;
+    drawable_size(&dw, &dh);
+    if (dw < cw || dh < ch) { dw = cw * 3; dh = ch * 3; }
+    /* The filter runs on the CPU inside the frame: render at most s_crt_cap_h
+     * lines and let the GPU scale the rest (linear, see apply_filter). The
+     * cap adapts: lowered while the filter averages over ~11 ms a frame,
+     * raised again while it has room. */
+    static int s_crt_cap_h = 1440;
+    if (dh > s_crt_cap_h) { dw = (int)((long)dw * s_crt_cap_h / dh); dh = s_crt_cap_h; }
+    if (dw > 4096) { dh = dh * 4096 / dw; dw = 4096; }
+    size_t need = (size_t)dw * dh;
+    if (need > s_crt_cap) {
+        uint32_t *np = (uint32_t *)realloc(s_crt_pic, need * 4);
+        if (!np) return NULL;
+        s_crt_pic = np;
+        s_crt_cap = need;
+    }
+    Uint64 t0 = SDL_GetPerformanceCounter();
+    crt_render(s_crt_pic, dw, dh, pic, cw, ch, false);
+    {
+        static double acc = 0;
+        static int n = 0;
+        acc += (double)(SDL_GetPerformanceCounter() - t0) * 1000.0 / SDL_GetPerformanceFrequency();
+        if (++n == 30) {
+            double avg = acc / n;
+            int old = s_crt_cap_h;
+            if (avg > 11.0 && s_crt_cap_h > 720) s_crt_cap_h -= 180;
+            else if (avg < 6.0 && s_crt_cap_h < 1440 && dh >= s_crt_cap_h) s_crt_cap_h += 180;
+            if (old != s_crt_cap_h) {
+                char msg[64];
+                snprintf(msg, sizeof msg, "%.1f ms -> %d lines", avg, s_crt_cap_h);
+                menu_log("crt cap", msg);
+            }
+            acc = 0;
+            n = 0;
+        }
+    }
+    s_pres_kind = PRES_CRT;
+    s_pres_cw = cw;
+    s_pres_w = dw;
+    s_pres_h = dh;
+    *w = dw;
+    *h = dh;
+    return s_crt_pic;
+}
+
+static const char *const k_display_rows[DI_COUNT] = { "Music", "Sound FX", "Fullscreen", "Filter", "Scale", "Back" };
+
+/* The slider of a volume row in the Options list (false: not a volume row). */
+static bool volume_bar(const MenuLayout *L, int row, int *bx, int *by, int *bw, int *bh) {
+    if (row != DI_MUSIC && row != DI_SFX) return false;
+    /* full-width bar along the bottom of the row, label and value above */
+    float u = L->u;
+    int y0 = L->item_y0 + row * (L->item_h + L->item_gap);
+    *bx = L->pad + (int)(6 * u);
+    *bw = L->sw - L->pad / 2 - (int)(6 * u) - *bx;
+    *bh = (int)(3 * u) > 2 ? (int)(3 * u) : 2;
+    *by = y0 + L->item_h - *bh - (int)(2.5f * u);
+    return *bw > 4;
+}
+
+/* 2026-11-10: CRT on the GPU (user: the CPU filter used too much CPU,
+ * CRT Curved especially). The host presents the texture crt_gpu renders;
+ * NULL (menu open, other filters, no OpenGL) falls back to present. */
+static void *display_present_texture(void *ctx, void *renderer, int *w, int *h) {
+    (void)ctx;
+    if (s_menu_open || crt_gpu_failed()) return NULL;
+    if (s_filter != FILTER_CRT) return NULL;
+    int cw = 256, ch = 240;
+    const uint32_t *pic = cyc_render_present(&cw, &ch);
+    if (!pic || cw > CYC_VIDEO_MAX_WIDTH || ch != 240) return NULL;
+    if (s_toast_frames > 0) {
+        memcpy(s_wide_copy, pic, (size_t)cw * ch * 4);
+        cyc_overlay_toast(s_wide_copy, cw, ch, s_toast_text, "");
+        pic = s_wide_copy;
+    }
+    int dw = 0, dh = 0;
+    SDL_GetRendererOutputSize((SDL_Renderer *)renderer, &dw, &dh);
+    if (dw < cw || dh < ch) { dw = cw * 3; dh = ch * 3; }
+    if (dw > 4096) { dh = dh * 4096 / dw; dw = 4096; }
+    if (dh > 4096) { dw = dw * 4096 / dh; dh = 4096; }
+    void *t = crt_gpu_render(renderer, pic, cw, ch, dw, dh, false);
+    if (!t) return NULL;
+    s_pres_kind = PRES_CRT;
+    s_pres_cw = cw;
+    s_pres_w = dw;
+    s_pres_h = dh;
+    *w = dw;
+    *h = dh;
+    return t;
+}
+
+static const char *display_row_value(int item, char *buf, size_t n) {
+    int fs = 0;
+    switch (item) {
+    case DI_MUSIC:      snprintf(buf, n, "%d%%", s_music_vol); return buf;
+    case DI_SFX:        snprintf(buf, n, "%d%%", s_sfx_vol); return buf;
+    case DI_FULLSCREEN: cyc_host_display_get(&fs, NULL, NULL); return fs ? "On" : "Off";
+    case DI_FILTER:     return k_filter_names[s_filter];
+    case DI_SCALE: {
+        int max = cyc_host_display_max_scale();
+        if (s_filter != FILTER_SHARP) return "Sharp only";
+        if (s_scale <= 0) snprintf(buf, n, "Auto (%dx)", max);
+        else if (s_scale > max) snprintf(buf, n, "%dx (fits %dx)", s_scale, max);
+        else snprintf(buf, n, "%dx", s_scale);
+        return buf;
+    }
+    }
+    (void)buf; (void)n;
+    return "";
+}
+
 static const uint32_t *menu_present(void *ctx, int *w, int *h) {
     (void)ctx;
-    if (!s_menu_open) {
-        if (s_toast_frames <= 0) return NULL;
-        const uint32_t *f = cyc_frame_argb();
-        if (!f) return NULL;
-        memcpy(s_menu_pic, f, sizeof s_menu_pic);
-        cyc_overlay_toast(s_menu_pic, MENU_W, MENU_H, "SAVE FILE UPDATED", "");
-        *w = MENU_W;
-        *h = MENU_H;
-        return s_menu_pic;
-    }
+    if (!s_menu_open) return display_present(w, h);
+    s_pres_kind = PRES_MENU;
+    if (cyc_video_width() != s_frozen_w) grab_frozen();   /* widescreen changed in the menu */
     int pw, ph;
     menu_target_size(&pw, &ph);
     if (pw != s_hi_w || ph != s_hi_h || !s_hi_pic) {
@@ -567,8 +1078,33 @@ static const uint32_t *menu_present(void *ctx, int *w, int *h) {
     uint32_t *d = s_hi_pic;
     MenuLayout L = menu_layout(pw, ph);
     float u = L.u;
+    bool slots = s_menu_mode == MODE_SAVE || s_menu_mode == MODE_LOAD;
 
-    mr_scale_nearest(d, pw, ph, s_menu_frozen, MENU_W, MENU_H, 170);   /* game, lightly dimmed */
+    /* game, lightly dimmed (darker behind the slot preview) */
+    if (s_filter == FILTER_CRT) {
+        /* keep the CRT look behind the menu: filter the frozen picture once
+         * per menu opening / size, then dim a copy each frame */
+        static uint32_t *crt_bg = NULL;
+        static size_t crt_cap = 0;
+        static int crt_w = 0, crt_h = 0, crt_filter = -1;
+        static uint64_t crt_gen = 0;
+        if ((size_t)pw * ph > crt_cap) {
+            uint32_t *np = (uint32_t *)realloc(crt_bg, (size_t)pw * ph * 4);
+            if (np) { crt_bg = np; crt_cap = (size_t)pw * ph; crt_w = 0; }
+        }
+        if (crt_bg) {
+            if (crt_w != pw || crt_h != ph || crt_filter != s_filter || crt_gen != s_frozen_gen) {
+                crt_render(crt_bg, pw, ph, s_menu_frozen, s_frozen_w, MENU_H, false);
+                crt_w = pw; crt_h = ph; crt_filter = s_filter; crt_gen = s_frozen_gen;
+            }
+            memcpy(d, crt_bg, (size_t)pw * ph * 4);
+            mr_rect(d, pw, ph, 0, 0, pw, ph, 0x000000, slots ? 165 : 85);
+        } else {
+            mr_scale_nearest(d, pw, ph, s_menu_frozen, s_frozen_w, MENU_H, slots ? 90 : 170);
+        }
+    } else {
+        mr_scale_nearest(d, pw, ph, s_menu_frozen, s_frozen_w, MENU_H, slots ? 90 : 170);
+    }
     mr_rect(d, pw, ph, 0, 0, L.sw, ph, 0x15161D, 236);                 /* sidebar */
     mr_rect(d, pw, ph, L.sw, 0, (int)(2 * u) > 1 ? (int)(2 * u) : 1, ph, 0x2C6FE0, 200);  /* edge accent */
 
@@ -579,10 +1115,14 @@ static const uint32_t *menu_present(void *ctx, int *w, int *h) {
         if (tw > avail && tw > 0) tpx = tpx * avail / tw;
         mr_text(d, pw, ph, L.pad, L.title_y, tpx, 0xFFFFFF, 255, "Maniac Mansion");
     }
-    mr_text(d, pw, ph, L.pad, L.sub_y, 7.5f * u, 0x9AA0B4, 255, "Paused");
+    const char *sub = s_menu_mode == MODE_SAVE ? "Save to which slot?" :
+                      s_menu_mode == MODE_LOAD ? "Load which save?" :
+                      s_menu_mode == MODE_DISPLAY ? "Options" : "Paused";
+    mr_text(d, pw, ph, L.pad, L.sub_y, 7.5f * u, 0x9AA0B4, 255, sub);
     mr_rect(d, pw, ph, L.pad, L.sep_y, L.sw - 2 * L.pad, (int)u > 1 ? (int)u : 1, 0x3A3D4C, 255);
 
-    for (int i = 0; i < MI_COUNT; i++) {
+    int n = menu_row_count();
+    for (int i = 0; i < n; i++) {
         int y0 = L.item_y0 + i * (L.item_h + L.item_gap);
         bool sel = i == s_menu_sel;
         bool hov = i == s_menu_hover;
@@ -591,18 +1131,69 @@ static const uint32_t *menu_present(void *ctx, int *w, int *h) {
         } else if (hov) {
             mr_round_rect(d, pw, ph, L.pad / 2, y0, L.sw - L.pad, L.item_h, (int)(4 * u), 0xFFFFFF, 28);
         }
-        float tpx = 8.5f * u;
-        mr_text(d, pw, ph, L.pad + (int)(6 * u), y0 + (int)((L.item_h - tpx) / 2), tpx,
-                sel ? 0xFFFFFF : 0xD6D9E4, 255, k_menu_rows[i]);
+        uint32_t fg = sel ? 0xFFFFFF : 0xD6D9E4;
+        if (s_menu_mode == MODE_MAIN) {
+            float tpx = 8.5f * u;
+            mr_text(d, pw, ph, L.pad + (int)(6 * u), y0 + (int)((L.item_h - tpx) / 2), tpx, fg, 255, k_menu_rows[i]);
+            continue;
+        }
+        if (s_menu_mode == MODE_DISPLAY) {
+            bool vol = i == DI_MUSIC || i == DI_SFX;
+            float tpx = vol ? 7.0f * u : 8.0f * u;
+            int ty = vol ? y0 + (int)(2 * u) : y0 + (int)((L.item_h - tpx) / 2);
+            mr_text(d, pw, ph, L.pad + (int)(6 * u), ty, tpx, fg, 255, k_display_rows[i]);
+            char vb[32];
+            const char *val = display_row_value(i, vb, sizeof vb);
+            int bx, by, bw, bh;
+            if (volume_bar(&L, i, &bx, &by, &bw, &bh)) {
+                int v = i == DI_MUSIC ? s_music_vol : s_sfx_vol;
+                int r = bh / 2;
+                mr_round_rect(d, pw, ph, bx, by, bw, bh, r, 0x000000, 120);
+                if (v > 0) mr_round_rect(d, pw, ph, bx, by, bw * v / 100 > bh ? bw * v / 100 : bh, bh, r,
+                                         sel ? 0xFFFFFF : 0x6FA2F5, 255);
+            }
+            if (val[0]) {
+                float vpx = 7.0f * u;
+                int vx = L.sw - L.pad / 2 - (int)(6 * u) - mr_text_width(vpx, val);
+                int vy = vol ? y0 + (int)(2.5f * u) : y0 + (int)((L.item_h - vpx) / 2);
+                mr_text(d, pw, ph, vx, vy, vpx, sel ? 0xFFFFFF : 0x9AA0B4, 255, val);
+            }
+            continue;
+        }
+        float tpx = 7.5f * u;
+        int ty = y0 + (int)((L.item_h - tpx) / 2);
+        int slot = row_slot(i);
+        if (slot < 0) {
+            mr_text(d, pw, ph, L.pad + (int)(6 * u), ty, tpx, fg, 255, "Back");
+            continue;
+        }
+        char name[32], when[48];
+        slot_name(slot, name, sizeof name);
+        slot_time_text(slot, when, sizeof when);
+        mr_text(d, pw, ph, L.pad + (int)(6 * u), ty, tpx, fg, 255, name);
+        float dpx = 6.0f * u;
+        uint32_t dc = s_slots[slot].used ? (sel ? 0xE6E9F4 : 0x9AA0B4) : 0x5E6274;
+        int dx = L.sw - L.pad / 2 - (int)(6 * u) - mr_text_width(dpx, when);
+        mr_text(d, pw, ph, dx, y0 + (int)((L.item_h - dpx) / 2), dpx, dc, 255, when);
     }
 
-    char info[96];
-    last_saved_text(info, sizeof info);
-    int foot_y = ph - (int)(58 * u);
-    if (s_menu_status[0]) mr_text(d, pw, ph, L.pad, foot_y - (int)(12 * u), 7.0f * u, s_menu_status_rgb, 255, s_menu_status);
-    mr_text(d, pw, ph, L.pad, foot_y, 6.5f * u, 0x9AA0B4, 255, info);
+    if (slots) {
+        draw_slot_preview(d, pw, ph, &L);
+        if (s_menu_status[0])
+            mr_text(d, pw, ph, L.pad, ph - (int)(55 * u), fit_px(6.5f * u, L.sw - 2 * L.pad, s_menu_status), s_menu_status_rgb, 255, s_menu_status);
+    } else {
+        char info[96];
+        if (s_menu_mode == MODE_DISPLAY) snprintf(info, sizeof info, "Left / Right adjust   F9 filter   F11 fullscreen");
+        else last_saved_text(info, sizeof info);
+        int foot_y = ph - (int)(58 * u);
+        int avail = L.sw - 2 * L.pad;
+        if (s_menu_status[0]) mr_text(d, pw, ph, L.pad, foot_y - (int)(12 * u), fit_px(7.0f * u, avail, s_menu_status), s_menu_status_rgb, 255, s_menu_status);
+        mr_text(d, pw, ph, L.pad, foot_y, fit_px(6.5f * u, avail, info), 0x9AA0B4, 255, info);
+    }
     mr_rect(d, pw, ph, L.pad, ph - (int)(44 * u), L.sw - 2 * L.pad, (int)u > 1 ? (int)u : 1, 0x3A3D4C, 255);
-    static const char *const hints[3] = { "Esc   Resume", "Up / Down   Select", "Enter   Confirm" };
+    static const char *const hints_main[3] = { "Esc   Resume", "Up / Down   Select", "Enter   Confirm" };
+    static const char *const hints_slot[3] = { "Esc / Right-click   Back", "Up / Down   Select", "Enter   Confirm" };
+    const char *const *hints = s_menu_mode != MODE_MAIN ? hints_slot : hints_main;
     for (int i = 0; i < 3; i++)
         mr_text(d, pw, ph, L.pad, ph - (int)((38 - i * 10) * u), 6.0f * u, 0x7D8296, 255, hints[i]);
 
@@ -616,15 +1207,57 @@ static void menu_event(void *ctx, const void *event, int player) {
     const SDL_Event *ev = (const SDL_Event *)event;
     if (ev->type == SDL_KEYDOWN && !ev->key.repeat) {
         SDL_Scancode sc = ev->key.keysym.scancode;
-        if (sc == SDL_SCANCODE_ESCAPE) { s_menu_req_toggle = true; return; }
+        if (sc == SDL_SCANCODE_F9)  { s_req_filter_cycle = true; return; }
+        if (sc == SDL_SCANCODE_ESCAPE) {
+            if (s_menu_open && s_menu_mode != MODE_MAIN) s_menu_req_back = true;
+            else s_menu_req_toggle = true;
+            return;
+        }
         if (!s_menu_open) return;
-        if (sc == SDL_SCANCODE_UP)   s_menu_sel = (s_menu_sel + MI_COUNT - 1) % MI_COUNT;
-        if (sc == SDL_SCANCODE_DOWN) s_menu_sel = (s_menu_sel + 1) % MI_COUNT;
+        int n = menu_row_count();
+        if (sc == SDL_SCANCODE_UP)   s_menu_sel = (s_menu_sel + n - 1) % n;
+        if (sc == SDL_SCANCODE_DOWN) s_menu_sel = (s_menu_sel + 1) % n;
+        if (sc == SDL_SCANCODE_UP || sc == SDL_SCANCODE_DOWN) s_confirm_slot = -1;
+        if ((sc == SDL_SCANCODE_LEFT || sc == SDL_SCANCODE_RIGHT) && s_menu_mode == MODE_DISPLAY &&
+            (s_menu_sel == DI_MUSIC || s_menu_sel == DI_SFX)) {
+            s_vol_req_row = s_menu_sel;
+            s_vol_req_value = (s_menu_sel == DI_MUSIC ? s_music_vol : s_sfx_vol) + (sc == SDL_SCANCODE_LEFT ? -5 : 5);
+            return;
+        }
+        if ((sc == SDL_SCANCODE_LEFT || sc == SDL_SCANCODE_RIGHT) && s_menu_mode == MODE_DISPLAY &&
+            s_menu_sel == DI_SCALE) {
+            s_scale_req_dir = sc == SDL_SCANCODE_LEFT ? -1 : 1;
+            return;
+        }
         if (sc == SDL_SCANCODE_RETURN || sc == SDL_SCANCODE_SPACE || sc == SDL_SCANCODE_KP_ENTER)
             s_menu_req_activate = s_menu_sel;
         return;
     }
     if (!s_menu_open) return;
+    if (ev->type == SDL_MOUSEBUTTONDOWN && ev->button.button == SDL_BUTTON_RIGHT) {
+        if (s_menu_mode != MODE_MAIN) s_menu_req_back = true;
+        return;
+    }
+    if (ev->type == SDL_MOUSEBUTTONUP && ev->button.button == SDL_BUTTON_LEFT) s_vol_drag = -1;
+    if (s_menu_mode == MODE_DISPLAY && s_hi_w > 0 &&
+        ((ev->type == SDL_MOUSEBUTTONDOWN && ev->button.button == SDL_BUTTON_LEFT) ||
+         (ev->type == SDL_MOUSEMOTION && s_vol_drag >= 0))) {
+        /* volume sliders: click or drag on the bar sets the level */
+        int x = ev->type == SDL_MOUSEMOTION ? ev->motion.x : ev->button.x;
+        int y = ev->type == SDL_MOUSEMOTION ? ev->motion.y : ev->button.y;
+        MenuLayout L = menu_layout(s_hi_w, s_hi_h);
+        int row = s_vol_drag >= 0 ? s_vol_drag : menu_row_at(x, y);
+        int bx, by, bw, bh;
+        if (row >= 0 && volume_bar(&L, row, &bx, &by, &bw, &bh) &&
+            (s_vol_drag >= 0 || y >= by - (int)(5 * L.u))) {
+            int v = (int)((float)(x - bx) * 100.0f / bw + 2.5f) / 5 * 5;
+            s_vol_drag = row;
+            s_menu_sel = row;
+            s_vol_req_row = row;
+            s_vol_req_value = v;
+            return;
+        }
+    }
     if (ev->type == SDL_MOUSEMOTION || ev->type == SDL_MOUSEBUTTONDOWN) {
         /* Event coordinates arrive in the renderer's logical space, which is
          * the size we present while the menu is open (SDL scales mouse
@@ -633,7 +1266,10 @@ static void menu_event(void *ctx, const void *event, int player) {
         int y = ev->type == SDL_MOUSEMOTION ? ev->motion.y : ev->button.y;
         int row = menu_row_at(x, y);
         s_menu_hover = row;
-        if (row >= 0) s_menu_sel = row;
+        if (row >= 0) {
+            if (row != s_menu_sel) s_confirm_slot = -1;
+            s_menu_sel = row;
+        }
         if (ev->type == SDL_MOUSEBUTTONDOWN && ev->button.button == SDL_BUTTON_LEFT && row >= 0)
             s_menu_req_activate = row;
     }
@@ -647,6 +1283,7 @@ static void menu_event(void *ctx, const void *event, int player) {
 static void menu_os_cursor(bool on) {
     SDL_Window *win = find_game_window();
     if (on) {
+        confine_clear(win);
         if (win) SDL_SetWindowGrab(win, SDL_FALSE);
         s_grabbed = false;
         SDL_ShowCursor(SDL_ENABLE);
@@ -660,14 +1297,17 @@ static void menu_os_cursor(bool on) {
 /* ctx_busy / lmb_busy are defined further down; opening waits for them. */
 static bool menu_input_busy(void);
 
-/* The game's own save (Start menu -> Save game) also refreshes the single
- * save file, newest wins. Its save routine runs inside the game's menu
- * (room $32, verbs off, override armed), so wait until normal play has
- * held for 30 frames (verbs on $6B0A bit 7, no override, cursor sprite
- * visible) and snapshot then: loading it lands in play, not in that menu. */
+/* The game's own save (Start menu -> Save game) also writes the most
+ * recently saved slot (Slot 1 if there are none yet).
+ * Its save routine runs inside the game's menu (room $32, verbs off,
+ * override armed), so wait until normal play has held for 30 frames (verbs
+ * on $6B0A bit 7, no override, cursor sprite visible) and snapshot then:
+ * loading it lands in play, not in that menu. */
 static void follow_game_save(void) {
     static int good = 0;
     if (s_toast_frames > 0) s_toast_frames--;
+    if (s_game_thumb_frames >= 0 && !s_menu_open && --s_game_thumb_frames < 0)
+        write_thumb(s_game_thumb_slot, cyc_frame_argb());
     if (s_game_saved_frames < 0 || s_menu_open) return;
     if (++s_game_saved_frames > 60 * 20) { s_game_saved_frames = -1; good = 0; menu_log("game save: gave up waiting for play", NULL); return; }
     uint16_t ya, xa;
@@ -678,14 +1318,167 @@ static void follow_game_save(void) {
     good = 0;
     s_game_saved_frames = -1;
     char path[1100], err[160];
-    save_path(path, sizeof path);
-    if (cyc_state_save_file(path, err, sizeof err)) { menu_log("game save -> save file updated", path); s_toast_frames = 120; }
-    else menu_log("game save -> save file write failed", err);
+    refresh_slots();
+    int slot = 1;
+    for (int s = 1; s <= NUM_SLOTS; s++)
+        if (s_slots[s].used && (!s_slots[slot].used || s_slots[s].mtime > s_slots[slot].mtime)) slot = s;
+    slot_file(slot, "state", path, sizeof path);
+    if (cyc_state_save_file(path, err, sizeof err)) {
+        /* the room is still fading in at this point (thumbnail came out
+         * black): take the screenshot ~1.5 s later */
+        s_game_thumb_slot = slot;
+        s_game_thumb_frames = 90;
+        snprintf(s_toast_text, sizeof s_toast_text, "SAVED TO SLOT %d", slot);
+        menu_log("game save -> slot updated", path);
+        s_toast_frames = 120;
+    } else menu_log("game save -> slot write failed", err);
+}
+
+/* ---- display settings ---- */
+static void display_toast(const char *what, const char *value) {
+    snprintf(s_toast_text, sizeof s_toast_text, "%s: %s", what, value);
+    for (char *c = s_toast_text; *c; c++) if (*c >= 'a' && *c <= 'z') *c = (char)(*c - 32);
+    s_toast_frames = 90;
+}
+
+static void apply_filter(void) {
+    /* Sharp: nearest + integer scaling, so every NES pixel is the same size
+     * (6x on 1440p; 4x on 1080p with thin bars, user's choice over uneven
+     * 4.5x). CRT presents at window resolution (1:1), so no integer step. */
+    int linear = s_filter != FILTER_SHARP;
+    int integer = s_filter == FILTER_SHARP;
+    cyc_host_display_set(-1, linear, integer);
+    cyc_host_display_set_scale(s_filter == FILTER_SHARP ? s_scale : 0);
+}
+
+/* Next Sharp scale in the cycle Auto, 2x .. largest that fits (dir +1/-1). */
+static void step_scale(int dir) {
+    int max = cyc_host_display_max_scale();
+    int opts[8], n = 0;
+    opts[n++] = 0;
+    for (int k = 2; k <= max && k <= 6; k++) opts[n++] = k;
+    int i = 0;
+    for (int j = 0; j < n; j++) if (opts[j] == s_scale) i = j;
+    if (s_scale > max && s_scale > 0) i = dir > 0 ? n - 1 : 0;   /* saved scale doesn't fit here: + -> Auto, - -> largest */
+    s_scale = opts[((i + dir) % n + n) % n];
+    apply_filter();
+    cyc_host_save_settings();
+    char v[24];
+    if (s_scale) snprintf(v, sizeof v, "%dx", s_scale);
+    else snprintf(v, sizeof v, "Auto (%dx)", max);
+    display_toast("Scale", v);
+}
+
+static void set_filter(int f) {
+    s_filter = (f % FILTER_COUNT + FILTER_COUNT) % FILTER_COUNT;
+    apply_filter();             /* also saves the settings file */
+    display_toast("Filter", k_filter_names[s_filter]);
+}
+
+/* ---- music / sound effect volume ----
+ * The game's sound driver plays sound effects through its slot player
+ * (b00:$8C49-$8CC3, register blocks per channel; $728B != 0 while one is
+ * playing) and music through the music channel code ($8DB8-$8F95; the
+ * title jingle uses the mini player at $A56A). A channel the effect player
+ * writes is an effect channel until $728B clears; the mixer gain of each
+ * APU channel follows the Music or Sound FX volume accordingly. */
+static uint8_t s_sfx_channels = 0;     /* bit per APU channel */
+
+static void apply_audio_gains(void) {
+    FILE *log = dbg_log();
+    if (log) fprintf(log, "[audio] effect channels=%X music=%d%% sfx=%d%%\n", s_sfx_channels, s_music_vol, s_sfx_vol);
+    for (int ch = 0; ch < 5; ch++) {
+        int v = (s_sfx_channels >> ch) & 1 ? s_sfx_vol : s_music_vol;
+        cyc_apu_set_channel_gain(ch, (float)v / 100.0f);
+    }
+}
+
+static void apu_write_observer(uint16_t addr, uint8_t value, uint16_t pc) {
+    (void)value;
+    if (addr > 0x400F || pc < 0x8C49 || pc >= 0x8CC4) return;
+    uint8_t bit = (uint8_t)(1u << ((addr - 0x4000) >> 2));
+    if (s_sfx_channels & bit) return;
+    s_sfx_channels |= bit;
+    apply_audio_gains();
+}
+
+static void audio_frame_end(void) {
+    if (s_sfx_channels && !wram(0x728B)) {
+        s_sfx_channels = 0;
+        apply_audio_gains();
+    }
+}
+
+static void set_volume(int row, int v) {
+    v = v < 0 ? 0 : v > 100 ? 100 : v;
+    int *p = row == DI_MUSIC ? &s_music_vol : &s_sfx_vol;
+    if (*p == v) return;
+    *p = v;
+    apply_audio_gains();
+    cyc_host_save_settings();
+}
+
+static void display_activate(int item) {
+    int fs = 0;
+    switch (item) {
+    case DI_MUSIC:      set_volume(DI_MUSIC, s_music_vol >= 100 ? 0 : s_music_vol + 5); break;
+    case DI_SFX:        set_volume(DI_SFX, s_sfx_vol >= 100 ? 0 : s_sfx_vol + 5); break;
+    case DI_FILTER:     set_filter(s_filter + 1); break;
+    case DI_SCALE:      step_scale(+1); break;
+    case DI_FULLSCREEN:
+        cyc_host_display_get(&fs, NULL, NULL);
+        cyc_host_display_set(fs ? 0 : 1, -1, -1);
+        break;
+    }
+}
+
+static void display_frame_end(void) {
+    if (!s_display_inited) {
+        s_display_inited = true;
+        apply_filter();
+        apply_audio_gains();
+        cyc_mod_set_apu_write_hook(apu_write_observer);
+    }
+    if (s_req_filter_cycle) { s_req_filter_cycle = false; set_filter(s_filter + 1); }
+    if (s_scale_req_dir) { step_scale(s_scale_req_dir); s_scale_req_dir = 0; }
+    if (s_vol_req_row >= 0) {
+        set_volume(s_vol_req_row, s_vol_req_value);
+        s_vol_req_row = -1;
+    }
+    audio_frame_end();
+}
+
+static void display_load_setting(void *ctx, const char *key, const char *value) {
+    (void)ctx;
+    if (!strcmp(key, "Filter")) { int v = atoi(value); s_filter = (v == 2 || v == 3) ? FILTER_CRT : FILTER_SHARP; }
+    else if (!strcmp(key, "MusicVolume")) s_music_vol = atoi(value);
+    else if (!strcmp(key, "SfxVolume")) s_sfx_vol = atoi(value);
+    else if (!strcmp(key, "Scale")) { int v = atoi(value); s_scale = v >= 2 && v <= 6 ? v : 0; }
+    s_music_vol = s_music_vol < 0 ? 0 : s_music_vol > 100 ? 100 : s_music_vol;
+    s_sfx_vol = s_sfx_vol < 0 ? 0 : s_sfx_vol > 100 ? 100 : s_sfx_vol;
+    if (s_filter < 0 || s_filter >= FILTER_COUNT) s_filter = FILTER_SHARP;
+}
+
+static void display_save_settings(void *ctx, FILE *f) {
+    (void)ctx;
+    fprintf(f, "Filter = %d\nMusicVolume = %d\nSfxVolume = %d\nScale = %d\n",
+            s_filter == FILTER_CRT ? 2 : 0, s_music_vol, s_sfx_vol, s_scale);
 }
 
 static void menu_frame_end(void *ctx) {
     (void)ctx;
+    if (!s_menu_open) {
+        SDL_Window *win = find_game_window();
+        sync_grab(win);
+        confine_mouse(win);
+        confine_warp_back(win);
+    }
+    display_frame_end();
     follow_game_save();
+    if (s_menu_req_back) {
+        s_menu_req_back = false;
+        if (s_menu_open && s_menu_mode != MODE_MAIN) menu_back();
+    }
     if (s_menu_req_toggle) {
         s_menu_req_toggle = false;
         if (s_menu_open) menu_activate(MI_RESUME);
@@ -701,11 +1494,11 @@ static void menu_frame_end(void *ctx) {
 /* Input gate for real_mouse_buttons: true = send the game nothing. Holds
  * after the menu closes until every key/button that could leak through
  * (the activating Enter/Space/click, Escape) is released. */
-static bool menu_blocks_input(bool lmb, bool rmb) {
+static bool menu_blocks_input(bool lmb, bool rmb, bool mmb) {
     if (s_menu_open) return true;
     if (s_menu_guard) {
         const uint8_t *k = SDL_GetKeyboardState(NULL);
-        if (lmb || rmb || k[SDL_SCANCODE_RETURN] || k[SDL_SCANCODE_SPACE] ||
+        if (lmb || rmb || mmb || k[SDL_SCANCODE_RETURN] || k[SDL_SCANCODE_SPACE] ||
             k[SDL_SCANCODE_ESCAPE] || k[SDL_SCANCODE_KP_ENTER]) return true;
         s_menu_guard = false;
     }
@@ -959,6 +1752,10 @@ static uint8_t ctx_choose_verb(int slot, const uint8_t *v, int n) {
     /* User rule: anything that can actually be picked up defaults to GET. */
     if (has_verb(v, n, V_GET) && ctx_get_picks_up(slot)) return V_GET;
     uint16_t obj = (uint16_t)((wram((uint16_t)(0x64CF + slot)) << 8) | wram((uint16_t)(0x64F2 + slot)));
+    /* mailbox flag (front yard, left edge): user rule, PULL it up when it is
+     * down, PUSH it down when it is up (state bit $80 = up) */
+    if (obj == 0x0231 && has_verb(v, n, V_PULL) && has_verb(v, n, V_PUSH))
+        return (wram((uint16_t)(0x65E7 + slot)) & 0x80) ? V_PUSH : V_PULL;
     for (size_t i = 0; i < sizeof k_ctx_overrides / sizeof k_ctx_overrides[0]; i++)
         if (k_ctx_overrides[i].obj == obj && has_verb(v, n, k_ctx_overrides[i].verb))
             return k_ctx_overrides[i].verb;
@@ -1047,6 +1844,40 @@ static void ctx_select_verb(uint8_t verb) {
     if (run) *run = 1;        /* main loop: start script 4 (b0F:F803) */
 }
 
+/* 2026-11-10: LMB on an object ran the previewed verb anyway (user report;
+ * reproduced: LMB on the door mat while "GET DOOR MAT" was previewed walked
+ * there and took it). The click itself goes out with GO TO, but the game
+ * runs the sentence when the kid ARRIVES, with the verb current then - and
+ * the preview had already put GET back. So after an LMB click the preview
+ * stays off until every actor has stopped moving (positions $6CBE-$6CC5
+ * unchanged for 20 polls), capped at 10 s. */
+static int  s_walk_pause = 0;      /* polls since the click, 0 = off */
+static int  s_walk_still = 0;
+static uint8_t s_walk_pos[8];
+
+static void walk_pause_start(void) {
+    s_walk_pause = 1;
+    s_walk_still = 0;
+    for (int i = 0; i < 8; i++) s_walk_pos[i] = wram((uint16_t)(0x6CBE + i));
+}
+
+static bool walk_pause_active(void) {
+    if (!s_walk_pause) return false;
+    bool moved = false;
+    for (int i = 0; i < 8; i++) {
+        uint8_t v = wram((uint16_t)(0x6CBE + i));
+        if (v != s_walk_pos[i]) { moved = true; s_walk_pos[i] = v; }
+    }
+    s_walk_still = moved ? 0 : s_walk_still + 1;
+    if (++s_walk_pause > 600 || (s_walk_pause > 10 && s_walk_still >= 20)) {
+        s_walk_pause = 0;
+        FILE *log = dbg_log();
+        if (log) fprintf(log, "[lmb] walk over, preview back on\n");
+        return false;
+    }
+    return true;
+}
+
 static uint8_t real_mouse_buttons(void) {
     /* 2026-11-07: SDL_GetGlobalMouseState() was reported not to see real LMB
      * presses at all on at least one dev machine, while the focus-gated
@@ -1068,6 +1899,7 @@ static uint8_t real_mouse_buttons(void) {
     SDL_Window *win = find_game_window();
     raise_once(win);
     sync_grab(win);
+    confine_mouse(win);
     apply_absolute_cursor(win);
 
     int fmx = 0, fmy = 0;
@@ -1116,9 +1948,11 @@ static uint8_t real_mouse_buttons(void) {
                (have_focus && (focused_buttons & SDL_BUTTON(SDL_BUTTON_LEFT)));
     bool rmb = (buttons & SDL_BUTTON(SDL_BUTTON_RIGHT)) ||
                (have_focus && (focused_buttons & SDL_BUTTON(SDL_BUTTON_RIGHT)));
+    bool mmb = (buttons & SDL_BUTTON(SDL_BUTTON_MIDDLE)) ||
+               (have_focus && (focused_buttons & SDL_BUTTON(SDL_BUTTON_MIDDLE)));
     /* 2026-11-09: Escape menu open (or its activating press still held):
      * the game gets no input at all. */
-    if (menu_blocks_input(lmb, rmb)) return 0;
+    if (menu_blocks_input(lmb, rmb, mmb)) return 0;
     /* 2026-11-07: the Windows test PC reports RMB "acts as LMB" -- i.e. the context
      * action (A) is visibly happening but no cutscene/dialogue skip is.
      * Root cause: the held-frame A|Start combo makes A's visible effect
@@ -1150,6 +1984,9 @@ static uint8_t real_mouse_buttons(void) {
         if (find_cursor_oam(&cya, &cxa) && *ram_byte(cya) < 0xEF) game_started = true;
     }
     if (rmb) out |= game_started ? BTN_A : BTN_START;
+    /* 2026-11-09: middle button = Start (user request): in gameplay that
+     * opens the game's own menu (save/load/new kids), like the NES pad. */
+    if (mmb) out |= BTN_START;
 
     /* Space also sends Start (cutscene skip) -- for fast iteration while
      * testing, so skipping doesn't require chasing the grabbed/confined
@@ -1277,7 +2114,7 @@ static uint8_t real_mouse_buttons(void) {
             }
         } else if (lmb_state == 2) {
             if (lmb) out &= (uint8_t)~BTN_A;   /* one click per press */
-            else lmb_state = 0;
+            else { lmb_state = 0; walk_pause_start(); }
         }
         prev_lmb = lmb;
         lmb_busy = lmb_state != 0;
@@ -1296,7 +2133,8 @@ static uint8_t real_mouse_buttons(void) {
         uint8_t *sv = cart_ram_byte(0x611A);
         uint8_t *ov_lo = cart_ram_byte(0x6B06), *ov_hi = cart_ram_byte(0x6B07);
         bool cutscene = ov_lo && ov_hi && (*ov_lo | *ov_hi);
-        if (sv && game_started && !cutscene && !ctx_busy && !lmb_busy && wram(0x6120) != 1 &&
+        if (sv && game_started && !cutscene && !ctx_busy && !lmb_busy && !walk_pause_active() &&
+            wram(0x6120) != 1 &&
             (*sv == V_GOTO || *sv == preview_verb)) {
             uint8_t want = V_GOTO;
             if (wram(0x711A) == ROOM_BOX) {
@@ -1346,6 +2184,9 @@ static uint8_t real_mouse_buttons(void) {
      * the "PLEASE CHOOSE TWO OTHER KIDS" screen). Arrow keys here let
      * that screen (and any other index-driven menu) work the original
      * way, independent of the mouse-click path above. */
+    /* d-pad takes the cursor back: stop restoring the mouse position */
+    if (keys[SDL_SCANCODE_UP] || keys[SDL_SCANCODE_DOWN] || keys[SDL_SCANCODE_LEFT] || keys[SDL_SCANCODE_RIGHT])
+        s_unclamp_on = false;
     if (keys[SDL_SCANCODE_UP])    out |= BTN_UP;
     if (keys[SDL_SCANCODE_DOWN])  out |= BTN_DOWN;
     if (keys[SDL_SCANCODE_LEFT])  out |= BTN_LEFT;
@@ -1507,10 +2348,29 @@ static int game_save_observer(uint16_t addr) {
     return 0;
 }
 
+/* cursor_to_oam ($9539), reached right after cursor_move_dpad clamped the
+ * cursor: put the mouse's unclamped position back (observer, returns 0). */
+static int cursor_unclamp_hook(uint16_t addr) {
+    (void)addr;
+#ifdef CYC_WITH_SDL
+    if (s_unclamp_on && !s_menu_open) {
+        uint8_t *x = cart_ram_byte(CURSOR_SRC_X), *y = cart_ram_byte(CURSOR_SRC_Y);
+        if (x && y) { *x = s_unclamp_x; *y = s_unclamp_y; }
+    }
+#endif
+    return 0;
+}
+
 NES_MOD_CONSTRUCTOR(register_mouse_cursor_hook) {
+#ifdef CYC_WITH_SDL
+    /* the GPU CRT filter needs SDL's OpenGL renderer (Windows would pick
+     * Direct3D); an explicit SDL_RENDER_DRIVER still wins */
+    if (!getenv("SDL_RENDER_DRIVER")) SDL_SetHint(SDL_HINT_RENDER_DRIVER, "opengl");
+#endif
     nes_mod_register_function_entry_plugin(HOOK_ID, 0xFB68, joypad_poll_hook);
     nes_mod_register_function_entry_plugin(HOOK_ID_BANK0, 0x9EAB, joypad_poll_hook);
     nes_mod_register_function_entry_plugin(HOOK_ID_GAME_SAVE, 0x9659, game_save_observer);
+    nes_mod_register_function_entry_plugin(HOOK_ID_UNCLAMP, 0x9539, cursor_unclamp_hook);
     /* RE experiments need stock $4016 polling so --input scripts drive the
      * real controller path; NESRECOMP_MOUSE_HOOK_DISABLE=1 leaves the hook
      * registered but inactive. Unset (the normal case) behaves as before. */
@@ -1518,6 +2378,7 @@ NES_MOD_CONSTRUCTOR(register_mouse_cursor_hook) {
     nes_mod_set_function_hook_enabled(HOOK_ID, enabled);
     nes_mod_set_function_hook_enabled(HOOK_ID_BANK0, enabled);
     nes_mod_set_function_hook_enabled(HOOK_ID_GAME_SAVE, 1); /* observer only, always on */
+    nes_mod_set_function_hook_enabled(HOOK_ID_UNCLAMP, enabled);
 }
 
 /* 2026-11-09: the host-extras surface, for the Escape menu (SDL builds). */
@@ -1526,6 +2387,9 @@ static const CycHostExtras s_extras = {
     .present = menu_present,
     .frame_end = menu_frame_end,
     .event = menu_event,
+    .present_texture = display_present_texture,
+    .load_setting = display_load_setting,
+    .save_settings = display_save_settings,
 };
 const CycHostExtras *cyc_host_extras(void) { return &s_extras; }
 #else

@@ -51,6 +51,22 @@ void mr_scale_nearest(uint32_t *dst, int dw, int dh, const uint32_t *src, int sw
     }
 }
 
+void mr_blit_scaled(uint32_t *dst, int dw, int dh, int x, int y, int w, int h,
+                    const uint32_t *src, int sw, int sh) {
+    if (w <= 0 || h <= 0) return;
+    for (int j = 0; j < h; j++) {
+        int ty = y + j;
+        if (ty < 0 || ty >= dh) continue;
+        const uint32_t *row = src + (size_t)(j * sh / h) * sw;
+        uint32_t *out = dst + (size_t)ty * dw;
+        for (int i = 0; i < w; i++) {
+            int tx = x + i;
+            if (tx < 0 || tx >= dw) continue;
+            out[tx] = 0xFF000000u | row[i * sw / w];
+        }
+    }
+}
+
 void mr_rect(uint32_t *d, int w, int h, int x, int y, int rw, int rh, uint32_t rgb, int alpha) {
     int x0 = x < 0 ? 0 : x, y0 = y < 0 ? 0 : y;
     int x1 = x + rw > w ? w : x + rw, y1 = y + rh > h ? h : y + rh;

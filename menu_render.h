@@ -5,6 +5,9 @@
 /* Nearest-neighbour scale src (sw x sh) into dst (dw x dh), multiplying
  * every channel by dim/255 (255 = unchanged). */
 void mr_scale_nearest(uint32_t *dst, int dw, int dh, const uint32_t *src, int sw, int sh, int dim);
+/* Nearest-neighbour scale src (sw x sh) into the rectangle x,y,w,h of dst (clipped). */
+void mr_blit_scaled(uint32_t *dst, int dw, int dh, int x, int y, int w, int h,
+                    const uint32_t *src, int sw, int sh);
 /* Alpha-blended rectangle / rounded rectangle (alpha 0..255). */
 void mr_rect(uint32_t *d, int w, int h, int x, int y, int rw, int rh, uint32_t rgb, int alpha);
 void mr_round_rect(uint32_t *d, int w, int h, int x, int y, int rw, int rh, int radius, uint32_t rgb, int alpha);

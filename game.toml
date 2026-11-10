@@ -96,3 +96,15 @@ id = "maniac-mansion.game-save-observer"
 addr = 0x9659
 length = 16
 crc32 = 0x914380F9
+
+# 2026-11-10: cursor edge reach. cursor_move_dpad (b00:$94xx) clamps the
+# cursor to X 16..239 / Y 35..222 every frame, so the mouse could not reach
+# the screen edges. cursor_to_oam ($9539) follows it by FALL-THROUGH (no
+# JSR); an observer here (returns 0, original body runs, no stack pop) puts
+# the unclamped mouse position back into $7116/$7118 before anything reads
+# it. Bytes: AD 16 71 8D 07 02 AD 18 71 8D 04 02 A9 FA 8D 05.
+[[mod_function_hook]]
+id = "maniac-mansion.cursor-unclamp"
+addr = 0x9539
+length = 16
+crc32 = 0x21DA4B6E
