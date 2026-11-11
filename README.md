@@ -15,7 +15,7 @@ Mouse-driven play for the **Maniac Mansion NES prototype** on PC, plus a pause m
 - **Options:** separate Music and Sound FX volume, fullscreen, filter, scale (Auto or a fixed 2x to 6x, for both filters).
 - **Filters:**
   - *Sharp*: pixel-perfect integer scaling. *Auto* uses the largest whole scale that fits (6x on 1440p, 4x on 1080p), or pick a fixed 2x to 6x.
-  - *CRT*: scanlines that widen on bright colors, an RGB stripe mask and a soft glow (this project's own filter), run on the GPU (OpenGL) with a CPU fallback. *Auto* fills the screen, or pick a fixed 2x to 6x.
+  - *CRT* and *CRT Strong*: scanlines that widen on bright colors, an RGB stripe mask and a soft glow (this project's own filter); Strong has thinner beams and darker gaps. Run on the GPU (OpenGL) with a CPU fallback. *Auto* fills the screen, or pick a fixed 2x to 6x.
 - The game's own battery save also updates your most recent save-state slot.
 
 The full player guide (controls, saving, tips) is in [README.txt](README.txt), which ships next to the exe.
@@ -34,7 +34,7 @@ The full player guide (controls, saving, tips) is in [README.txt](README.txt), w
 |---|---|
 | Esc | Pause menu |
 | Enter / Space | Skip a cutscene |
-| F9 | Filter: Sharp / CRT |
+| F9 | Filter: Sharp / CRT / CRT Strong |
 | F11 | Fullscreen |
 | F12 | Screenshot |
 | Tab (hold) | Fast forward |

@@ -99,8 +99,8 @@ static const char *k_out =
     "uniform sampler2D glowt;\n"
     "uniform ivec2 origin;\n"
     "uniform ivec2 content;\n"
-    "const float SHARP = " STR(CRT_SHARP) ", BMIN = " STR(CRT_BEAM_MIN) ", BMAX = " STR(CRT_BEAM_MAX) ";\n"
-    "const float MDIM = " STR(CRT_MASK_DIM) ", GAIN = " STR(CRT_GAIN) ", GLOW = " STR(CRT_GLOW) ";\n"
+    "uniform float BMIN, BMAX, GAIN, GLOW;\n"   /* the current look (crt_set_look) */
+    "const float SHARP = " STR(CRT_SHARP) ", MDIM = " STR(CRT_MASK_DIM) ";\n"
     "vec3 line_color(int j, float px) {\n"
     "    float p = px - 0.5;\n"
     "    float i = floor(p);\n"
@@ -358,6 +358,11 @@ void *crt_gpu_render(void *renderer, const uint32_t *src, int sw, int sh, int dw
         g->Uniform2i(U(P_OUT, "src_size"), sw, sh);
         g->Uniform2i(U(P_OUT, "content"), cp.cw, cp.ch);
         g->Uniform2i(U(P_OUT, "origin"), cp.cx0, cp.cy0);
+        const CrtLook *lk = crt_look();
+        g->Uniform1f(U(P_OUT, "BMIN"), lk->beam_min);
+        g->Uniform1f(U(P_OUT, "BMAX"), lk->beam_max);
+        g->Uniform1f(U(P_OUT, "GAIN"), lk->gain);
+        g->Uniform1f(U(P_OUT, "GLOW"), lk->glow);
         g->BindFramebuffer(GL_FRAMEBUFFER, (GLuint)sdl_fbo);
         g->Viewport(0, 0, dw, dh);
         g->ClearColor(0, 0, 0, 1);

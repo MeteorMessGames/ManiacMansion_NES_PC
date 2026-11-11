@@ -45,7 +45,7 @@ KEYBOARD
 --------
 Esc            Pause menu (see below)
 Enter / Space  Skip a cutscene
-F9             Switch the picture filter: Sharp / CRT
+F9             Switch the picture filter: Sharp / CRT / CRT Strong
 F11            Fullscreen on / off
 F12            Save a screenshot (cyc_shot_0000.png etc. in the game folder)
 Tab (hold)     Fast forward
@@ -97,10 +97,12 @@ Filter (F9)
   Sharp        Crisp, pixel-perfect: every NES pixel the same size, using the
                largest whole scale that fits (6x on a 1440p screen, 4x on
                1080p with thin black bars above and below). Default.
-  CRT          Old TV look: scanlines that widen on bright colors, an RGB
-               stripe mask and a soft glow. Runs on the graphics card
-               (OpenGL); without OpenGL it falls back to the CPU, which is
-               slower.
+  CRT          Old TV look: clear scanlines that widen on bright colors, an
+               RGB stripe mask and a soft glow, like a good home TV.
+  CRT Strong   Thinner scanlines with darker gaps and a bit more glow, like
+               an arcade monitor. Looks best at larger sizes (5x, 6x).
+               Both CRT filters run on the graphics card (OpenGL); without
+               OpenGL they fall back to the CPU, which is slower.
 
 Scale (pause menu -> Options)
   Auto         Sharp: the largest whole scale that fits (default).

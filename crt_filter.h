@@ -20,21 +20,18 @@
 #ifndef CRT_SHARP
 #define CRT_SHARP        2.5f   /* horizontal edge sharpness (1 = plain linear blend) */
 #endif
-#ifndef CRT_BEAM_MIN
-#define CRT_BEAM_MIN     0.28f  /* beam sigma for black */
-#endif
-#ifndef CRT_BEAM_MAX
-#define CRT_BEAM_MAX     0.46f  /* beam sigma for full brightness */
-#endif
 #ifndef CRT_MASK_DIM
 #define CRT_MASK_DIM     0.70f  /* the two dimmed stripes of each mask triad */
 #endif
-#ifndef CRT_GAIN
-#define CRT_GAIN         1.30f  /* brightness compensation for beam gaps + mask */
-#endif
-#ifndef CRT_GLOW
-#define CRT_GLOW         0.10f  /* soft glow amount */
-#endif
+/* The two looks F9 cycles through: beam sigma for black and for full
+ * brightness (in source lines), brightness compensation for the gaps and the
+ * mask, and the glow amount. */
+typedef struct {
+    float beam_min, beam_max, gain, glow;
+} CrtLook;
+enum { CRT_LOOK_NORMAL, CRT_LOOK_STRONG, CRT_LOOK_COUNT };
+void crt_set_look(int look);
+const CrtLook *crt_look(void);
 
 /* Render src (sw x sh ARGB, square pixels) into dst (dw x dh ARGB), the
  * screen fitted to the src aspect and centered, black outside. `curved` is

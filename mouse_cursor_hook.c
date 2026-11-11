@@ -273,9 +273,10 @@ enum { DI_MUSIC, DI_SFX, DI_FULLSCREEN, DI_FILTER, DI_SCALE, DI_BACK, DI_COUNT }
 /* 2026-11-10 (user): only Sharp and CRT. Sharp is pixel-perfect: the largest
  * whole-number scale that fits (6x on 1440p, 4x on 1080p). Smooth and CRT
  * Curved were removed; config values 1 (Smooth) / 3 (CRT Curved) load as
- * Sharp / CRT. Saved as 0 = Sharp, 2 = CRT (the old numbers). */
-enum { FILTER_SHARP, FILTER_CRT, FILTER_COUNT };
-static const char *const k_filter_names[FILTER_COUNT] = { "Sharp", "CRT" };
+ * Sharp / CRT. Saved as 0 = Sharp, 2 = CRT (the old numbers), 4 = CRT Strong
+ * (added 2026-11-10: thinner beams, darker gaps; see crt_filter.c k_looks). */
+enum { FILTER_SHARP, FILTER_CRT, FILTER_CRT_STRONG, FILTER_COUNT };
+static const char *const k_filter_names[FILTER_COUNT] = { "Sharp", "CRT", "CRT Strong" };
 static int  s_filter = FILTER_SHARP;
 static int  s_music_vol = 100, s_sfx_vol = 100;   /* percent, steps of 5 */
 static int  s_vol_drag = -1;                      /* volume row being dragged */
@@ -920,7 +921,7 @@ static void draw_slot_preview(uint32_t *d, int pw, int ph, const MenuLayout *L) 
 /* Gameplay picture: the host's own (NULL), the canvas with a toast on it,
  * or the CRT filter's at window resolution. */
 static const uint32_t *display_present(int *w, int *h) {
-    bool crt = s_filter == FILTER_CRT;
+    bool crt = s_filter != FILTER_SHARP;
     int cw = 256, ch = 240;
     /* no window yet: the host sizes the new window from this first picture,
      * so give it the plain one */
@@ -1014,7 +1015,7 @@ static bool volume_bar(const MenuLayout *L, int row, int *bx, int *by, int *bw, 
 static void *display_present_texture(void *ctx, void *renderer, int *w, int *h) {
     (void)ctx;
     if (s_menu_open || crt_gpu_failed()) return NULL;
-    if (s_filter != FILTER_CRT) return NULL;
+    if (s_filter == FILTER_SHARP) return NULL;
     int cw = 256, ch = 240;
     const uint32_t *pic = cyc_render_present(&cw, &ch);
     if (!pic || cw > CYC_VIDEO_MAX_WIDTH || ch != 240) return NULL;
@@ -1048,7 +1049,7 @@ static const char *display_row_value(int item, char *buf, size_t n) {
     case DI_FILTER:     return k_filter_names[s_filter];
     case DI_SCALE: {
         int max = cyc_host_display_max_scale();
-        if (s_scale <= 0 && s_filter == FILTER_CRT) return "Auto (fill)";
+        if (s_scale <= 0 && s_filter != FILTER_SHARP) return "Auto (fill)";
         if (s_scale <= 0) snprintf(buf, n, "Auto (%dx)", max);
         else if (s_scale > max) snprintf(buf, n, "%dx (fits %dx)", s_scale, max);
         else snprintf(buf, n, "%dx", s_scale);
@@ -1079,7 +1080,7 @@ static const uint32_t *menu_present(void *ctx, int *w, int *h) {
     bool slots = s_menu_mode == MODE_SAVE || s_menu_mode == MODE_LOAD;
 
     /* game, lightly dimmed (darker behind the slot preview) */
-    if (s_filter == FILTER_CRT) {
+    if (s_filter != FILTER_SHARP) {
         /* keep the CRT look behind the menu: filter the frozen picture once
          * per menu opening / size, then dim a copy each frame */
         static uint32_t *crt_bg = NULL;
@@ -1350,6 +1351,7 @@ static void apply_filter(void) {
     int integer = s_filter == FILTER_SHARP;
     cyc_host_display_set(-1, linear, integer);
     cyc_host_display_set_scale(s_filter == FILTER_SHARP ? s_scale : 0);
+    crt_set_look(s_filter == FILTER_CRT_STRONG ? CRT_LOOK_STRONG : CRT_LOOK_NORMAL);
     crt_set_scale(s_scale);     /* CRT: fixed size inside its window-res picture */
 }
 
@@ -1367,7 +1369,7 @@ static void step_scale(int dir) {
     cyc_host_save_settings();
     char v[24];
     if (s_scale) snprintf(v, sizeof v, "%dx", s_scale);
-    else if (s_filter == FILTER_CRT) snprintf(v, sizeof v, "Auto (fill)");
+    else if (s_filter != FILTER_SHARP) snprintf(v, sizeof v, "Auto (fill)");
     else snprintf(v, sizeof v, "Auto (%dx)", max);
     display_toast("Scale", v);
 }
@@ -1453,7 +1455,7 @@ static void display_frame_end(void) {
 
 static void display_load_setting(void *ctx, const char *key, const char *value) {
     (void)ctx;
-    if (!strcmp(key, "Filter")) { int v = atoi(value); s_filter = (v == 2 || v == 3) ? FILTER_CRT : FILTER_SHARP; }
+    if (!strcmp(key, "Filter")) { int v = atoi(value); s_filter = v == 4 ? FILTER_CRT_STRONG : (v == 2 || v == 3) ? FILTER_CRT : FILTER_SHARP; }
     else if (!strcmp(key, "MusicVolume")) s_music_vol = atoi(value);
     else if (!strcmp(key, "SfxVolume")) s_sfx_vol = atoi(value);
     else if (!strcmp(key, "Scale")) { int v = atoi(value); s_scale = v >= 2 && v <= 6 ? v : 0; }
@@ -1465,7 +1467,7 @@ static void display_load_setting(void *ctx, const char *key, const char *value) 
 static void display_save_settings(void *ctx, FILE *f) {
     (void)ctx;
     fprintf(f, "Filter = %d\nMusicVolume = %d\nSfxVolume = %d\nScale = %d\n",
-            s_filter == FILTER_CRT ? 2 : 0, s_music_vol, s_sfx_vol, s_scale);
+            s_filter == FILTER_CRT_STRONG ? 4 : s_filter == FILTER_CRT ? 2 : 0, s_music_vol, s_sfx_vol, s_scale);
 }
 
 static void menu_frame_end(void *ctx) {

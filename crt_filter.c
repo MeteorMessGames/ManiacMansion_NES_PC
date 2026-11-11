@@ -7,7 +7,8 @@
  *   c_j     = that line's color at sx (sharp horizontal blend, linear light)
  *   out     = sum over lines j, j+1 of c * exp(-d^2 / (2 sigma(c)^2)),
  *             sigma(c) = mix(BEAM_MIN, BEAM_MAX, c) per channel
- *   out     = out * mask(x % 3) * GAIN + GLOW * blurred(sx, sy)
+ *   out     = out * mask(x % 3) * gain + glow * blurred(sx, sy)
+ * (beam widths, gain and glow come from the current look, crt_set_look)
  * The per-line beam weights depend only on the row and the channel value,
  * so they are tabled once per output row.
  */
@@ -61,6 +62,16 @@ void crt_params(int dw, int dh, int sw, int sh, CrtParams *p) {
     fit_rect(dw, dh, sw, sh, &p->cx0, &p->cy0, &p->cw, &p->ch);
 }
 
+/* ---- looks ---- */
+
+static const CrtLook k_looks[CRT_LOOK_COUNT] = {
+    { 0.20f, 0.30f, 1.75f, 0.10f },   /* CRT: defined scanlines */
+    { 0.17f, 0.26f, 2.00f, 0.15f },   /* CRT Strong: thin beams, dark gaps */
+};
+static const CrtLook *s_look = &k_looks[CRT_LOOK_NORMAL];
+void crt_set_look(int look) { s_look = &k_looks[look >= 0 && look < CRT_LOOK_COUNT ? look : 0]; }
+const CrtLook *crt_look(void) { return s_look; }
+
 /* ---- tables ---- */
 
 static bool  s_init;
@@ -80,7 +91,7 @@ static inline uint8_t encode(float v) {
     return s_enc[(int)(v * ENC_N + 0.5f)];
 }
 
-static inline float beam_sigma(float c) { return CRT_BEAM_MIN + (CRT_BEAM_MAX - CRT_BEAM_MIN) * c; }
+static inline float beam_sigma(float c) { return s_look->beam_min + (s_look->beam_max - s_look->beam_min) * c; }
 
 /* ---- per-frame state shared by the workers ---- */
 
@@ -150,6 +161,7 @@ static inline void glow_color(float px, float py, float out[3]) {
 
 static void render_rows(int r0, int r1) {
     float wt0[WT_N + 1], wt1[WT_N + 1];
+    const float gain = s_look->gain, glow = s_look->glow;
     for (int y = r0; y < r1; y++) {
         uint32_t *row = s_f.dst + (size_t)y * s_f.dw;
         int ry = y - s_f.y0;
@@ -179,7 +191,7 @@ static void render_rows(int r0, int r1) {
                 float ca = a[c] < 0 ? 0 : a[c] > 1 ? 1 : a[c];
                 float cb = b[c] < 0 ? 0 : b[c] > 1 ? 1 : b[c];
                 float v = ca * wt0[(int)(ca * WT_N + 0.5f)] + cb * wt1[(int)(cb * WT_N + 0.5f)];
-                v = v * m[c] * CRT_GAIN + g[c] * CRT_GLOW;
+                v = v * m[c] * gain + g[c] * glow;
                 o[c] = encode(v);
             }
             row[s_f.x0 + rx] = 0xFF000000u | ((uint32_t)o[0] << 16) | ((uint32_t)o[1] << 8) | o[2];
