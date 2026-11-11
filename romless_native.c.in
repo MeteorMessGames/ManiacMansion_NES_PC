@@ -15,6 +15,9 @@
 @MM_ID_LINES@
 
 const char    *cyc_native_fds_bios_path = NULL;
+/* The host's default ROM when none is given on the command line (named for
+ * FDS images, but cyc_host.c uses it for any game): the player's ROM next
+ * to the exe, so double-clicking the exe works. Set by find_rom() below. */
 const char    *cyc_native_fds_image_path = NULL;
 const char    *cyc_native_fds_hle = NULL;
 const uint32_t cyc_native_fds_bios_crc32 = 0;
@@ -22,6 +25,36 @@ const CycRamView *const cyc_native_ram_views[1] = { NULL };
 const uint32_t cyc_native_ram_view_count = 0;
 
 @MM_HOOK_SITES@
+
+#define MM_ROM_NAME "Maniac Mansion (Prototype).nes"
+
+/* Before main: look for the ROM next to the exe. Started without a ROM
+ * argument and none found, tell the player what to do (a GUI exe has no
+ * console for the host's usage text, so it would just quit silently). */
+#include <SDL.h>
+#include <stdio.h>
+#include <stdlib.h>   /* __argc on Windows */
+__attribute__((constructor)) static void find_rom(void) {
+    static char path[4096];
+    char *base = SDL_GetBasePath();
+    snprintf(path, sizeof path, "%s%s", base ? base : "", MM_ROM_NAME);
+    if (base) SDL_free(base);
+    SDL_RWops *f = SDL_RWFromFile(path, "rb");   /* UTF-8 path on Windows too */
+    if (f) {
+        SDL_RWclose(f);
+        cyc_native_fds_image_path = path;
+        return;
+    }
+#ifdef _WIN32
+    if (__argc <= 1)
+        SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_INFORMATION, "Maniac Mansion NES PC",
+            "Your ROM is not here yet.\n\n"
+            "Put your own copy of the Maniac Mansion NES prototype ROM in the\n"
+            "same folder as this program, named exactly:\n\n"
+            "    " MM_ROM_NAME "\n\n"
+            "then start the game again. See README.txt.", NULL);
+#endif
+}
 
 bool cyc_native_has(uint16_t addr) {
     (void)addr;

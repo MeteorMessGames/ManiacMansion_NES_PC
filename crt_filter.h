@@ -14,13 +14,27 @@
 #include <stdint.h>
 
 /* The look. Linear-light math; beam widths are in source lines. */
+#ifndef CRT_GAMMA
 #define CRT_GAMMA        2.2f   /* source and output gamma */
+#endif
+#ifndef CRT_SHARP
 #define CRT_SHARP        2.5f   /* horizontal edge sharpness (1 = plain linear blend) */
+#endif
+#ifndef CRT_BEAM_MIN
 #define CRT_BEAM_MIN     0.28f  /* beam sigma for black */
+#endif
+#ifndef CRT_BEAM_MAX
 #define CRT_BEAM_MAX     0.46f  /* beam sigma for full brightness */
+#endif
+#ifndef CRT_MASK_DIM
 #define CRT_MASK_DIM     0.70f  /* the two dimmed stripes of each mask triad */
+#endif
+#ifndef CRT_GAIN
 #define CRT_GAIN         1.30f  /* brightness compensation for beam gaps + mask */
+#endif
+#ifndef CRT_GLOW
 #define CRT_GLOW         0.10f  /* soft glow amount */
+#endif
 
 /* Render src (sw x sh ARGB, square pixels) into dst (dw x dh ARGB), the
  * screen fitted to the src aspect and centered, black outside. `curved` is

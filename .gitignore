@@ -21,3 +21,5 @@ mmresume.md
 /win-backups/
 __pycache__/
 /dist-release/
+/build-romless/
+/build-win-romless/
