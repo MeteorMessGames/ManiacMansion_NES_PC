@@ -15,7 +15,7 @@ Mouse-driven play for the **Maniac Mansion NES prototype** on PC, plus a pause m
 - **Options:** separate Music and Sound FX volume, fullscreen, filter, scale (Auto or a fixed 2x to 6x, for both filters).
 - **Filters:**
   - *Sharp*: pixel-perfect integer scaling. *Auto* uses the largest whole scale that fits (6x on 1440p, 4x on 1080p), or pick a fixed 2x to 6x.
-  - *CRT*: a port of the crt-royale-fast shader, run on the GPU (OpenGL) with a CPU fallback. *Auto* fills the screen, or pick a fixed 2x to 6x.
+  - *CRT*: scanlines that widen on bright colors, an RGB stripe mask and a soft glow (this project's own filter), run on the GPU (OpenGL) with a CPU fallback. *Auto* fills the screen, or pick a fixed 2x to 6x.
 - The game's own battery save also updates your most recent save-state slot.
 
 The full player guide (controls, saving, tips) is in [README.txt](README.txt), which ships next to the exe.
@@ -75,7 +75,7 @@ Windows builds are cross-compiled with MinGW (`-DCMAKE_TOOLCHAIN_FILE=mingw-tool
 
 ## License
 
-This project's code is licensed under the **GNU General Public License, version 2 or (at your option) any later version** (GPL-2.0-or-later); see [LICENSE](LICENSE). The CRT filter is derived from crt-royale, which uses the same license.
+This project's code is licensed under the **GNU General Public License, version 2 or (at your option) any later version** (GPL-2.0-or-later); see [LICENSE](LICENSE).
 
 Bundled third-party files keep their own licenses: `third_party/stb_truetype.h` (public domain / MIT) and the DejaVu Sans Bold font embedded in `menu_font.h` (DejaVu fonts license).
 
@@ -85,4 +85,3 @@ Bundled third-party files keep their own licenses: `third_party/stb_truetype.h` 
 - [NESRecomp](https://github.com/mstan/nesrecomp) by mstan.
 - [stb_truetype](https://github.com/nothings/stb) (public domain / MIT).
 - [DejaVu fonts](https://dejavu-fonts.github.io/) (free license).
-- The CRT filter is based on crt-royale by TroggleMonkey, from the libretro slang-shaders collection.

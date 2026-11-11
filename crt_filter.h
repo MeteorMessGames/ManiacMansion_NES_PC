@@ -1,21 +1,30 @@
-/* crt_filter.h - CRT look for the presented picture (CPU, multithreaded).
+/* crt_filter.h - CRT look for the presented picture (CPU version).
  *
- * A CPU port of libretro's crt-royale-fast (slang-shaders,
- * presets/crt-royale-fast/crt-royale-fast-rgb-aperture.slangp, shaders in
- * crt/shaders/crt-royale/src-fast) with its default parameters: CRT gamma
- * linearize, generalized-gaussian scanline beams sampled per output row,
- * quintic horizontal resampling, the Royale aperture-grille mask texture
- * resized to 3-px triads, the brightpass + 17-tap bloom that puts back the
- * light the mask takes away, and (CRT Curved) crt-geom style curvature with
- * Royale's corner mask. SDL's renderer cannot run slang shaders, so this runs
- * on the CPU at the window's resolution, split across worker threads.
+ * An original, simple CRT model written for this project:
+ *   - each source line is a light beam with a gaussian vertical profile;
+ *     brighter colors make a wider beam (bright lines "bloom" into the gap)
+ *   - pixel-art friendly horizontal sampling (sharp, with a short blend)
+ *   - an RGB stripe mask, one stripe per output column
+ *   - a faint soft glow from a blurred copy of the picture
+ * The GPU version (crt_gpu.c) uses the same constants and math, so both
+ * draw the same picture and crt_map_point maps the mouse for either.
  */
 #pragma once
 #include <stdbool.h>
 #include <stdint.h>
 
+/* The look. Linear-light math; beam widths are in source lines. */
+#define CRT_GAMMA        2.2f   /* source and output gamma */
+#define CRT_SHARP        2.5f   /* horizontal edge sharpness (1 = plain linear blend) */
+#define CRT_BEAM_MIN     0.28f  /* beam sigma for black */
+#define CRT_BEAM_MAX     0.46f  /* beam sigma for full brightness */
+#define CRT_MASK_DIM     0.70f  /* the two dimmed stripes of each mask triad */
+#define CRT_GAIN         1.30f  /* brightness compensation for beam gaps + mask */
+#define CRT_GLOW         0.10f  /* soft glow amount */
+
 /* Render src (sw x sh ARGB, square pixels) into dst (dw x dh ARGB), the
- * screen fitted to the src aspect and centered, black outside. */
+ * screen fitted to the src aspect and centered, black outside. `curved` is
+ * accepted for compatibility and ignored (flat screen only). */
 void crt_render(uint32_t *dst, int dw, int dh, const uint32_t *src, int sw, int sh, bool curved);
 
 /* Picture size: 0 = fill dst (default), k > 0 = exactly k x src, centered,
@@ -30,15 +39,8 @@ void crt_fit_rect(int dw, int dh, int sw, int sh, int *x0, int *y0, int *w, int 
  * geometry; false if the point is off the picture. */
 bool crt_map_point(int dw, int dh, int sw, int sh, bool curved, float ox, float oy, float *sx, float *sy);
 
-/* The derived constants and screen rectangle the CPU filter uses, for the
- * GPU version (crt_gpu.c) so both render the same picture. */
+/* Screen rectangle for the GPU version. */
 typedef struct {
-    float mask[3][3];          /* grille: [column % 3][r, g, b] */
-    float undim, center_weight, contrast;
-    float bloom_w[5];          /* normalized gaussian taps 0..4 */
-    float stretch[3];          /* crt-geom maxscale() */
-    float conv_y[3];
-    float beam_min, beam_max, beam_power;
     int cx0, cy0, cw, ch;      /* screen rect in the dw x dh picture */
 } CrtParams;
 void crt_params(int dw, int dh, int sw, int sh, CrtParams *out);

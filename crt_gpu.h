@@ -1,4 +1,4 @@
-/* crt_gpu.h - the crt_filter.c CRT (crt-royale-fast port) as OpenGL shaders.
+/* crt_gpu.h - the crt_filter.c CRT model as OpenGL shaders.
  *
  * Runs on the GPU through SDL's OpenGL renderer (the hook asks SDL for it):
  * the game canvas is uploaded to a texture, the passes render through

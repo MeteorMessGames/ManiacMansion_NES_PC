@@ -2,13 +2,10 @@
  * render into an SDL render-target texture with our own program, saving and
  * restoring the GL state SDL's OpenGL renderer relies on.
  *
- * Passes (all row 0 = top; texelFetch, no filtering):
- *   1 VS   sw x ch   scanlines-vertical-interlacing (beams from 3 source lines)
- *   2 DIM  cw x ch   scanlines-horizontal-apply-mask (+ crt-geom curvature)
- *   3 BP   cw x ch   brightpass
- *   4 BV   cw x ch   bloom-vertical
- *   5 out  dw x dh   bloom-horizontal-reconstitute + lcd gamma, in the screen
- *                    rect of an SDL target texture, black around it
+ * Two passes (row 0 = top; texelFetch, no filtering):
+ *   1 GLOW  sw x sh   the source in linear light, 3x3 box-blurred
+ *   2 OUT   dw x dh   beams + mask + glow (crt_filter.c's model) in the
+ *                     screen rect of an SDL target texture, black around it
  */
 #include "crt_gpu.h"
 #include "crt_filter.h"
@@ -52,8 +49,9 @@ typedef struct {
 #undef GL_DECL
 } Gl;
 
-enum { P_VS, P_DIM, P_BP, P_BV, P_OUT, P_COUNT };
-enum { T_SRC, T_VS, T_DIM, T_BP, T_BV, T_COUNT };
+
+enum { P_GLOW, P_OUT, P_COUNT };
+enum { T_SRC, T_GLOW, T_COUNT };
 
 static struct {
     bool tried, failed;
@@ -67,6 +65,8 @@ static struct {
 } G;
 
 /* ---- shaders ---- */
+#define STR_(x) #x
+#define STR(x) STR_(x)
 static const char *k_vertex =
     "#version 130\n"
     "void main() {\n"
@@ -79,140 +79,62 @@ static const char *k_common =
     "out vec4 frag;\n"
     "uniform sampler2D src;\n"
     "uniform ivec2 src_size;\n"
-    "uniform ivec2 content;\n"
-    "uniform int curved;\n"
-    "uniform vec3 stretch;\n"
-    "const float PI = 3.14159265358979;\n"
-    "vec3 lin(vec3 c) { return pow(c, vec3(2.4)); }\n"
+    "const float GAMMA = " STR(CRT_GAMMA) ";\n"
     "vec3 srcpx(int x, int y) {\n"
-    "    return texelFetch(src, ivec2(clamp(x, 0, src_size.x - 1), clamp(y, 0, src_size.y - 1)), 0).rgb;\n"
-    "}\n"
-    "const float R = 4.0, D = 1.5, ASP = 0.75;\n"
-    "vec2 bkwtrans(vec2 xy) {\n"
-    "    float d2 = D * D;\n"
-    "    float A = dot(xy, xy) + d2;\n"
-    "    float B = 2.0 * (R * (-D) - d2);\n"
-    "    float C = d2 + 2.0 * R * D;\n"
-    "    float c = (-B - sqrt(max(B * B - 4.0 * A * C, 0.0))) / (2.0 * A);\n"
-    "    vec2 p = c * xy / R;\n"
-    "    float a = sqrt(max(1.0 - dot(p, p), 0.0));\n"
-    "    float r = max(abs(R * acos(a)), 1e-5);\n"
-    "    return p * (r / sin(r / R));\n"
-    "}\n"
-    "/* screen uv -> picture uv (crt-geom), cval = corner coverage */\n"
-    "vec2 geom(vec2 uv, out float cval) {\n"
-    "    vec2 xy = (uv - 0.5) * ASP * stretch.z + stretch.xy;\n"
-    "    vec2 o = bkwtrans(xy) / ASP + 0.5;\n"
-    "    vec2 q = min(o, 1.0 - o) * ASP;\n"
-    "    float cd = 0.006;\n"
-    "    q = cd - min(q, vec2(cd));\n"
-    "    cval = clamp((cd - length(q)) * 400.0, 0.0, 1.0);\n"
-    "    return o;\n"
-    "}\n"
-    "/* picture uv for this content pixel; false = off the screen */\n"
-    "bool picture_uv(ivec2 p, out vec2 uv, out float cval) {\n"
-    "    uv = (vec2(p) + 0.5) / vec2(content);\n"
-    "    cval = 1.0;\n"
-    "    if (curved != 0) {\n"
-    "        uv = geom(uv, cval);\n"
-    "        if (uv.x < 0.0 || uv.x >= 1.0 || uv.y < 0.0 || uv.y >= 1.0 || cval <= 0.0) return false;\n"
-    "    }\n"
-    "    return true;\n"
+    "    return pow(texelFetch(src, ivec2(clamp(x, 0, src_size.x - 1), clamp(y, 0, src_size.y - 1)), 0).rgb, vec3(GAMMA));\n"
     "}\n";
 
-/* 1: vertical scanlines, sw x ch */
-static const char *k_vs =
-    "uniform float ph;\n"
-    "uniform vec3 conv;\n"
-    "uniform vec3 beam;\n"   /* min sigma, max sigma, spot power */
-    "vec3 contrib(vec3 d, vec3 c) {\n"
-    "    vec3 sigma = beam.x + (beam.y - beam.x) * pow(c, vec3(beam.z));\n"
-    "    vec3 alpha = sqrt(2.0) * sigma;\n"
-    "    vec3 scale = c / (alpha * sqrt(PI));\n"
-    "    float off = ph / 3.0;\n"
-    "    vec3 a = d / alpha, b = (d + off) / alpha, e = abs(d - off) / alpha;\n"
-    "    return scale / 3.0 * (exp(-a * a) + exp(-b * b) + exp(-e * e)) * 0.5;\n"
-    "}\n"
-    "vec3 line(int x, int y) { return (y < 0 || y >= src_size.y) ? vec3(0.0) : lin(srcpx(x, y)); }\n"
-    "void main() {\n"
-    "    int x = int(gl_FragCoord.x), y = int(gl_FragCoord.y);\n"
-    "    float curr = (float(y) + 0.5) * float(src_size.y) / float(content.y);\n"
-    "    int idx = int(floor(curr - 0.4995));\n"
-    "    float dist = curr - (float(idx) + 0.5);\n"
-    "    bool dround = dist >= 0.5;\n"
-    "    vec3 d2 = vec3(dist) - conv;\n"
-    "    vec3 s = contrib(d2, line(x, idx)) + contrib(abs(1.0 - d2), line(x, idx + 1));\n"
-    "    s += dround ? contrib(2.0 - d2, line(x, idx + 2)) : contrib(d2 + 1.0, line(x, idx - 1));\n"
-    "    frag = vec4(s, 1.0);\n"
-    "}\n";
-
-/* 2: horizontal + mask (+ curvature), cw x ch */
-static const char *k_dim =
-    "uniform sampler2D vs;\n"
-    "uniform vec3 mask[3];\n"
+/* 1: linear-light 3x3 box blur of the source (glow) */
+static const char *k_glow =
     "void main() {\n"
     "    ivec2 p = ivec2(gl_FragCoord.xy);\n"
-    "    vec2 uv; float cval;\n"
-    "    if (!picture_uv(p, uv, cval)) { frag = vec4(0.0); return; }\n"
-    "    int sw = src_size.x;\n"
-    "    float curr = uv.x * float(sw);\n"
-    "    int i = int(floor(curr - 0.4995));\n"
-    "    float t = clamp(curr - (float(i) + 0.5), 0.0, 1.0);\n"
-    "    float w = t * t * t * (t * (t * 6.0 - 15.0) + 10.0);\n"
-    "    if (i < 0) { i = 0; w = 0.0; }\n"
-    "    if (i > sw - 2) i = max(sw - 2, 0);\n"
-    "    int row = curved != 0 ? min(int(uv.y * float(content.y)), content.y - 1) : p.y;\n"
-    "    vec3 a = texelFetch(vs, ivec2(i, row), 0).rgb;\n"
-    "    vec3 b = texelFetch(vs, ivec2(min(i + 1, sw - 1), row), 0).rgb;\n"
-    "    vec3 col = max(mix(a, b, w), 0.0);\n"
-    "    frag = vec4(col * mask[p.x % 3] * cval, 1.0);\n"
+    "    vec3 acc = vec3(0.0);\n"
+    "    for (int dy = -1; dy <= 1; dy++)\n"
+    "        for (int dx = -1; dx <= 1; dx++) acc += srcpx(p.x + dx, p.y + dy);\n"
+    "    frag = vec4(acc / 9.0, 1.0);\n"
     "}\n";
 
-/* 3: brightpass, cw x ch */
-static const char *k_bp =
-    "uniform sampler2D dimt;\n"
-    "uniform float undim, cweight, contrast;\n"
-    "void main() {\n"
-    "    ivec2 p = ivec2(gl_FragCoord.xy);\n"
-    "    vec3 dim = texelFetch(dimt, p, 0).rgb;\n"
-    "    vec2 uv; float cval;\n"
-    "    if (!picture_uv(p, uv, cval)) { frag = vec4(0.0); return; }\n"
-    "    int ox = int(uv.x * float(src_size.x));\n"
-    "    int oy = curved != 0 ? int(uv.y * float(src_size.y))\n"
-    "                         : int((float(p.y) + 0.5) * float(src_size.y) / float(content.y));\n"
-    "    vec3 orig = contrast * lin(srcpx(ox, oy));\n"
-    "    vec3 inten = dim * undim;\n"
-    "    vec3 area = max(orig - cweight * inten, 0.0);\n"
-    "    vec3 safe = max(inten, vec3(1e-20));\n"
-    "    vec3 ratio = clamp(((1.0 - area) / safe - 1.0) / (cweight - 1.0), 0.0, 1.0);\n"
-    "    frag = vec4(dim * ratio, 1.0);\n"
-    "}\n";
-
-/* 4: bloom vertical, cw x ch */
-static const char *k_bv =
-    "uniform sampler2D bpt;\n"
-    "uniform float bw[5];\n"
-    "vec3 at(ivec2 p) { return texelFetch(bpt, ivec2(p.x, clamp(p.y, 0, content.y - 1)), 0).rgb; }\n"
-    "void main() {\n"
-    "    ivec2 p = ivec2(gl_FragCoord.xy);\n"
-    "    vec3 s = bw[0] * at(p);\n"
-    "    for (int k = 1; k < 5; k++) s += bw[k] * (at(p - ivec2(0, k)) + at(p + ivec2(0, k)));\n"
-    "    frag = vec4(s, 1.0);\n"
-    "}\n";
-
-/* 5: bloom horizontal + reconstitute + lcd gamma, into the screen rect */
+/* 2: beams of the two nearest source lines, stripe mask, glow, gamma */
 static const char *k_out =
-    "uniform sampler2D dimt, bpt, bvt;\n"
-    "uniform float bw[5];\n"
-    "uniform float undim;\n"
+    "uniform sampler2D glowt;\n"
     "uniform ivec2 origin;\n"
-    "vec3 at(ivec2 p) { return texelFetch(bvt, ivec2(clamp(p.x, 0, content.x - 1), p.y), 0).rgb; }\n"
+    "uniform ivec2 content;\n"
+    "const float SHARP = " STR(CRT_SHARP) ", BMIN = " STR(CRT_BEAM_MIN) ", BMAX = " STR(CRT_BEAM_MAX) ";\n"
+    "const float MDIM = " STR(CRT_MASK_DIM) ", GAIN = " STR(CRT_GAIN) ", GLOW = " STR(CRT_GLOW) ";\n"
+    "vec3 line_color(int j, float px) {\n"
+    "    float p = px - 0.5;\n"
+    "    float i = floor(p);\n"
+    "    float f = clamp((p - i - 0.5) * SHARP + 0.5, 0.0, 1.0);\n"
+    "    return mix(srcpx(int(i), j), srcpx(int(i) + 1, j), f);\n"
+    "}\n"
+    "vec3 glow_at(float px, float py) {\n"
+    "    vec2 q = vec2(px, py) - 0.5;\n"
+    "    vec2 b = floor(q), f = q - b;\n"
+    "    ivec2 i = ivec2(b), hi = src_size - 1;\n"
+    "    vec3 a = texelFetch(glowt, clamp(i, ivec2(0), hi), 0).rgb;\n"
+    "    vec3 c = texelFetch(glowt, clamp(i + ivec2(1, 0), ivec2(0), hi), 0).rgb;\n"
+    "    vec3 d = texelFetch(glowt, clamp(i + ivec2(0, 1), ivec2(0), hi), 0).rgb;\n"
+    "    vec3 e = texelFetch(glowt, clamp(i + ivec2(1, 1), ivec2(0), hi), 0).rgb;\n"
+    "    return mix(mix(a, c, f.x), mix(d, e, f.x), f.y);\n"
+    "}\n"
+    "vec3 beam(vec3 c, float d) {\n"
+    "    vec3 s = BMIN + (BMAX - BMIN) * c;\n"
+    "    return c * exp(-(d * d) / (2.0 * s * s));\n"
+    "}\n"
     "void main() {\n"
     "    ivec2 p = ivec2(gl_FragCoord.xy) - origin;\n"
-    "    vec3 bl = bw[0] * at(p);\n"
-    "    for (int k = 1; k < 5; k++) bl += bw[k] * (at(p - ivec2(k, 0)) + at(p + ivec2(k, 0)));\n"
-    "    vec3 v = (texelFetch(dimt, p, 0).rgb - texelFetch(bpt, p, 0).rgb + bl) * undim;\n"
-    "    frag = vec4(pow(clamp(v, 0.0, 1.0), vec3(1.0 / 2.4)), 1.0);\n"
+    "    float px = (float(p.x) + 0.5) * float(src_size.x) / float(content.x);\n"
+    "    float sy = (float(p.y) + 0.5) * float(src_size.y) / float(content.y);\n"
+    "    float q = sy - 0.5;\n"
+    "    float j = floor(q), t = q - j;\n"
+    "    vec3 a = clamp(line_color(int(j), px), 0.0, 1.0);\n"
+    "    vec3 b = clamp(line_color(int(j) + 1, px), 0.0, 1.0);\n"
+    "    vec3 v = beam(a, t) + beam(b, 1.0 - t);\n"
+    "    int slot = int(gl_FragCoord.x) % 3;\n"
+    "    vec3 m = vec3(MDIM);\n"
+    "    m[slot] = 1.0;\n"
+    "    v = v * m * GAIN + glow_at(px, sy) * GLOW;\n"
+    "    frag = vec4(pow(clamp(v, 0.0, 1.0), vec3(1.0 / GAMMA)), 1.0);\n"
     "}\n";
 
 /* ---- GL helpers ---- */
@@ -312,7 +234,7 @@ static void state_restore(const GlState *s) {
     if (s->srgb) g->Enable(GL_FRAMEBUFFER_SRGB);
 }
 
-/* (re)size texture t; intermediate textures get an FBO */
+/* (re)size texture t; the glow texture gets an FBO */
 static bool ensure_tex(int t, int w, int h) {
     Gl *g = &G.gl;
     if (G.tw[t] == w && G.th[t] == h) return true;
@@ -362,7 +284,7 @@ static bool create(SDL_Renderer *ren) {
         } else {
             GlState st;
             state_take(&st);
-            const char *frags[P_COUNT] = { k_vs, k_dim, k_bp, k_bv, k_out };
+            const char *frags[P_COUNT] = { k_glow, k_out };
             for (int i = 0; i < P_COUNT && ok; i++) ok = (G.prog[i] = program(frags[i])) != 0;
             if (ok) {
                 g->GenTextures(T_COUNT, G.tex);
@@ -380,33 +302,10 @@ static bool create(SDL_Renderer *ren) {
     return ok;
 }
 
-static void use(int p, int tex_units[][2], int n) {
-    Gl *g = &G.gl;
-    g->UseProgram(G.prog[p]);
-    for (int i = 0; i < n; i++) {
-        g->ActiveTexture(GL_TEXTURE0 + tex_units[i][1]);
-        g->BindTexture(GL_TEXTURE_2D, G.tex[tex_units[i][0]]);
-    }
-}
-
 #define U(p, name) G.gl.GetUniformLocation(G.prog[p], name)
 
-static void common_uniforms(int p, int sw, int sh, const CrtParams *cp, bool curved) {
-    Gl *g = &G.gl;
-    g->Uniform1i(U(p, "src"), 0);
-    g->Uniform2i(U(p, "src_size"), sw, sh);
-    g->Uniform2i(U(p, "content"), cp->cw, cp->ch);
-    g->Uniform1i(U(p, "curved"), curved ? 1 : 0);
-    g->Uniform3f(U(p, "stretch"), cp->stretch[0], cp->stretch[1], cp->stretch[2]);
-}
-
-static void pass_to(int t, int w, int h) {
-    G.gl.BindFramebuffer(GL_FRAMEBUFFER, G.fbo[t]);
-    G.gl.Viewport(0, 0, w, h);
-    G.gl.DrawArrays(GL_TRIANGLES, 0, 3);
-}
-
 void *crt_gpu_render(void *renderer, const uint32_t *src, int sw, int sh, int dw, int dh, bool curved) {
+    (void)curved;
     SDL_Renderer *ren = (SDL_Renderer *)renderer;
     if (G.failed || !ren || !src || sw < 2 || sh < 2 || dw < 2 || dh < 2) return NULL;
     if (!G.tried) {
@@ -435,8 +334,7 @@ void *crt_gpu_render(void *renderer, const uint32_t *src, int sw, int sh, int dw
     state_take(&st);
     GLint sdl_fbo = st.fbo;
     while (g->GetError() != GL_NO_ERROR) {}   /* not ours */
-    bool ok = ensure_tex(T_SRC, sw, sh) && ensure_tex(T_VS, sw, cp.ch) && ensure_tex(T_DIM, cp.cw, cp.ch) &&
-              ensure_tex(T_BP, cp.cw, cp.ch) && ensure_tex(T_BV, cp.cw, cp.ch);
+    bool ok = ensure_tex(T_SRC, sw, sh) && ensure_tex(T_GLOW, sw, sh);
     if (ok) {
         g->ActiveTexture(GL_TEXTURE0);
         g->BindTexture(GL_TEXTURE_2D, G.tex[T_SRC]);
@@ -445,45 +343,20 @@ void *crt_gpu_render(void *renderer, const uint32_t *src, int sw, int sh, int dw
         g->TexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, sw, sh, GL_BGRA, GL_UNSIGNED_BYTE, src);
         g->BindVertexArray(G.vao);
 
-        int u_vs[][2] = { { T_SRC, 0 } };
-        use(P_VS, u_vs, 1);
-        common_uniforms(P_VS, sw, sh, &cp, curved);
-        g->Uniform1f(U(P_VS, "ph"), (float)sh / cp.ch);
-        g->Uniform3f(U(P_VS, "conv"), cp.conv_y[0], cp.conv_y[1], cp.conv_y[2]);
-        g->Uniform3f(U(P_VS, "beam"), cp.beam_min, cp.beam_max, cp.beam_power);
-        pass_to(T_VS, sw, cp.ch);
+        g->UseProgram(G.prog[P_GLOW]);
+        g->Uniform1i(U(P_GLOW, "src"), 0);
+        g->Uniform2i(U(P_GLOW, "src_size"), sw, sh);
+        g->BindFramebuffer(GL_FRAMEBUFFER, G.fbo[T_GLOW]);
+        g->Viewport(0, 0, sw, sh);
+        g->DrawArrays(GL_TRIANGLES, 0, 3);
 
-        int u_dim[][2] = { { T_SRC, 0 }, { T_VS, 1 } };
-        use(P_DIM, u_dim, 2);
-        common_uniforms(P_DIM, sw, sh, &cp, curved);
-        g->Uniform1i(U(P_DIM, "vs"), 1);
-        g->Uniform3fv(U(P_DIM, "mask"), 3, &cp.mask[0][0]);
-        pass_to(T_DIM, cp.cw, cp.ch);
-
-        int u_bp[][2] = { { T_SRC, 0 }, { T_DIM, 1 } };
-        use(P_BP, u_bp, 2);
-        common_uniforms(P_BP, sw, sh, &cp, curved);
-        g->Uniform1i(U(P_BP, "dimt"), 1);
-        g->Uniform1f(U(P_BP, "undim"), cp.undim);
-        g->Uniform1f(U(P_BP, "cweight"), cp.center_weight);
-        g->Uniform1f(U(P_BP, "contrast"), cp.contrast);
-        pass_to(T_BP, cp.cw, cp.ch);
-
-        int u_bv[][2] = { { T_SRC, 0 }, { T_BP, 1 } };
-        use(P_BV, u_bv, 2);
-        common_uniforms(P_BV, sw, sh, &cp, curved);
-        g->Uniform1i(U(P_BV, "bpt"), 1);
-        g->Uniform1fv(U(P_BV, "bw"), 5, cp.bloom_w);
-        pass_to(T_BV, cp.cw, cp.ch);
-
-        int u_out[][2] = { { T_SRC, 0 }, { T_DIM, 1 }, { T_BP, 2 }, { T_BV, 3 } };
-        use(P_OUT, u_out, 4);
-        common_uniforms(P_OUT, sw, sh, &cp, curved);
-        g->Uniform1i(U(P_OUT, "dimt"), 1);
-        g->Uniform1i(U(P_OUT, "bpt"), 2);
-        g->Uniform1i(U(P_OUT, "bvt"), 3);
-        g->Uniform1fv(U(P_OUT, "bw"), 5, cp.bloom_w);
-        g->Uniform1f(U(P_OUT, "undim"), cp.undim);
+        g->UseProgram(G.prog[P_OUT]);
+        g->ActiveTexture(GL_TEXTURE1);
+        g->BindTexture(GL_TEXTURE_2D, G.tex[T_GLOW]);
+        g->Uniform1i(U(P_OUT, "src"), 0);
+        g->Uniform1i(U(P_OUT, "glowt"), 1);
+        g->Uniform2i(U(P_OUT, "src_size"), sw, sh);
+        g->Uniform2i(U(P_OUT, "content"), cp.cw, cp.ch);
         g->Uniform2i(U(P_OUT, "origin"), cp.cx0, cp.cy0);
         g->BindFramebuffer(GL_FRAMEBUFFER, (GLuint)sdl_fbo);
         g->Viewport(0, 0, dw, dh);

@@ -20,3 +20,4 @@ mmresume.md
 # Local backups of shipped Windows exes, Python caches
 /win-backups/
 __pycache__/
+/dist-release/

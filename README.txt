@@ -4,7 +4,13 @@ Player guide
 
 GETTING STARTED
 ---------------
-Run run.bat (or nes_game.exe with the ROM file next to it).
+You need your own copy of the Maniac Mansion NES prototype ROM; it is not
+included. Put it in this folder named exactly:
+
+    Maniac Mansion (Prototype).nes
+
+then run run.bat. (You can also drag the ROM file onto nes_game.exe.)
+Only that exact prototype ROM works; any other file is refused.
 
 1. Press Enter (or right-click) to skip the logo and intro screens.
 2. On the character screen, click two kids to go with Dave, then click START.
@@ -91,10 +97,10 @@ Filter (F9)
   Sharp        Crisp, pixel-perfect: every NES pixel the same size, using the
                largest whole scale that fits (6x on a 1440p screen, 4x on
                1080p with thin black bars above and below). Default.
-  CRT          Old TV look: scanlines, phosphor mask and a light bloom on
-               bright spots. Based on the crt-royale-fast shader. Runs on
-               the graphics card (OpenGL); without OpenGL it falls back to
-               the CPU, which is much slower.
+  CRT          Old TV look: scanlines that widen on bright colors, an RGB
+               stripe mask and a soft glow. Runs on the graphics card
+               (OpenGL); without OpenGL it falls back to the CPU, which is
+               slower.
 
 Scale (pause menu -> Options)
   Auto         Sharp: the largest whole scale that fits (default).
@@ -126,9 +132,12 @@ FILES IN THIS FOLDER
 --------------------
 nes_game.exe                 The game
 run.bat                      Starts the game with the ROM
-Maniac Mansion (Prototype).nes   The ROM
+Maniac Mansion (Prototype).nes   Your ROM (you provide it)
 config.ini                   Settings (window size, filter, volumes ...)
 saves\                       The game's own battery save
 ManiacMansion.slotN.state    Save-state slots (+ .thumb screenshots)
 mouse_debug.log              Log for bug reports
-README.txt                    This guide
+README.txt                   This guide
+LICENSE.txt, licenses\       License terms for this program and the parts
+                             it is built from
+(config.ini, saves, state slots and the log are created when you play)
