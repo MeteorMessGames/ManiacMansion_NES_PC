@@ -41,7 +41,8 @@
     X(void, DrawArrays, (GLenum, GLint, GLsizei)) \
     X(void, GenFramebuffers, (GLsizei, GLuint *)) X(void, BindFramebuffer, (GLenum, GLuint)) \
     X(void, FramebufferTexture2D, (GLenum, GLenum, GLenum, GLuint, GLint)) \
-    X(GLenum, CheckFramebufferStatus, (GLenum))
+    X(GLenum, CheckFramebufferStatus, (GLenum)) \
+    X(void, GetFramebufferAttachmentParameteriv, (GLenum, GLenum, GLenum, GLint *))
 
 typedef struct {
 #define GL_DECL(ret, name, args) ret(APIENTRY *name) args;
@@ -334,6 +335,10 @@ void *crt_gpu_render(void *renderer, const uint32_t *src, int sw, int sh, int dw
     state_take(&st);
     GLint sdl_fbo = st.fbo;
     while (g->GetError() != GL_NO_ERROR) {}   /* not ours */
+    /* The GL name of G.out: SDL has it attached to its target framebuffer. */
+    GLint out_name = 0;
+    g->GetFramebufferAttachmentParameteriv(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                                           GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME, &out_name);
     bool ok = ensure_tex(T_SRC, sw, sh) && ensure_tex(T_GLOW, sw, sh);
     if (ok) {
         g->ActiveTexture(GL_TEXTURE0);
@@ -373,6 +378,21 @@ void *crt_gpu_render(void *renderer, const uint32_t *src, int sw, int sh, int dw
         if (err != GL_NO_ERROR) { fprintf(stderr, "[CRT GPU] GL error 0x%x: CPU filter\n", (unsigned)err); ok = false; }
     }
     state_restore(&st);
+    /* SDL's OpenGL renderer remembers the texture it last bound on unit 0 and
+     * skips rebinding when it draws that texture again. The host draws G.out
+     * every frame, so SDL believes it is still bound; but host calls between
+     * frames (e.g. SDL_SetTextureScaleMode on its streaming texture, which
+     * runs when the filter or display settings change) bind other textures
+     * behind SDL's back, and the next copy of G.out then samples the wrong
+     * texture: a black screen (seen switching CRT -> CRT Strong). Leave G.out
+     * bound on unit 0 so the copy is right whatever SDL believes. */
+    if (out_name > 0) {
+        GLint active = GL_TEXTURE0;
+        g->GetIntegerv(GL_ACTIVE_TEXTURE, &active);
+        g->ActiveTexture(GL_TEXTURE0);
+        g->BindTexture(GL_TEXTURE_2D, (GLuint)out_name);
+        g->ActiveTexture((GLenum)active);
+    }
     SDL_SetRenderTarget(ren, old);
     if (!ok) { G.failed = true; return NULL; }
     return G.out;
