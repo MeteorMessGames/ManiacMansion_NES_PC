@@ -23,3 +23,8 @@ __pycache__/
 /dist-release/
 /build-romless/
 /build-win-romless/
+
+# Dev-only helpers, not needed to build or play
+/tcp_client.py
+/re/
+/tools/
