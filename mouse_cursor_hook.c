@@ -499,7 +499,7 @@ static void apply_absolute_cursor(SDL_Window *win) {
  *   - Opening takes an in-memory save state (cyc_state_save). The machine
  *     keeps running behind the menu with all input withheld; RESUME (or
  *     Escape) restores the snapshot, so the game is effectively paused.
- *   - Save State / Load State open a slot list (6 slots,
+ *   - Save State / Load State open a slot list (10 slots since 2026-11-10, scrolling;
  *     with screenshots); see the slot notes below.
  * A save state belongs to the exact executable that wrote it (cyc_state.h):
  * a different build refuses it, reported as "different version". The
@@ -519,14 +519,16 @@ static const char *const k_menu_rows[MI_COUNT] = { "Resume Game", "Save State", 
  * Smooth = linear, CRT / CRT Curved = crt_filter.c at window resolution. */
 
 
-/* 2026-11-09: multiple save slots (user request), slots 1..6. The game's
+/* 2026-11-09: multiple save slots (user request), slots 1..6 (1..10 since
+ * 2026-11-10, with a scrolling list). The game's
  * own Start-menu save also writes the most recently saved slot
  * (follow_game_save; Slot 1 if none yet). Each slot = <exe dir>/ManiacMansion.<name>.state (cyc_state file)
  * plus a .thumb sidecar (screenshot shown in the slot list). The old
  * single-file ManiacMansion.state is no longer used (any snapshot only
  * loads in the exe that wrote it anyway). */
 enum { MODE_MAIN, MODE_SAVE, MODE_LOAD, MODE_DISPLAY };
-#define NUM_SLOTS 6
+#define NUM_SLOTS 10
+#define SLOT_ROWS_VISIBLE 7   /* slot list rows on screen; the rest scroll (wheel, Up/Down) */
 #define THUMB_W 128
 #define THUMB_H 120
 typedef struct {
@@ -547,6 +549,7 @@ static bool     s_menu_guard = false;          /* swallow input until all releas
 static int      s_menu_mode = MODE_MAIN;
 static int      s_menu_sel = 0;
 static int      s_menu_hover = -1;             /* row under the mouse, or -1 */
+static int      s_menu_scroll = 0;             /* first row shown in the slot lists */
 static int      s_confirm_slot = -1;           /* occupied slot armed for overwrite */
 static uint8_t *s_menu_snap = NULL;
 static size_t   s_menu_snap_len = 0;
@@ -628,11 +631,28 @@ static void slot_time_text(int slot, char *out, size_t n) {
     strftime(out, n, "%b %d, %H:%M", tm);
 }
 
-/* Rows per mode: slots 1..6 + Back. */
+/* Rows per mode: slots 1..NUM_SLOTS + Back. */
 static int menu_row_count(void) {
     if (s_menu_mode == MODE_DISPLAY) return DI_COUNT;
     if (s_menu_mode != MODE_MAIN) return NUM_SLOTS + 1;
     return MI_COUNT;
+}
+/* Rows drawn at once: the slot lists scroll, the other menus fit. */
+static int menu_visible_rows(void) {
+    int n = menu_row_count();
+    return (s_menu_mode == MODE_SAVE || s_menu_mode == MODE_LOAD) && n > SLOT_ROWS_VISIBLE ? SLOT_ROWS_VISIBLE : n;
+}
+static void menu_scroll_clamp(void) {
+    int max = menu_row_count() - menu_visible_rows();
+    if (s_menu_scroll > max) s_menu_scroll = max;
+    if (s_menu_scroll < 0) s_menu_scroll = 0;
+}
+/* scroll so the selected row is on screen */
+static void menu_keep_visible(void) {
+    int vis = menu_visible_rows();
+    if (s_menu_sel < s_menu_scroll) s_menu_scroll = s_menu_sel;
+    if (s_menu_sel >= s_menu_scroll + vis) s_menu_scroll = s_menu_sel - vis + 1;
+    menu_scroll_clamp();
 }
 /* slot for a row in the slot lists, -1 = Back */
 static int row_slot(int row) {
@@ -670,10 +690,10 @@ static int menu_row_at(int x, int y) {
     if (s_hi_w <= 0) return -1;
     MenuLayout L = menu_layout(s_hi_w, s_hi_h);
     if (x < L.pad / 2 || x >= L.sw - L.pad / 2) return -1;
-    int n = menu_row_count();
-    for (int i = 0; i < n; i++) {
-        int y0 = L.item_y0 + i * (L.item_h + L.item_gap);
-        if (y >= y0 && y < y0 + L.item_h) return i;
+    int vis = menu_visible_rows();
+    for (int k = 0; k < vis; k++) {
+        int y0 = L.item_y0 + k * (L.item_h + L.item_gap);
+        if (y >= y0 && y < y0 + L.item_h) return s_menu_scroll + k;
     }
     return -1;
 }
@@ -714,6 +734,7 @@ static void menu_status(const char *msg, uint32_t rgb) {
 static void menu_set_mode(int mode) {
     s_menu_mode = mode;
     s_menu_hover = -1;
+    s_menu_scroll = 0;
     s_confirm_slot = -1;
     s_menu_status[0] = 0;
     if (mode == MODE_MAIN) return;
@@ -727,6 +748,7 @@ static void menu_set_mode(int mode) {
     }
     if (best < 0) best = 1;
     s_menu_sel = best - 1;
+    menu_keep_visible();
 }
 
 /* The composed game picture (wide when widescreen is on) behind the menu. */
@@ -1124,8 +1146,18 @@ static const uint32_t *menu_present(void *ctx, int *w, int *h) {
     mr_rect(d, pw, ph, L.pad, L.sep_y, L.sw - 2 * L.pad, (int)u > 1 ? (int)u : 1, 0x3A3D4C, 255);
 
     int n = menu_row_count();
-    for (int i = 0; i < n; i++) {
-        int y0 = L.item_y0 + i * (L.item_h + L.item_gap);
+    int vis = menu_visible_rows();
+    menu_scroll_clamp();
+    if (vis < n) {   /* scrollbar beside the slot list */
+        int track_y = L.item_y0, track_h = vis * (L.item_h + L.item_gap) - L.item_gap;
+        int bw = (int)(1.5f * u) > 2 ? (int)(1.5f * u) : 2;
+        int bx = L.sw - L.pad / 2 + (L.pad / 2 - bw) / 2;
+        int th = track_h * vis / n, ty = track_y + (track_h - th) * s_menu_scroll / (n - vis);
+        mr_round_rect(d, pw, ph, bx, track_y, bw, track_h, bw / 2, 0xFFFFFF, 30);
+        mr_round_rect(d, pw, ph, bx, ty, bw, th, bw / 2, 0x6FA2F5, 230);
+    }
+    for (int i = s_menu_scroll; i < s_menu_scroll + vis && i < n; i++) {
+        int y0 = L.item_y0 + (i - s_menu_scroll) * (L.item_h + L.item_gap);
         bool sel = i == s_menu_sel;
         bool hov = i == s_menu_hover;
         if (sel) {
@@ -1194,7 +1226,7 @@ static const uint32_t *menu_present(void *ctx, int *w, int *h) {
     }
     mr_rect(d, pw, ph, L.pad, ph - (int)(44 * u), L.sw - 2 * L.pad, (int)u > 1 ? (int)u : 1, 0x3A3D4C, 255);
     static const char *const hints_main[3] = { "Esc   Resume", "Up / Down   Select", "Enter   Confirm" };
-    static const char *const hints_slot[3] = { "Esc / Right-click   Back", "Up / Down   Select", "Enter   Confirm" };
+    static const char *const hints_slot[3] = { "Esc / Right-click   Back", "Up / Down / Wheel   Select", "Enter   Confirm" };
     const char *const *hints = s_menu_mode != MODE_MAIN ? hints_slot : hints_main;
     for (int i = 0; i < 3; i++)
         mr_text(d, pw, ph, L.pad, ph - (int)((38 - i * 10) * u), 6.0f * u, 0x7D8296, 255, hints[i]);
@@ -1219,7 +1251,7 @@ static void menu_event(void *ctx, const void *event, int player) {
         int n = menu_row_count();
         if (sc == SDL_SCANCODE_UP)   s_menu_sel = (s_menu_sel + n - 1) % n;
         if (sc == SDL_SCANCODE_DOWN) s_menu_sel = (s_menu_sel + 1) % n;
-        if (sc == SDL_SCANCODE_UP || sc == SDL_SCANCODE_DOWN) s_confirm_slot = -1;
+        if (sc == SDL_SCANCODE_UP || sc == SDL_SCANCODE_DOWN) { s_confirm_slot = -1; menu_keep_visible(); }
         if ((sc == SDL_SCANCODE_LEFT || sc == SDL_SCANCODE_RIGHT) && s_menu_mode == MODE_DISPLAY &&
             (s_menu_sel == DI_MUSIC || s_menu_sel == DI_SFX)) {
             s_vol_req_row = s_menu_sel;
@@ -1236,6 +1268,17 @@ static void menu_event(void *ctx, const void *event, int player) {
         return;
     }
     if (!s_menu_open) return;
+    if (ev->type == SDL_MOUSEWHEEL) {
+        /* scroll the slot list; the row under the pointer changes with it */
+        int dy = ev->wheel.y;
+        if (ev->wheel.direction == SDL_MOUSEWHEEL_FLIPPED) dy = -dy;
+        if (dy) {
+            s_menu_scroll -= dy;
+            menu_scroll_clamp();
+            s_menu_hover = -1;
+        }
+        return;
+    }
     if (ev->type == SDL_MOUSEBUTTONDOWN && ev->button.button == SDL_BUTTON_RIGHT) {
         if (s_menu_mode != MODE_MAIN) s_menu_req_back = true;
         return;

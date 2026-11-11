@@ -59,9 +59,10 @@ The game is paused while the menu is open. Use the mouse, or Up/Down and
 Enter. Esc or right click goes back.
 
   Resume Game   Back to the game.
-  Save State    Pick one of 6 slots. Each slot shows a screenshot and the
-                time it was saved. Saving over a used slot asks you to click
-                a second time first.
+  Save State    Pick one of 10 slots (scroll the list with the mouse wheel
+                or Up/Down). Each slot shows a screenshot and the time it
+                was saved. Saving over a used slot asks you to click a
+                second time first.
   Load State    Pick a slot to load. The screenshot on the right shows what
                 you will get.
   Options       Music volume, Sound FX volume, Fullscreen, Filter and Scale.
@@ -73,7 +74,7 @@ SAVING
 ------
 There are two kinds of saves:
 
-1. Save states (pause menu, 6 slots). Instant, any time, anywhere.
+1. Save states (pause menu, 10 slots). Instant, any time, anywhere.
    Files: ManiacMansion.slot1.state ... slot6.state, next to the game.
    NOTE: a save state only loads in the exact build that made it. After an
    update, old save states may say "from a different version".
