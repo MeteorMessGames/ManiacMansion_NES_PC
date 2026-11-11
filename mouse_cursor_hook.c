@@ -294,6 +294,7 @@ static int  s_scale_req_dir = 0;                  /* queued from events */
  * through the filter module's sharp-bilinear style (crt_set_style) instead
  * of the host's integer scaling. Saved as [Game] Aspect. */
 static int  s_aspect = 0;
+static volatile int s_inv_wheel = 0;              /* wheel notches queued from events (+ = up) */
 static bool s_shape_req = false;                  /* toggle queued from events */
 static bool host_draws_sharp(void);
 /* what the last present handed the host, for mapping the mouse back */
@@ -1286,7 +1287,14 @@ static void menu_event(void *ctx, const void *event, int player) {
             s_menu_req_activate = s_menu_sel;
         return;
     }
-    if (!s_menu_open) return;
+    if (!s_menu_open) {
+        if (ev->type == SDL_MOUSEWHEEL) {   /* gameplay: wheel scrolls the inventory */
+            int dy = ev->wheel.y;
+            if (ev->wheel.direction == SDL_MOUSEWHEEL_FLIPPED) dy = -dy;
+            s_inv_wheel += dy;
+        }
+        return;
+    }
     if (ev->type == SDL_MOUSEWHEEL) {
         /* scroll the slot list; the row under the pointer changes with it */
         int dy = ev->wheel.y;
@@ -2113,6 +2121,28 @@ static uint8_t real_mouse_buttons(void) {
         }
     }
 
+    /* 2026-11-10: mouse wheel scrolls the inventory, same effect as the game's
+     * own arrow boxes (b00:$924D): $711F scroll +-2, redraw flag $6F0A |= $E0,
+     * clamped like b00:$9289 (max = ego's item count - 2). */
+    {
+        int w = s_inv_wheel;
+        s_inv_wheel = 0;
+        uint8_t *sc = cart_ram_byte(0x711F), *rd = cart_ram_byte(0x6F0A);
+        uint8_t *ego = cart_ram_byte(0x6100), *ovl = cart_ram_byte(0x6B06), *ovh = cart_ram_byte(0x6B07);
+        if (w && game_started && sc && rd && ego && ovl && ovh && !(*ovl | *ovh)) {
+            int count = 0;
+            for (int i = 0; i < 0x3C; i++) {
+                uint8_t *o = cart_ram_byte((uint16_t)(0x6260 + i)), *ow = cart_ram_byte((uint16_t)(0x660A + i));
+                if (o && ow && *o && (*ow & 0x0F) == *ego) count++;
+            }
+            int m = count > 2 ? count - 2 : 0;
+            int v = *sc;
+            for (; w > 0; w--) v = v - 2 < 0 ? 0 : v - 2;
+            for (; w < 0; w++) if (v < m) { v += 2; if (v > m) v = (m + 1) & 0xFE; }
+            if (v != *sc) { *sc = (uint8_t)v; *rd |= 0xE0; }
+        }
+    }
+
     /* 2026-11-09: context RMB. On a fresh RMB press in gameplay that is still
      * going out as A (i.e. not consumed by the cutscene skip above), preset
      * the sentence verb for the object under the cursor. See ctx_rmb_apply. */
@@ -2188,6 +2218,15 @@ static uint8_t real_mouse_buttons(void) {
             lmb_wait = 0;
             if (log) fprintf(log, "[lmb] preview cleared, GO TO before click\n");
         }
+        else if (lmb_state == 0 && lmb && !prev_lmb && game_started && !ctx_busy && (out & BTN_A)) {
+            /* 2026-11-10: fresh click with no preview up yet (click lands in the
+             * same frame the cursor reaches the object): the preview block
+             * below would set READ/OPEN this very frame, after A is already
+             * out, and the game would run it. Send A now and keep the preview
+             * off until release. */
+            lmb_state = 4;
+            if (log) fprintf(log, "[lmb] click before preview, preview held off\n");
+        }
         if (lmb_state == 1) {
             bool redrawn = h8 && h9 && *h8 != 0xFF && *h9 != 0xFF;
             if (redrawn || ++lmb_wait > 30) {
@@ -2197,6 +2236,8 @@ static uint8_t real_mouse_buttons(void) {
             } else {
                 out &= (uint8_t)~BTN_A;
             }
+        } else if (lmb_state == 4) {
+            lmb_state = 2;   /* A passes this frame */
         } else if (lmb_state == 2) {
             if (lmb) out &= (uint8_t)~BTN_A;   /* one click per press */
             else { lmb_state = 0; walk_pause_start(); }
