@@ -57,7 +57,7 @@ Enter. Esc or right click goes back.
                 a second time first.
   Load State    Pick a slot to load. The screenshot on the right shows what
                 you will get.
-  Options       Music volume, Sound FX volume, Fullscreen and Filter.
+  Options       Music volume, Sound FX volume, Fullscreen, Filter and Scale.
                 Volumes: drag or click the bar, or Left / Right in 5% steps.
   Exit Game     Quit.
 
