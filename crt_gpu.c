@@ -2,7 +2,8 @@
  * render into an SDL render-target texture with our own program, saving and
  * restoring the GL state SDL's OpenGL renderer relies on.
  *
- * Two passes (row 0 = top; texelFetch, no filtering):
+ * CRT style, two passes (row 0 = top; texelFetch, no filtering); the
+ * sharp style (crt_set_style) is a single pass, k_sharp:
  *   1 GLOW  sw x sh   the source in linear light, 3x3 box-blurred
  *   2 OUT   dw x dh   beams + mask + glow (crt_filter.c's model) in the
  *                     screen rect of an SDL target texture, black around it
@@ -51,7 +52,7 @@ typedef struct {
 } Gl;
 
 
-enum { P_GLOW, P_OUT, P_COUNT };
+enum { P_GLOW, P_OUT, P_SHARP, P_COUNT };
 enum { T_SRC, T_GLOW, T_COUNT };
 
 static struct {
@@ -96,6 +97,23 @@ static const char *k_glow =
     "}\n";
 
 /* 2: beams of the two nearest source lines, stripe mask, glow, gamma */
+/* Sharp style: whole source pixels per axis, blended over one output pixel
+ * where two meet ("sharp bilinear"), for the Sharp filter at 8:7. No gamma. */
+static const char *k_sharp =
+    "uniform ivec2 origin;\n"
+    "uniform ivec2 content;\n"
+    "vec3 raw(ivec2 q) { return texelFetch(src, clamp(q, ivec2(0), src_size - 1), 0).rgb; }\n"
+    "void main() {\n"
+    "    vec2 k = vec2(content) / vec2(src_size);\n"
+    "    vec2 q = (vec2(ivec2(gl_FragCoord.xy) - origin) + 0.5) / k - 0.5;\n"
+    "    vec2 b = floor(q);\n"
+    "    vec2 f = clamp((q - b - 0.5) * k + 0.5, 0.0, 1.0);\n"
+    "    ivec2 i = ivec2(b);\n"
+    "    vec3 t = mix(raw(i), raw(i + ivec2(1, 0)), f.x);\n"
+    "    vec3 u = mix(raw(i + ivec2(0, 1)), raw(i + ivec2(1, 1)), f.x);\n"
+    "    frag = vec4(mix(t, u, f.y), 1.0);\n"
+    "}\n";
+
 static const char *k_out =
     "uniform sampler2D glowt;\n"
     "uniform ivec2 origin;\n"
@@ -285,7 +303,7 @@ static bool create(SDL_Renderer *ren) {
         } else {
             GlState st;
             state_take(&st);
-            const char *frags[P_COUNT] = { k_glow, k_out };
+            const char *frags[P_COUNT] = { k_glow, k_out, k_sharp };
             for (int i = 0; i < P_COUNT && ok; i++) ok = (G.prog[i] = program(frags[i])) != 0;
             if (ok) {
                 g->GenTextures(T_COUNT, G.tex);
@@ -348,26 +366,34 @@ void *crt_gpu_render(void *renderer, const uint32_t *src, int sw, int sh, int dw
         g->TexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, sw, sh, GL_BGRA, GL_UNSIGNED_BYTE, src);
         g->BindVertexArray(G.vao);
 
-        g->UseProgram(G.prog[P_GLOW]);
-        g->Uniform1i(U(P_GLOW, "src"), 0);
-        g->Uniform2i(U(P_GLOW, "src_size"), sw, sh);
-        g->BindFramebuffer(GL_FRAMEBUFFER, G.fbo[T_GLOW]);
-        g->Viewport(0, 0, sw, sh);
-        g->DrawArrays(GL_TRIANGLES, 0, 3);
+        if (crt_get_style() == CRT_STYLE_SHARP) {
+            g->UseProgram(G.prog[P_SHARP]);
+            g->Uniform1i(U(P_SHARP, "src"), 0);
+            g->Uniform2i(U(P_SHARP, "src_size"), sw, sh);
+            g->Uniform2i(U(P_SHARP, "content"), cp.cw, cp.ch);
+            g->Uniform2i(U(P_SHARP, "origin"), cp.cx0, cp.cy0);
+        } else {
+            g->UseProgram(G.prog[P_GLOW]);
+            g->Uniform1i(U(P_GLOW, "src"), 0);
+            g->Uniform2i(U(P_GLOW, "src_size"), sw, sh);
+            g->BindFramebuffer(GL_FRAMEBUFFER, G.fbo[T_GLOW]);
+            g->Viewport(0, 0, sw, sh);
+            g->DrawArrays(GL_TRIANGLES, 0, 3);
 
-        g->UseProgram(G.prog[P_OUT]);
-        g->ActiveTexture(GL_TEXTURE1);
-        g->BindTexture(GL_TEXTURE_2D, G.tex[T_GLOW]);
-        g->Uniform1i(U(P_OUT, "src"), 0);
-        g->Uniform1i(U(P_OUT, "glowt"), 1);
-        g->Uniform2i(U(P_OUT, "src_size"), sw, sh);
-        g->Uniform2i(U(P_OUT, "content"), cp.cw, cp.ch);
-        g->Uniform2i(U(P_OUT, "origin"), cp.cx0, cp.cy0);
-        const CrtLook *lk = crt_look();
-        g->Uniform1f(U(P_OUT, "BMIN"), lk->beam_min);
-        g->Uniform1f(U(P_OUT, "BMAX"), lk->beam_max);
-        g->Uniform1f(U(P_OUT, "GAIN"), lk->gain);
-        g->Uniform1f(U(P_OUT, "GLOW"), lk->glow);
+            g->UseProgram(G.prog[P_OUT]);
+            g->ActiveTexture(GL_TEXTURE1);
+            g->BindTexture(GL_TEXTURE_2D, G.tex[T_GLOW]);
+            g->Uniform1i(U(P_OUT, "src"), 0);
+            g->Uniform1i(U(P_OUT, "glowt"), 1);
+            g->Uniform2i(U(P_OUT, "src_size"), sw, sh);
+            g->Uniform2i(U(P_OUT, "content"), cp.cw, cp.ch);
+            g->Uniform2i(U(P_OUT, "origin"), cp.cx0, cp.cy0);
+            const CrtLook *lk = crt_look();
+            g->Uniform1f(U(P_OUT, "BMIN"), lk->beam_min);
+            g->Uniform1f(U(P_OUT, "BMAX"), lk->beam_max);
+            g->Uniform1f(U(P_OUT, "GAIN"), lk->gain);
+            g->Uniform1f(U(P_OUT, "GLOW"), lk->glow);
+        }
         g->BindFramebuffer(GL_FRAMEBUFFER, (GLuint)sdl_fbo);
         g->Viewport(0, 0, dw, dh);
         g->ClearColor(0, 0, 0, 1);

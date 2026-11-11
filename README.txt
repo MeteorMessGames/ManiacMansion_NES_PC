@@ -9,7 +9,7 @@ included. Put it in this folder named exactly:
 
     Maniac Mansion (Prototype).nes
 
-then run run.bat. (You can also drag the ROM file onto nes_game.exe.)
+then double-click ManiacMansion.exe.
 Only that exact prototype ROM works; any other file is refused.
 
 1. Press Enter (or right-click) to skip the logo and intro screens.
@@ -65,7 +65,8 @@ Enter. Esc or right click goes back.
                 second time first.
   Load State    Pick a slot to load. The screenshot on the right shows what
                 you will get.
-  Options       Music volume, Sound FX volume, Fullscreen, Filter and Scale.
+  Options       Music volume, Sound FX volume, Fullscreen, Filter, Scale and
+                Shape.
                 Volumes: drag or click the bar, or Left / Right in 5% steps.
   Exit Game     Quit.
 
@@ -115,6 +116,13 @@ Scale (pause menu -> Options)
                screen), Auto is used. The pause menu itself always fills
                the screen.
 
+Shape (pause menu -> Options)
+  Square       Every NES pixel is square (default).
+  TV (4:3)     The shape the game had on a real TV: NES pixels were a bit
+               wider than tall (8:7), so the picture is 4:3. With the Sharp
+               filter, pixels stay crisp (only a one-pixel soft edge where
+               two of them meet, so no uneven columns).
+
 Fullscreen (F11)
   Uses your monitor's own resolution (1080p, 1440p, 4K ...).
 
@@ -128,13 +136,11 @@ TIPS FOR NEW PLAYERS
   If right click does not do what you want, pick the verb yourself.
 - Check the door mat by the front door.
 - Use NEW KID to switch between your kids.
-- Read things, and listen to what people say. Some of it is a clue.
 
 
 FILES IN THIS FOLDER
 --------------------
-nes_game.exe                 The game
-run.bat                      Starts the game with the ROM
+ManiacMansion.exe            The game
 Maniac Mansion (Prototype).nes   Your ROM (you provide it)
 config.ini                   Settings (window size, filter, volumes ...)
 saves\                       The game's own battery save

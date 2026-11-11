@@ -38,6 +38,19 @@ const CrtLook *crt_look(void);
  * accepted for compatibility and ignored (flat screen only). */
 void crt_render(uint32_t *dst, int dw, int dh, const uint32_t *src, int sw, int sh, bool curved);
 
+/* Style: the CRT model, or SHARP = plain pixels resampled "sharp bilinear"
+ * (whole pixels, a one-output-pixel blend only where two source pixels meet;
+ * used for the Sharp filter at a non-square pixel aspect). */
+enum { CRT_STYLE_CRT, CRT_STYLE_SHARP };
+void crt_set_style(int style);
+int  crt_get_style(void);
+/* Pixel aspect (width / height of one source pixel): 1 = square, 8/7 = how
+ * a NES drew on a TV (4:3 picture). integer: when filling (scale 0), snap to
+ * the largest whole vertical scale, as the Sharp filter does. */
+#define CRT_PAR_TV (8.0f / 7.0f)
+void crt_set_aspect(float par);
+void crt_set_integer(bool on);
+
 /* Picture size: 0 = fill dst (default), k > 0 = exactly k x src, centered,
  * when it fits (else fill). Applies to crt_render, crt_map_point,
  * crt_params (so the GPU version too) and crt_fit_rect. */

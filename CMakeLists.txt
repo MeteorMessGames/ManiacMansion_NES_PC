@@ -64,6 +64,20 @@ if(MM_ROMLESS)
     message(STATUS "MM_ROMLESS: no game code in the exe (interpreter + ${_mm_main} hook sites)")
 endif()
 
+# Release builds (MM_ROMLESS) are named ManiacMansion.exe and open no console
+# window; test builds keep nes_game.exe and the console with the log output.
+# -DMM_CONSOLE=ON brings the console back on a release build for testing.
+if(MM_ROMLESS)
+    set_target_properties(nes_game PROPERTIES OUTPUT_NAME ManiacMansion)
+    set(_mm_console_default OFF)
+else()
+    set(_mm_console_default ON)
+endif()
+option(MM_CONSOLE "Windows: open a console window with the log output" ${_mm_console_default})
+if(MINGW AND NOT MM_CONSOLE)
+    set_target_properties(nes_game PROPERTIES WIN32_EXECUTABLE TRUE)   # -mwindows: GUI subsystem
+endif()
+
 if(MINGW)
     # Ship a self-contained .exe: statically link MinGW's own runtime DLLs
     # (libgcc_s_seh-1.dll, libstdc++-6.dll -- pulled in by mod_runtime.cpp's

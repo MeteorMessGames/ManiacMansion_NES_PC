@@ -30,13 +30,21 @@
 /* 0 = fill the output (fractional fit); k > 0 = exactly k x the source,
  * centered, when that fits (else fill). */
 static int s_fit_scale = 0;
+static float s_par = 1.0f;       /* pixel aspect */
+static bool s_integer = false;   /* fill snaps to a whole vertical scale */
+static int s_style = CRT_STYLE_CRT;
 void crt_set_scale(int k) { s_fit_scale = k > 0 ? k : 0; }
 int crt_get_scale(void) { return s_fit_scale; }
+void crt_set_aspect(float par) { s_par = par > 0.5f && par < 2.0f ? par : 1.0f; }
+void crt_set_integer(bool on) { s_integer = on; }
+void crt_set_style(int style) { s_style = style == CRT_STYLE_SHARP ? CRT_STYLE_SHARP : CRT_STYLE_CRT; }
+int crt_get_style(void) { return s_style; }
 
 static void fit_rect(int dw, int dh, int sw, int sh, int *x0, int *y0, int *w, int *h) {
-    double sc = fmin((double)dw / sw, (double)dh / sh);
+    double sc = fmin((double)dw / (sw * s_par), (double)dh / sh);
     if (s_fit_scale > 0 && s_fit_scale <= sc) sc = s_fit_scale;
-    *w = (int)(sw * sc + 0.5);
+    else if (s_integer && sc >= 1) sc = floor(sc);
+    *w = (int)(sw * s_par * sc + 0.5);
     *h = (int)(sh * sc + 0.5);
     if (*w > dw) *w = dw;
     if (*h > dh) *h = dh;
@@ -199,11 +207,47 @@ static void render_rows(int r0, int r1) {
     }
 }
 
+/* Sharp style: per axis, whole source pixels with a blend one output pixel
+ * wide where two meet (the blend width is 1 / output-pixels-per-texel). */
+static const uint32_t *s_sharp_src;
+static void sharp_rows(int r0, int r1) {
+    int sw = s_f.sw, sh = s_f.sh;
+    float kx = (float)s_f.w / sw, ky = (float)s_f.h / sh;
+    for (int y = r0; y < r1; y++) {
+        uint32_t *row = s_f.dst + (size_t)y * s_f.dw;
+        int ry = y - s_f.y0;
+        if (ry < 0 || ry >= s_f.h) { memset(row, 0, (size_t)s_f.dw * 4); continue; }
+        memset(row, 0, (size_t)s_f.x0 * 4);
+        memset(row + s_f.x0 + s_f.w, 0, (size_t)(s_f.dw - s_f.x0 - s_f.w) * 4);
+        float q = (ry + 0.5f) / ky - 0.5f;
+        int j = (int)floorf(q);
+        float fy = (q - j - 0.5f) * ky + 0.5f;
+        fy = fy < 0 ? 0 : fy > 1 ? 1 : fy;
+        const uint32_t *ra = s_sharp_src + (size_t)clampi(j, 0, sh - 1) * sw;
+        const uint32_t *rb = s_sharp_src + (size_t)clampi(j + 1, 0, sh - 1) * sw;
+        for (int rx = 0; rx < s_f.w; rx++) {
+            float p = (rx + 0.5f) / kx - 0.5f;
+            int i = (int)floorf(p);
+            float fx = (p - i - 0.5f) * kx + 0.5f;
+            fx = fx < 0 ? 0 : fx > 1 ? 1 : fx;
+            int i0 = clampi(i, 0, sw - 1), i1 = clampi(i + 1, 0, sw - 1);
+            uint32_t a = ra[i0], b = ra[i1], c = rb[i0], d = rb[i1], o = 0xFF000000u;
+            for (int sft = 0; sft <= 16; sft += 8) {
+                float t = ((a >> sft) & 255) + (((b >> sft) & 255) - (float)((a >> sft) & 255)) * fx;
+                float u = ((c >> sft) & 255) + (((d >> sft) & 255) - (float)((c >> sft) & 255)) * fx;
+                o |= (uint32_t)(t + (u - t) * fy + 0.5f) << sft;
+            }
+            row[s_f.x0 + rx] = o;
+        }
+    }
+}
+
 #ifdef CRT_THREADS
 typedef struct { int r0, r1; } Job;
 static int worker(void *arg) {
     Job *jb = (Job *)arg;
-    render_rows(jb->r0, jb->r1);
+    if (s_style == CRT_STYLE_SHARP) sharp_rows(jb->r0, jb->r1);
+    else render_rows(jb->r0, jb->r1);
     return 0;
 }
 #endif
@@ -233,6 +277,10 @@ void crt_render(uint32_t *dst, int dw, int dh, const uint32_t *src, int sw, int 
         return;
     }
     f->lin = (float *)lin; f->glow = (float *)glow; f->colx = (float *)colx;
+    if (s_style == CRT_STYLE_SHARP) {
+        s_sharp_src = src;
+        goto run;
+    }
     for (size_t i = 0; i < (size_t)sw * sh; i++) {
         uint32_t px = src[i];
         f->lin[i * 3 + 0] = s_lin[(px >> 16) & 255];
@@ -244,6 +292,7 @@ void crt_render(uint32_t *dst, int dw, int dh, const uint32_t *src, int sw, int 
     for (int s = 0; s < 3; s++)
         for (int c = 0; c < 3; c++) f->mask[s][c] = s == c ? 1.0f : CRT_MASK_DIM;
 
+run:;
 #ifdef CRT_THREADS
     int nt = SDL_GetCPUCount();
     nt = nt < 1 ? 1 : nt > 16 ? 16 : nt;
@@ -255,11 +304,12 @@ void crt_render(uint32_t *dst, int dw, int dh, const uint32_t *src, int sw, int 
     }
     for (int i = 1; i < nt; i++) {
         th[i] = SDL_CreateThread(worker, "crt", &jobs[i]);
-        if (!th[i]) render_rows(jobs[i].r0, jobs[i].r1);
+        if (!th[i]) worker(&jobs[i]);
     }
-    render_rows(jobs[0].r0, jobs[0].r1);
+    worker(&jobs[0]);
     for (int i = 1; i < nt; i++) if (th[i]) SDL_WaitThread(th[i], NULL);
 #else
-    render_rows(0, dh);
+    if (s_style == CRT_STYLE_SHARP) sharp_rows(0, dh);
+    else render_rows(0, dh);
 #endif
 }

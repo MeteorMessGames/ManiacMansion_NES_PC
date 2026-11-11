@@ -269,7 +269,7 @@ static void sync_grab(SDL_Window *win) {
     s_grabbed = focused;
 }
 
-enum { DI_MUSIC, DI_SFX, DI_FULLSCREEN, DI_FILTER, DI_SCALE, DI_BACK, DI_COUNT };
+enum { DI_MUSIC, DI_SFX, DI_FULLSCREEN, DI_FILTER, DI_SCALE, DI_SHAPE, DI_BACK, DI_COUNT };
 /* 2026-11-10 (user): only Sharp and CRT. Sharp is pixel-perfect: the largest
  * whole-number scale that fits (6x on 1440p, 4x on 1080p). Smooth and CRT
  * Curved were removed; config values 1 (Smooth) / 3 (CRT Curved) load as
@@ -289,6 +289,13 @@ static bool s_req_filter_cycle = false;
  * a fixed scale draws the CRT screen at exactly k x 256 by k x 240. */
 static int  s_scale = 0;
 static int  s_scale_req_dir = 0;                  /* queued from events */
+/* 2026-11-10 (user): picture shape. 0 = square pixels, 1 = TV (4:3): NES
+ * pixels 8:7 wide, as on a real TV. With Sharp at TV shape the picture goes
+ * through the filter module's sharp-bilinear style (crt_set_style) instead
+ * of the host's integer scaling. Saved as [Game] Aspect. */
+static int  s_aspect = 0;
+static bool s_shape_req = false;                  /* toggle queued from events */
+static bool host_draws_sharp(void);
 /* what the last present handed the host, for mapping the mouse back */
 enum { PRES_HOST, PRES_CANVAS, PRES_CRT, PRES_MENU };
 static int  s_pres_kind = PRES_HOST;
@@ -478,9 +485,14 @@ static void apply_absolute_cursor(SDL_Window *win) {
     if (ly < 0) ly = 0; else if (ly > 238) ly = 238;
     {   /* over the room: stay on the room's drawn columns */
         int ry0, ry1, rx0, rx1;
-        if (room_extent(&ry0, &ry1, &rx0, &rx1) && ly >= ry0 && ly <= ry1) {
-            if (lx < rx0) lx = (float)rx0;
-            if (lx > rx1) lx = (float)rx1;
+        if (room_extent(&ry0, &ry1, &rx0, &rx1)) {
+            /* 2026-11-10 (user): not into the text lines above the room
+             * (dialogue / messages); stop at the room's first line */
+            if (ly < ry0) ly = (float)ry0;
+            if (ly >= ry0 && ly <= ry1) {
+                if (lx < rx0) lx = (float)rx0;
+                if (lx > rx1) lx = (float)rx1;
+            }
         }
     }
     *src_x = (uint8_t)lx;
@@ -676,8 +688,9 @@ static MenuLayout menu_layout(int w, int h) {
     L.sep_y = (int)(46 * L.u);
     if (s_menu_mode == MODE_MAIN || s_menu_mode == MODE_DISPLAY) {
         L.item_y0 = (int)(58 * L.u);
-        L.item_h = (int)(17 * L.u);
-        L.item_gap = (int)(3 * L.u);
+        /* Options has 7 rows: a little tighter so they clear the footer */
+        L.item_h = (int)((s_menu_mode == MODE_DISPLAY ? 15 : 17) * L.u);
+        L.item_gap = (int)((s_menu_mode == MODE_DISPLAY ? 2 : 3) * L.u);
     } else {
         L.item_y0 = (int)(54 * L.u);
         L.item_h = (int)(14 * L.u);
@@ -943,7 +956,7 @@ static void draw_slot_preview(uint32_t *d, int pw, int ph, const MenuLayout *L) 
 /* Gameplay picture: the host's own (NULL), the canvas with a toast on it,
  * or the CRT filter's at window resolution. */
 static const uint32_t *display_present(int *w, int *h) {
-    bool crt = s_filter != FILTER_SHARP;
+    bool crt = !host_draws_sharp();
     int cw = 256, ch = 240;
     /* no window yet: the host sizes the new window from this first picture,
      * so give it the plain one */
@@ -1016,7 +1029,7 @@ static const uint32_t *display_present(int *w, int *h) {
     return s_crt_pic;
 }
 
-static const char *const k_display_rows[DI_COUNT] = { "Music", "Sound FX", "Fullscreen", "Filter", "Scale", "Back" };
+static const char *const k_display_rows[DI_COUNT] = { "Music", "Sound FX", "Fullscreen", "Filter", "Scale", "Shape", "Back" };
 
 /* The slider of a volume row in the Options list (false: not a volume row). */
 static bool volume_bar(const MenuLayout *L, int row, int *bx, int *by, int *bw, int *bh) {
@@ -1037,7 +1050,7 @@ static bool volume_bar(const MenuLayout *L, int row, int *bx, int *by, int *bw, 
 static void *display_present_texture(void *ctx, void *renderer, int *w, int *h) {
     (void)ctx;
     if (s_menu_open || crt_gpu_failed()) return NULL;
-    if (s_filter == FILTER_SHARP) return NULL;
+    if (host_draws_sharp()) return NULL;
     int cw = 256, ch = 240;
     const uint32_t *pic = cyc_render_present(&cw, &ch);
     if (!pic || cw > CYC_VIDEO_MAX_WIDTH || ch != 240) return NULL;
@@ -1077,6 +1090,7 @@ static const char *display_row_value(int item, char *buf, size_t n) {
         else snprintf(buf, n, "%dx", s_scale);
         return buf;
     }
+    case DI_SHAPE:      return s_aspect ? "TV (4:3)" : "Square";
     }
     (void)buf; (void)n;
     return "";
@@ -1107,19 +1121,19 @@ static const uint32_t *menu_present(void *ctx, int *w, int *h) {
          * per menu opening / size, then dim a copy each frame */
         static uint32_t *crt_bg = NULL;
         static size_t crt_cap = 0;
-        static int crt_w = 0, crt_h = 0, crt_filter = -1;
+        static int crt_w = 0, crt_h = 0, crt_filter = -1, crt_aspect = -1;
         static uint64_t crt_gen = 0;
         if ((size_t)pw * ph > crt_cap) {
             uint32_t *np = (uint32_t *)realloc(crt_bg, (size_t)pw * ph * 4);
             if (np) { crt_bg = np; crt_cap = (size_t)pw * ph; crt_w = 0; }
         }
         if (crt_bg) {
-            if (crt_w != pw || crt_h != ph || crt_filter != s_filter || crt_gen != s_frozen_gen) {
+            if (crt_w != pw || crt_h != ph || crt_filter != s_filter || crt_aspect != s_aspect || crt_gen != s_frozen_gen) {
                 int keep = crt_get_scale();
                 crt_set_scale(0);                 /* the menu always fills the screen */
                 crt_render(crt_bg, pw, ph, s_menu_frozen, s_frozen_w, MENU_H, false);
                 crt_set_scale(keep);
-                crt_w = pw; crt_h = ph; crt_filter = s_filter; crt_gen = s_frozen_gen;
+                crt_w = pw; crt_h = ph; crt_filter = s_filter; crt_aspect = s_aspect; crt_gen = s_frozen_gen;
             }
             memcpy(d, crt_bg, (size_t)pw * ph * 4);
             mr_rect(d, pw, ph, 0, 0, pw, ph, 0x000000, slots ? 165 : 85);
@@ -1263,6 +1277,11 @@ static void menu_event(void *ctx, const void *event, int player) {
             s_scale_req_dir = sc == SDL_SCANCODE_LEFT ? -1 : 1;
             return;
         }
+        if ((sc == SDL_SCANCODE_LEFT || sc == SDL_SCANCODE_RIGHT) && s_menu_mode == MODE_DISPLAY &&
+            s_menu_sel == DI_SHAPE) {
+            s_shape_req = true;
+            return;
+        }
         if (sc == SDL_SCANCODE_RETURN || sc == SDL_SCANCODE_SPACE || sc == SDL_SCANCODE_KP_ENTER)
             s_menu_req_activate = s_menu_sel;
         return;
@@ -1386,16 +1405,31 @@ static void display_toast(const char *what, const char *value) {
     s_toast_frames = 90;
 }
 
+/* Square-pixel Sharp is the only mode the host draws itself; everything
+ * else is a window-resolution picture from the filter module. */
+static bool host_draws_sharp(void) { return s_filter == FILTER_SHARP && !s_aspect; }
+
 static void apply_filter(void) {
     /* Sharp: nearest + integer scaling, so every NES pixel is the same size
      * (6x on 1440p; 4x on 1080p with thin bars, user's choice over uneven
-     * 4.5x). CRT presents at window resolution (1:1), so no integer step. */
-    int linear = s_filter != FILTER_SHARP;
-    int integer = s_filter == FILTER_SHARP;
-    cyc_host_display_set(-1, linear, integer);
-    cyc_host_display_set_scale(s_filter == FILTER_SHARP ? s_scale : 0);
+     * 4.5x). CRT presents at window resolution (1:1), so no integer step.
+     * Sharp at TV shape: the module's sharp-bilinear style, whole vertical
+     * scale, 8:7 wide. */
+    bool host = host_draws_sharp();
+    cyc_host_display_set(-1, host ? 0 : 1, host ? 1 : 0);
+    cyc_host_display_set_scale(host ? s_scale : 0);
     crt_set_look(s_filter == FILTER_CRT_STRONG ? CRT_LOOK_STRONG : CRT_LOOK_NORMAL);
-    crt_set_scale(s_scale);     /* CRT: fixed size inside its window-res picture */
+    crt_set_style(s_filter == FILTER_SHARP ? CRT_STYLE_SHARP : CRT_STYLE_CRT);
+    crt_set_aspect(s_aspect ? CRT_PAR_TV : 1.0f);
+    crt_set_integer(s_filter == FILTER_SHARP);
+    crt_set_scale(s_scale);     /* fixed size inside the window-res picture */
+}
+
+static void set_shape(int aspect) {
+    s_aspect = aspect ? 1 : 0;
+    apply_filter();
+    cyc_host_save_settings();
+    display_toast("Shape", s_aspect ? "TV (4:3)" : "Square");
 }
 
 /* Next Sharp scale in the cycle Auto, 2x .. largest that fits (dir +1/-1). */
@@ -1473,6 +1507,7 @@ static void display_activate(int item) {
     case DI_SFX:        set_volume(DI_SFX, s_sfx_vol >= 100 ? 0 : s_sfx_vol + 5); break;
     case DI_FILTER:     set_filter(s_filter + 1); break;
     case DI_SCALE:      step_scale(+1); break;
+    case DI_SHAPE:      set_shape(!s_aspect); break;
     case DI_FULLSCREEN:
         cyc_host_display_get(&fs, NULL, NULL);
         cyc_host_display_set(fs ? 0 : 1, -1, -1);
@@ -1489,6 +1524,7 @@ static void display_frame_end(void) {
     }
     if (s_req_filter_cycle) { s_req_filter_cycle = false; set_filter(s_filter + 1); }
     if (s_scale_req_dir) { step_scale(s_scale_req_dir); s_scale_req_dir = 0; }
+    if (s_shape_req) { s_shape_req = false; set_shape(!s_aspect); }
     if (s_vol_req_row >= 0) {
         set_volume(s_vol_req_row, s_vol_req_value);
         s_vol_req_row = -1;
@@ -1502,6 +1538,7 @@ static void display_load_setting(void *ctx, const char *key, const char *value) 
     else if (!strcmp(key, "MusicVolume")) s_music_vol = atoi(value);
     else if (!strcmp(key, "SfxVolume")) s_sfx_vol = atoi(value);
     else if (!strcmp(key, "Scale")) { int v = atoi(value); s_scale = v >= 2 && v <= 6 ? v : 0; }
+    else if (!strcmp(key, "Aspect")) s_aspect = atoi(value) == 1 ? 1 : 0;
     s_music_vol = s_music_vol < 0 ? 0 : s_music_vol > 100 ? 100 : s_music_vol;
     s_sfx_vol = s_sfx_vol < 0 ? 0 : s_sfx_vol > 100 ? 100 : s_sfx_vol;
     if (s_filter < 0 || s_filter >= FILTER_COUNT) s_filter = FILTER_SHARP;
@@ -1509,8 +1546,8 @@ static void display_load_setting(void *ctx, const char *key, const char *value) 
 
 static void display_save_settings(void *ctx, FILE *f) {
     (void)ctx;
-    fprintf(f, "Filter = %d\nMusicVolume = %d\nSfxVolume = %d\nScale = %d\n",
-            s_filter == FILTER_CRT_STRONG ? 4 : s_filter == FILTER_CRT ? 2 : 0, s_music_vol, s_sfx_vol, s_scale);
+    fprintf(f, "Filter = %d\nMusicVolume = %d\nSfxVolume = %d\nScale = %d\nAspect = %d\n",
+            s_filter == FILTER_CRT_STRONG ? 4 : s_filter == FILTER_CRT ? 2 : 0, s_music_vol, s_sfx_vol, s_scale, s_aspect);
 }
 
 static void menu_frame_end(void *ctx) {
