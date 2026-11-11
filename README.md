@@ -65,6 +65,12 @@ Windows builds are cross-compiled with MinGW (`-DCMAKE_TOOLCHAIN_FILE=mingw-tool
 
 **Note:** this project also needs a few additions to the NESRecomp runner that aren't published yet: host display controls (fullscreen, filter, fixed scale), a GPU texture present hook, an APU write hook and per-channel volume. Upstream NESRecomp alone won't build it.
 
+## License
+
+This project's code is licensed under the **GNU General Public License, version 2 or (at your option) any later version** (GPL-2.0-or-later); see [LICENSE](LICENSE). The CRT filter is derived from crt-royale, which uses the same license.
+
+Bundled third-party files keep their own licenses: `third_party/stb_truetype.h` (public domain / MIT) and the DejaVu Sans Bold font embedded in `menu_font.h` (DejaVu fonts license).
+
 ## Credits
 
 - Maniac Mansion is © Lucasfilm Games / LucasArts. This project contains no game code or data and is not affiliated with or endorsed by them.
