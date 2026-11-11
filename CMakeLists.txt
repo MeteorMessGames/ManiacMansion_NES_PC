@@ -4,6 +4,12 @@ project(ManiacMansionMouseCursorTest C CXX)
 set(NESRECOMP_ROOT "${CMAKE_CURRENT_LIST_DIR}/..")
 include("${NESRECOMP_ROOT}/runner/cyc/project.cmake")
 
+# Your own dump of the Maniac Mansion NES prototype ROM (not included).
+set(MM_ROM "" CACHE FILEPATH "Path to Maniac Mansion (Prototype).nes")
+if(NOT MM_ROM OR NOT EXISTS "${MM_ROM}")
+    message(FATAL_ERROR "Set -DMM_ROM=<path to Maniac Mansion (Prototype).nes>")
+endif()
+
 nesrecomp_add_cycle_game(nes_game
     ROM "${MM_ROM}"
     GAME_CONFIG "${CMAKE_CURRENT_LIST_DIR}/game.toml"
