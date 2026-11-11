@@ -18,6 +18,14 @@
  * screen fitted to the src aspect and centered, black outside. */
 void crt_render(uint32_t *dst, int dw, int dh, const uint32_t *src, int sw, int sh, bool curved);
 
+/* Picture size: 0 = fill dst (default), k > 0 = exactly k x src, centered,
+ * when it fits (else fill). Applies to crt_render, crt_map_point,
+ * crt_params (so the GPU version too) and crt_fit_rect. */
+void crt_set_scale(int k);
+int  crt_get_scale(void);
+/* The screen rectangle the filter draws src into, in dst pixels. */
+void crt_fit_rect(int dw, int dh, int sw, int sh, int *x0, int *y0, int *w, int *h);
+
 /* Map an output point (ox, oy in dst pixels) to src coordinates for the same
  * geometry; false if the point is off the picture. */
 bool crt_map_point(int dw, int dh, int sw, int sh, bool curved, float ox, float oy, float *sx, float *sy);

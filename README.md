@@ -9,16 +9,24 @@ Mouse-driven play for the **Maniac Mansion NES prototype** on PC, plus a pause m
 - **Point and click.** The mouse drives the game cursor over the whole screen.
   - **Left click** walks, picks verbs and items (an object with no verb picked = GO TO).
   - **Right click** does the obvious thing with the object under the cursor: GET what can be taken, OPEN/CLOSE doors, READ signs, PUSH/PULL, TURN ON/OFF, USE. The sentence line previews it while you hover ("READ SIGN"). Right click also skips cutscenes.
-  - **Middle click** opens the game's own menu (save / restore / new game).
+  - **Middle click** opens the **in-game save menu**: the game's own Save game / Restore saved game / New game screen (Start on the NES pad).
   - Two-step commands still work the classic way: pick a verb, then the object(s).
 - **Pause menu (Esc):** Resume, Save State and Load State (6 slots with screenshots), Options, Exit.
-- **Options:** separate Music and Sound FX volume, fullscreen, filter, scale.
+- **Options:** separate Music and Sound FX volume, fullscreen, filter, scale (Auto or a fixed 2x to 6x, for both filters).
 - **Filters:**
   - *Sharp*: pixel-perfect integer scaling. *Auto* uses the largest whole scale that fits (6x on 1440p, 4x on 1080p), or pick a fixed 2x to 6x.
-  - *CRT*: a port of the crt-royale-fast shader, run on the GPU (OpenGL) with a CPU fallback.
+  - *CRT*: a port of the crt-royale-fast shader, run on the GPU (OpenGL) with a CPU fallback. *Auto* fills the screen, or pick a fixed 2x to 6x.
 - The game's own battery save also updates your most recent save-state slot.
 
 The full player guide (controls, saving, tips) is in [README.txt](README.txt), which ships next to the exe.
+
+## Mouse
+
+| Button | Action |
+|---|---|
+| Left click | Walk, pick a verb or item (GO TO on objects) |
+| Right click | Context verb on the object under the cursor; skips cutscenes |
+| Middle click | In-game save menu (Save game / Restore / New game) |
 
 ## Keyboard
 

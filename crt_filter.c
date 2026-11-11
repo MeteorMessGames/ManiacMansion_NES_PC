@@ -206,6 +206,7 @@ static void geom_transform(double u, double v, double *ou, double *ov, double *c
 typedef struct {
     int dw, dh, sw, sh;
     bool curved;
+    int scale;             /* s_fit_scale it was built for */
     int cx0, cy0, cw, ch;
     int16_t *hi;           /* [cw] flat: horizontal texel */
     float   *hw;           /* [cw] flat: quintic weight toward hi+1 */
@@ -215,8 +216,15 @@ typedef struct {
 } Geo;
 static Geo s_geo;
 
+/* 0 = fill the output (fractional fit); k > 0 = exactly k x the source,
+ * centered, when that fits (else fill). Set by crt_set_scale. */
+static int s_fit_scale = 0;
+void crt_set_scale(int k) { s_fit_scale = k > 0 ? k : 0; }
+int crt_get_scale(void) { return s_fit_scale; }
+
 static void fit_rect(int dw, int dh, int sw, int sh, int *x0, int *y0, int *w, int *h) {
     double sc = fmin((double)dw / sw, (double)dh / sh);
+    if (s_fit_scale > 0 && s_fit_scale <= sc) sc = s_fit_scale;
     *w = (int)(sw * sc + 0.5);
     *h = (int)(sh * sc + 0.5);
     if (*w > dw) *w = dw;
@@ -241,7 +249,7 @@ static void geo_build(int dw, int dh, int sw, int sh, bool curved) {
     Geo *g = &s_geo;
     free(g->hi); free(g->hw); free(g->ox); free(g->mu); free(g->mv); free(g->mc);
     memset(g, 0, sizeof *g);
-    g->dw = dw; g->dh = dh; g->sw = sw; g->sh = sh; g->curved = curved;
+    g->dw = dw; g->dh = dh; g->sw = sw; g->sh = sh; g->curved = curved; g->scale = s_fit_scale;
     fit_rect(dw, dh, sw, sh, &g->cx0, &g->cy0, &g->cw, &g->ch);
     int cw = g->cw, ch = g->ch;
     g->hi = malloc(sizeof(int16_t) * cw);
@@ -520,7 +528,7 @@ double crt_prof[4];
 void crt_render(uint32_t *dst, int dw, int dh, const uint32_t *src, int sw, int sh, bool curved) {
     if (!s_init) init_once();
     Geo *g = &s_geo;
-    if (g->dw != dw || g->dh != dh || g->sw != sw || g->sh != sh || g->curved != curved || !g->hi)
+    if (g->dw != dw || g->dh != dh || g->sw != sw || g->sh != sh || g->curved != curved || g->scale != s_fit_scale || !g->hi)
         geo_build(dw, dh, sw, sh, curved);
     if (g->cw < 2 || g->ch < 2 || sw < 2) { memset(dst, 0, (size_t)dw * dh * 4); return; }
     ensure_bufs();
@@ -536,6 +544,10 @@ void crt_render(uint32_t *dst, int dw, int dh, const uint32_t *src, int sw, int 
     FinalCtx fc = { dst };
     parallel_rows(rpass, dh, &fc);
     PT(3);
+}
+
+void crt_fit_rect(int dw, int dh, int sw, int sh, int *x0, int *y0, int *w, int *h) {
+    fit_rect(dw, dh, sw, sh, x0, y0, w, h);
 }
 
 bool crt_map_point(int dw, int dh, int sw, int sh, bool curved, float ox, float oy, float *sx, float *sy) {

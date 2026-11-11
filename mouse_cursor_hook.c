@@ -284,7 +284,8 @@ static bool s_display_inited = false;
 static bool s_req_filter_cycle = false;
 /* 2026-11-10 (user): Sharp scale choice. 0 = Auto (largest whole scale that
  * fits), else a fixed 2x..6x; a fixed scale that doesn't fit the screen uses
- * Auto's. Saved as [Game] Scale. CRT always fills the window (ignores it). */
+ * Auto's. Saved as [Game] Scale. CRT: Auto fills the screen (fractional);
+ * a fixed scale draws the CRT screen at exactly k x 256 by k x 240. */
 static int  s_scale = 0;
 static int  s_scale_req_dir = 0;                  /* queued from events */
 /* what the last present handed the host, for mapping the mouse back */
@@ -323,13 +324,10 @@ static void confine_mouse(SDL_Window *win) {
     if (!ren || !s_grabbed || s_pres_kind == PRES_MENU) { confine_clear(win); return; }
     float x0 = 0, y0 = 0, w = (float)s_pres_w, h = (float)s_pres_h;
     if (s_pres_kind == PRES_CRT) {
-        /* the CRT picture fits the game canvas into the window picture */
-        float sc = (float)s_pres_w / s_pres_cw < (float)s_pres_h / 240.0f ? (float)s_pres_w / s_pres_cw
-                                                                         : (float)s_pres_h / 240.0f;
-        w = s_pres_cw * sc;
-        h = 240.0f * sc;
-        x0 = ((float)s_pres_w - w) / 2;
-        y0 = ((float)s_pres_h - h) / 2;
+        /* the CRT filter's own screen rect (fill, or a fixed scale) */
+        int rx, ry, rw, rh;
+        crt_fit_rect(s_pres_w, s_pres_h, s_pres_cw, 240, &rx, &ry, &rw, &rh);
+        x0 = (float)rx; y0 = (float)ry; w = (float)rw; h = (float)rh;
     }
     int ax, ay, bx, by;
     SDL_RenderLogicalToWindow(ren, x0, y0, &ax, &ay);
@@ -1050,7 +1048,7 @@ static const char *display_row_value(int item, char *buf, size_t n) {
     case DI_FILTER:     return k_filter_names[s_filter];
     case DI_SCALE: {
         int max = cyc_host_display_max_scale();
-        if (s_filter != FILTER_SHARP) return "Sharp only";
+        if (s_scale <= 0 && s_filter == FILTER_CRT) return "Auto (fill)";
         if (s_scale <= 0) snprintf(buf, n, "Auto (%dx)", max);
         else if (s_scale > max) snprintf(buf, n, "%dx (fits %dx)", s_scale, max);
         else snprintf(buf, n, "%dx", s_scale);
@@ -1094,7 +1092,10 @@ static const uint32_t *menu_present(void *ctx, int *w, int *h) {
         }
         if (crt_bg) {
             if (crt_w != pw || crt_h != ph || crt_filter != s_filter || crt_gen != s_frozen_gen) {
+                int keep = crt_get_scale();
+                crt_set_scale(0);                 /* the menu always fills the screen */
                 crt_render(crt_bg, pw, ph, s_menu_frozen, s_frozen_w, MENU_H, false);
+                crt_set_scale(keep);
                 crt_w = pw; crt_h = ph; crt_filter = s_filter; crt_gen = s_frozen_gen;
             }
             memcpy(d, crt_bg, (size_t)pw * ph * 4);
@@ -1349,6 +1350,7 @@ static void apply_filter(void) {
     int integer = s_filter == FILTER_SHARP;
     cyc_host_display_set(-1, linear, integer);
     cyc_host_display_set_scale(s_filter == FILTER_SHARP ? s_scale : 0);
+    crt_set_scale(s_scale);     /* CRT: fixed size inside its window-res picture */
 }
 
 /* Next Sharp scale in the cycle Auto, 2x .. largest that fits (dir +1/-1). */
@@ -1365,6 +1367,7 @@ static void step_scale(int dir) {
     cyc_host_save_settings();
     char v[24];
     if (s_scale) snprintf(v, sizeof v, "%dx", s_scale);
+    else if (s_filter == FILTER_CRT) snprintf(v, sizeof v, "Auto (fill)");
     else snprintf(v, sizeof v, "Auto (%dx)", max);
     display_toast("Scale", v);
 }

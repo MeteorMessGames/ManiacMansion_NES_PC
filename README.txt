@@ -27,8 +27,9 @@ Right click    Do the obvious thing with the object under the cursor:
                right click will do (for example "READ SIGN").
                Right click also skips cutscenes.
 
-Middle click   Opens the game's own menu (Back to the Mansion / Save game /
-               Restore saved game / New game), same as Start on the NES pad.
+Middle click   In-game save menu: opens the game's own menu (Back to the
+               Mansion / Save game / Restore saved game / New game), same as
+               Start on the NES pad.
 
 Two-step commands still work the classic way: left click a verb
 (for example USE), then left click the object(s).
@@ -95,8 +96,9 @@ Filter (F9)
                the graphics card (OpenGL); without OpenGL it falls back to
                the CPU, which is much slower.
 
-Scale (pause menu -> Options, Sharp filter only)
-  Auto         The largest whole scale that fits (default).
+Scale (pause menu -> Options)
+  Auto         Sharp: the largest whole scale that fits (default).
+               CRT: fills the screen.
   2x - 6x      A fixed size, e.g. 4x on a 1440p screen for a smaller,
                centered picture. Click or Enter steps through the sizes,
                Left/Right go up and down. Only sizes that fit your screen
