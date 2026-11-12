@@ -1668,7 +1668,11 @@ static void menu_event(void *ctx, const void *event, int player) {
         case SDL_CONTROLLER_BUTTON_DPAD_RIGHT: sc = SDL_SCANCODE_RIGHT; break;
         case SDL_CONTROLLER_BUTTON_A:          if (s_menu_open) sc = SDL_SCANCODE_RETURN; break;
         case SDL_CONTROLLER_BUTTON_B:          if (s_menu_open) sc = SDL_SCANCODE_ESCAPE; break;
-        case SDL_CONTROLLER_BUTTON_BACK:       sc = SDL_SCANCODE_ESCAPE; break;      /* opens / closes the pause menu */
+        case SDL_CONTROLLER_BUTTON_BACK:       /* Select / Share / View */
+        case SDL_CONTROLLER_BUTTON_START:      /* Options / Menu */
+        case SDL_CONTROLLER_BUTTON_GUIDE:      /* Home / PS / Xbox button */
+        case SDL_CONTROLLER_BUTTON_MISC1:
+        case SDL_CONTROLLER_BUTTON_TOUCHPAD:   sc = SDL_SCANCODE_ESCAPE; break;   /* opens / closes the pause menu */
         default: break;
         }
         if (sc != SDL_SCANCODE_UNKNOWN) {
@@ -2137,7 +2141,8 @@ static void menu_frame_end(void *ctx) {
  * mapping, which this mod's joypad hook bypasses, so the hook reads the pad itself:
  *   D-pad / left stick  cursor (speed from Options > Key Speed)     A  left click
  *   B  right click (context verb, skips cutscenes)                    X  Select (cycle verb)
- *   Y  skip the current message      Start  game menu      Back  pause menu (Esc) */
+ *   Y  skip the current message      LB  game menu
+ *   Start / Back / Guide / Share  pause menu (Esc) */
 typedef struct { bool a, b, x, y, start, up, down, left, right; } PadState;
 static PadState pad_read(void) {
     static SDL_GameController *pad = NULL;
@@ -2165,7 +2170,7 @@ static PadState pad_read(void) {
     st.b = SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_B);
     st.x = SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_X);
     st.y = SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_Y);
-    st.start = SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_START);
+    st.start = SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_LEFTSHOULDER);   /* the game's own menu */
     return st;
 }
 
