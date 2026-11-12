@@ -79,6 +79,7 @@
  * context action (A) and skips any active cutscene (Start) in the same
  * press.
  */
+#include "update_check.h"
 #include "mod_function_hooks.h"
 #include "mod_runtime.h"
 #include "cpu6502.h"
@@ -91,6 +92,7 @@
 #include "menu_render.h"
 #include "achievement_sfx.h"
 #include "achievements.h"
+#include "update_check.h"
 #include "crt_filter.h"
 #include "crt_gpu.h"
 #include "cyc_render.h"
@@ -271,7 +273,7 @@ static void sync_grab(SDL_Window *win) {
     s_grabbed = focused;
 }
 
-enum { DI_MUSIC, DI_SFX, DI_FULLSCREEN, DI_FILTER, DI_SCALE, DI_SHAPE, DI_BACK, DI_COUNT };
+enum { DI_MUSIC, DI_SFX, DI_FULLSCREEN, DI_FILTER, DI_SCALE, DI_SHAPE, DI_MOUSE, DI_PAD, DI_BACK, DI_COUNT };
 /* 2026-11-10 (user): only Sharp and CRT. Sharp is pixel-perfect: the largest
  * whole-number scale that fits (6x on 1440p, 4x on 1080p). Smooth and CRT
  * Curved were removed; config values 1 (Smooth) / 3 (CRT Curved) load as
@@ -299,6 +301,7 @@ static int  s_aspect = 0;
 static bool s_game_started = false;               /* cursor sprite seen once: past the title screens */
 static volatile int s_inv_wheel = 0;              /* wheel notches queued from events (+ = up) */
 static bool s_shape_req = false;                  /* toggle queued from events */
+static int s_speed_req_row = -1, s_speed_req_dir = 0;   /* Options: step a cursor speed row, handled in frame_end */
 static bool host_draws_sharp(void);
 /* what the last present handed the host, for mapping the mouse back */
 enum { PRES_HOST, PRES_CANVAS, PRES_CRT, PRES_MENU };
@@ -407,6 +410,8 @@ static bool room_extent(int *y0, int *y1, int *x0, int *x1) {
 
 static uint8_t s_unclamp_x, s_unclamp_y;
 static bool    s_unclamp_on = false;   /* mouse is driving the cursor */
+static bool s_menu_open;   /* tentative declarations: defined with the menu / options code below */
+static int  s_mouse_speed, s_pad_speed;
 
 static void apply_absolute_cursor(SDL_Window *win) {
     if (!s_cursor_hidden) {
@@ -429,6 +434,56 @@ static void apply_absolute_cursor(SDL_Window *win) {
     uint8_t *src_x = cart_ram_byte(CURSOR_SRC_X);
     uint8_t *src_y = cart_ram_byte(CURSOR_SRC_Y);
     if (!src_x || !src_y) return; /* WRAM not mapped this build/frame */
+
+    /* Mouse speed != 100%: drive the cursor from relative motion (SDL relative mode, so the pointer
+     * can't hit the window edge before the game cursor does), scaled by the speed setting. At 100%
+     * the absolute mapping below is used unchanged. */
+    if (s_mouse_speed != 100 && !s_menu_open) {
+        static float vx = 0, vy = 0;
+        if (!SDL_GetRelativeMouseMode()) {
+            if (SDL_GetMouseFocus() != win) return;
+            SDL_SetRelativeMouseMode(SDL_TRUE);
+            SDL_GetRelativeMouseState(NULL, NULL);          /* drop motion accumulated before the switch */
+            vx = *src_x; vy = *src_y;
+            return;
+        }
+        int dx = 0, dy = 0;
+        SDL_GetRelativeMouseState(&dx, &dy);
+        if (!dx && !dy) return;
+        if (!s_unclamp_on) { vx = *src_x; vy = *src_y; }
+        /* window pixels -> native pixels: the slope of the window->canvas mapping */
+        float ax = 0, ay = 0, bx = 0, by = 0;
+        SDL_RenderWindowToLogical(ren, 0, 0, &ax, &ay);
+        SDL_RenderWindowToLogical(ren, 100, 100, &bx, &by);
+        if (s_pres_kind == PRES_CRT) {
+            float cx, cy, ex, ey;
+            crt_map_point(s_pres_w, s_pres_h, s_pres_cw, 240, false, ax, ay, &cx, &cy);
+            crt_map_point(s_pres_w, s_pres_h, s_pres_cw, 240, false, bx, by, &ex, &ey);
+            ax = cx; ay = cy; bx = ex; by = ey;
+        }
+        float kx = (bx - ax) / 100.0f, ky = (by - ay) / 100.0f;
+        if (kx <= 0.0f || ky <= 0.0f) { kx = 0.3f; ky = 0.3f; }
+        float g = s_mouse_speed / 100.0f;
+        float lx = vx + dx * kx * g, ly = vy + dy * ky * g;
+        if (lx < 0) lx = 0; else if (lx > 255) lx = 255;
+        if (ly < 0) ly = 0; else if (ly > 238) ly = 238;
+        {
+            int ry0, ry1, rx0, rx1;
+            if (room_extent(&ry0, &ry1, &rx0, &rx1)) {
+                if (ly < ry0) ly = (float)ry0;
+                if (ly >= ry0 && ly <= ry1) {
+                    if (lx < rx0) lx = (float)rx0;
+                    if (lx > rx1) lx = (float)rx1;
+                }
+            }
+        }
+        vx = lx; vy = ly;
+        *src_x = (uint8_t)lx; *src_y = (uint8_t)ly;
+        s_unclamp_x = (uint8_t)lx; s_unclamp_y = (uint8_t)ly;
+        s_unclamp_on = true;
+        return;
+    }
+    if (SDL_GetRelativeMouseMode()) SDL_SetRelativeMouseMode(SDL_FALSE);
 
     /* 2026-11-06: computing window-relative coords as
      * (SDL_GetGlobalMouseState() - SDL_GetWindowPosition()) never tracked
@@ -841,9 +896,9 @@ static MenuLayout menu_layout(int w, int h) {
     L.sep_y = (int)(46 * L.u);
     if (s_menu_mode == MODE_MAIN || s_menu_mode == MODE_DISPLAY || s_menu_mode == MODE_QUIT) {
         L.item_y0 = (int)(58 * L.u);
-        /* Options has 7 rows: a little tighter so they clear the footer */
-        L.item_h = (int)((s_menu_mode == MODE_DISPLAY ? 15 : 17) * L.u);
-        L.item_gap = (int)((s_menu_mode == MODE_DISPLAY ? 2 : 3) * L.u);
+        /* Options has 9 rows: tighter so they clear the footer */
+        L.item_h = (int)((s_menu_mode == MODE_DISPLAY ? 13 : 17) * L.u);
+        L.item_gap = (int)((s_menu_mode == MODE_DISPLAY ? 1 : 3) * L.u);
     } else if (s_menu_mode == MODE_ACH) {
         L.item_y0 = (int)(52 * L.u);
         L.item_h = (int)(23 * L.u);
@@ -1181,6 +1236,10 @@ static void draw_slot_preview(uint32_t *d, int pw, int ph, const MenuLayout *L) 
 #define SPLASH_CYCLE_FR 5    /* frames per colour step */
 static int       s_splash_state = 0;           /* 0 not started, 1 showing, 2 done */
 static bool      s_splash_enabled = true;      /* config [Game] Splash */
+static int       s_mouse_speed = 100;          /* config [Game] MouseSpeed (percent): cursor speed with the mouse */
+static int       s_pad_speed = 100;            /* config [Game] PadSpeed (percent): cursor speed with arrow keys / d-pad */
+static bool      s_update_check = true;        /* config [Game] UpdateCheck: ask GitHub for a newer release at launch */
+#define MM_MOD_VERSION "1.1.0"                 /* the release this build is based on; bump with each release */
 static int       s_splash_frame = 0;
 static bool      s_splash_skip = false;
 static uint8_t  *s_splash_snap = NULL;
@@ -1293,7 +1352,7 @@ static const uint32_t *display_present(int *w, int *h) {
     return s_crt_pic;
 }
 
-static const char *const k_display_rows[DI_COUNT] = { "Music", "Sound FX", "Fullscreen", "Filter", "Scale", "Shape", "Back" };
+static const char *const k_display_rows[DI_COUNT] = { "Music", "Sound FX", "Fullscreen", "Filter", "Scale", "Shape", "Mouse Speed", "Key Speed", "Back" };
 
 /* The slider of a volume row in the Options list (false: not a volume row). */
 static bool volume_bar(const MenuLayout *L, int row, int *bx, int *by, int *bw, int *bh) {
@@ -1304,7 +1363,7 @@ static bool volume_bar(const MenuLayout *L, int row, int *bx, int *by, int *bw, 
     *bx = L->pad + (int)(6 * u);
     *bw = L->sw - L->pad / 2 - (int)(6 * u) - *bx;
     *bh = (int)(3 * u) > 2 ? (int)(3 * u) : 2;
-    *by = y0 + L->item_h - *bh - (int)(2.5f * u);
+    *by = y0 + L->item_h - *bh - (int)(0.8f * u);
     return *bw > 4;
 }
 
@@ -1356,6 +1415,8 @@ static const char *display_row_value(int item, char *buf, size_t n) {
         return buf;
     }
     case DI_SHAPE:      return s_aspect ? "TV (4:3)" : "Square";
+    case DI_MOUSE:      snprintf(buf, n, "%d%%", s_mouse_speed); return buf;
+    case DI_PAD:        snprintf(buf, n, "%d%%", s_pad_speed); return buf;
     }
     (void)buf; (void)n;
     return "";
@@ -1458,7 +1519,7 @@ static const uint32_t *menu_present(void *ctx, int *w, int *h) {
         if (s_menu_mode == MODE_DISPLAY) {
             bool vol = i == DI_MUSIC || i == DI_SFX;
             float tpx = vol ? 7.0f * u : 8.0f * u;
-            int ty = vol ? y0 + (int)(2 * u) : y0 + (int)((L.item_h - tpx) / 2);
+            int ty = vol ? y0 + (int)(0.5f * u) : y0 + (int)((L.item_h - tpx) / 2);
             mr_text(d, pw, ph, L.pad + (int)(6 * u), ty, tpx, fg, 255, k_display_rows[i]);
             char vb[32];
             const char *val = display_row_value(i, vb, sizeof vb);
@@ -1473,7 +1534,7 @@ static const uint32_t *menu_present(void *ctx, int *w, int *h) {
             if (val[0]) {
                 float vpx = 7.0f * u;
                 int vx = L.sw - L.pad / 2 - (int)(6 * u) - mr_text_width(vpx, val);
-                int vy = vol ? y0 + (int)(2.5f * u) : y0 + (int)((L.item_h - vpx) / 2);
+                int vy = vol ? y0 + (int)(0.5f * u) : y0 + (int)((L.item_h - vpx) / 2);
                 mr_text(d, pw, ph, vx, vy, vpx, sel ? 0xFFFFFF : 0x9AA0B4, 255, val);
             }
             continue;
@@ -1601,6 +1662,12 @@ static void menu_event(void *ctx, const void *event, int player) {
             return;
         }
         if ((sc == SDL_SCANCODE_LEFT || sc == SDL_SCANCODE_RIGHT) && s_menu_mode == MODE_DISPLAY &&
+            (s_menu_sel == DI_MOUSE || s_menu_sel == DI_PAD)) {
+            s_speed_req_row = s_menu_sel;
+            s_speed_req_dir = sc == SDL_SCANCODE_LEFT ? -1 : 1;
+            return;
+        }
+        if ((sc == SDL_SCANCODE_LEFT || sc == SDL_SCANCODE_RIGHT) && s_menu_mode == MODE_DISPLAY &&
             s_menu_sel == DI_SHAPE) {
             s_shape_req = true;
             return;
@@ -1677,6 +1744,7 @@ static void menu_event(void *ctx, const void *event, int player) {
 static void menu_os_cursor(bool on) {
     SDL_Window *win = find_game_window();
     if (on) {
+        if (SDL_GetRelativeMouseMode()) SDL_SetRelativeMouseMode(SDL_FALSE);
         confine_clear(win);
         if (win) SDL_SetWindowGrab(win, SDL_FALSE);
         s_grabbed = false;
@@ -1794,6 +1862,18 @@ static void step_scale(int dir) {
     display_toast("Scale", v);
 }
 
+static const int k_speeds[] = { 50, 75, 100, 125, 150, 200, 300 };
+static void step_speed(int row, int dir) {
+    int *p = row == DI_MOUSE ? &s_mouse_speed : &s_pad_speed;
+    int n = (int)(sizeof k_speeds / sizeof k_speeds[0]), i = 0;
+    for (int j = 0; j < n; j++) if (k_speeds[j] <= *p) i = j;
+    *p = k_speeds[((i + dir) % n + n) % n];
+    cyc_host_save_settings();
+    char v[16];
+    snprintf(v, sizeof v, "%d%%", *p);
+    display_toast(row == DI_MOUSE ? "Mouse Speed" : "Key Speed", v);
+}
+
 static void set_filter(int f) {
     s_filter = (f % FILTER_COUNT + FILTER_COUNT) % FILTER_COUNT;
     apply_filter();             /* also saves the settings file */
@@ -1851,6 +1931,8 @@ static void display_activate(int item) {
     case DI_FILTER:     set_filter(s_filter + 1); break;
     case DI_SCALE:      step_scale(+1); break;
     case DI_SHAPE:      set_shape(!s_aspect); break;
+    case DI_MOUSE:
+    case DI_PAD:        step_speed(item, +1); break;
     case DI_FULLSCREEN:
         cyc_host_display_get(&fs, NULL, NULL);
         cyc_host_display_set(fs ? 0 : 1, -1, -1);
@@ -1868,6 +1950,7 @@ static void display_frame_end(void) {
     if (s_req_filter_cycle) { s_req_filter_cycle = false; set_filter(s_filter + 1); }
     if (s_scale_req_dir) { step_scale(s_scale_req_dir); s_scale_req_dir = 0; }
     if (s_shape_req) { s_shape_req = false; set_shape(!s_aspect); }
+    if (s_speed_req_row >= 0) { int row = s_speed_req_row; s_speed_req_row = -1; step_speed(row, s_speed_req_dir); }
     if (s_vol_req_row >= 0) {
         set_volume(s_vol_req_row, s_vol_req_value);
         s_vol_req_row = -1;
@@ -1883,6 +1966,11 @@ static void display_load_setting(void *ctx, const char *key, const char *value) 
     else if (!strcmp(key, "Scale")) { int v = atoi(value); s_scale = v >= 2 && v <= 6 ? v : 0; }
     else if (!strcmp(key, "Aspect")) s_aspect = atoi(value) == 1 ? 1 : 0;
     else if (!strcmp(key, "Splash")) s_splash_enabled = atoi(value) != 0;
+    else if (!strcmp(key, "UpdateCheck")) s_update_check = atoi(value) != 0;
+    else if (!strcmp(key, "MouseSpeed")) s_mouse_speed = atoi(value);
+    else if (!strcmp(key, "PadSpeed")) s_pad_speed = atoi(value);
+    s_mouse_speed = s_mouse_speed < 25 ? 100 : s_mouse_speed > 400 ? 400 : s_mouse_speed;
+    s_pad_speed = s_pad_speed < 25 ? 100 : s_pad_speed > 400 ? 400 : s_pad_speed;
     s_music_vol = s_music_vol < 0 ? 0 : s_music_vol > 100 ? 100 : s_music_vol;
     s_sfx_vol = s_sfx_vol < 0 ? 0 : s_sfx_vol > 100 ? 100 : s_sfx_vol;
     if (s_filter < 0 || s_filter >= FILTER_COUNT) s_filter = FILTER_SHARP;
@@ -1890,8 +1978,23 @@ static void display_load_setting(void *ctx, const char *key, const char *value) 
 
 static void display_save_settings(void *ctx, FILE *f) {
     (void)ctx;
-    fprintf(f, "Filter = %d\nMusicVolume = %d\nSfxVolume = %d\nScale = %d\nAspect = %d\nSplash = %d\n",
-            s_filter == FILTER_CRT_STRONG ? 4 : s_filter == FILTER_CRT ? 2 : 0, s_music_vol, s_sfx_vol, s_scale, s_aspect, s_splash_enabled ? 1 : 0);
+    fprintf(f, "Filter = %d\nMusicVolume = %d\nSfxVolume = %d\nScale = %d\nAspect = %d\nSplash = %d\nUpdateCheck = %d\nMouseSpeed = %d\nPadSpeed = %d\n",
+            s_filter == FILTER_CRT_STRONG ? 4 : s_filter == FILTER_CRT ? 2 : 0, s_music_vol, s_sfx_vol, s_scale, s_aspect, s_splash_enabled ? 1 : 0, s_update_check ? 1 : 0, s_mouse_speed, s_pad_speed);
+}
+
+/* Update check: start once the game is on screen, then toast if GitHub has a newer release. */
+static void update_step(void) {
+    static bool started = false, shown = false;
+    if (s_splash_state == 1 || s_menu_open) return;
+    if (!started) { started = true; update_check_start(MM_MOD_VERSION, s_update_check); }
+    char tag[48];
+    if (!shown && s_toast_frames <= 0 && update_check_poll(tag, sizeof tag)) {
+        shown = true;
+        snprintf(s_toast_text, sizeof s_toast_text, "UPDATE AVAILABLE\n%s ON GITHUB", tag);
+        for (char *c = s_toast_text; *c; c++) if (*c >= 'a' && *c <= 'z') *c = (char)(*c - 32);
+        s_toast_frames = 300;
+        menu_log("update available", tag);
+    }
 }
 
 static void splash_step(void) {
@@ -1957,6 +2060,7 @@ static void menu_frame_end(void *ctx) {
     }
     display_frame_end();
     follow_game_save();
+    update_step();
     achievements_step();
     if (s_menu_req_back) {
         s_menu_req_back = false;
@@ -2493,6 +2597,30 @@ static uint8_t real_mouse_buttons(void) {
      * opens the game's own menu (save/load/new kids), like the NES pad. */
     if (mmb) out |= BTN_START;
 
+    /* Click-to-skip text. The game's message printer keeps a 16-bit reading timer in $AA/$AB
+     * (counted down every other frame; $A8 != 0 while a message is up). Zeroing it makes the
+     * game move on right away: to the next page of a multi-page message, or to the end.
+     * A left click skips when it lands in the text band above the room, or any time during a
+     * cutscene (UI frozen or an override armed); the click is swallowed so it can't also act. */
+    {
+        static bool skip_prev = false, skip_eat = false;
+        bool fresh = lmb && !skip_prev;
+        skip_prev = lmb;
+        uint8_t *a8 = ram_byte(0xA8), *aa = ram_byte(0xAA), *ab = ram_byte(0xAB);
+        uint8_t *cy = cart_ram_byte(0x7118);
+        if (fresh && game_started && a8 && aa && ab && *a8 != 0 && (*aa | *ab) != 0) {
+            bool in_text_band = cy && *cy <= 38;   /* the cursor stops at the room top, so a click above the room lands here */
+            bool cutscene = wram(0x6D3C) != 0 || wram(0x6B06) != 0 || wram(0x6B07) != 0;
+            if (in_text_band || cutscene) {
+                *aa = 0; *ab = 0;
+                skip_eat = true;
+                if (log) fprintf(log, "[textskip] message skipped (band=%d cutscene=%d)\n", in_text_band, cutscene);
+            }
+        }
+        if (!lmb) skip_eat = false;
+        if (skip_eat) { out &= (uint8_t)~BTN_A; lmb = false; }
+    }
+
     /* Space also sends Start (cutscene skip) -- for fast iteration while
      * testing, so skipping doesn't require chasing the grabbed/confined
      * cursor back to a precise right-click. */
@@ -2900,6 +3028,26 @@ static int cursor_unclamp_hook(uint16_t addr) {
     if (s_unclamp_on && !s_menu_open) {
         uint8_t *x = cart_ram_byte(CURSOR_SRC_X), *y = cart_ram_byte(CURSOR_SRC_Y);
         if (x && y) { *x = s_unclamp_x; *y = s_unclamp_y; }
+    } else if (!s_menu_open && s_pad_speed != 100) {
+        /* arrow keys / d-pad: scale the step the game just took by the speed setting */
+        static int lx = -1, ly = -1;
+        static float rx = 0, ry = 0;
+        uint8_t *x = cart_ram_byte(CURSOR_SRC_X), *y = cart_ram_byte(CURSOR_SRC_Y);
+        if (x && y) {
+            if (lx >= 0) {
+                int dx = (int)*x - lx, dy = (int)*y - ly;
+                if ((dx || dy) && dx > -12 && dx < 12 && dy > -12 && dy < 12) {
+                    float g = s_pad_speed / 100.0f - 1.0f;
+                    rx += dx * g; ry += dy * g;
+                    int ix = (int)rx, iy = (int)ry;
+                    rx -= ix; ry -= iy;
+                    int nx = (int)*x + ix, ny = (int)*y + iy;
+                    *x = (uint8_t)(nx < 16 ? 16 : nx > 239 ? 239 : nx);
+                    *y = (uint8_t)(ny < 35 ? 35 : ny > 222 ? 222 : ny);
+                }
+            }
+            lx = *x; ly = *y;
+        }
     }
 #endif
     return 0;
