@@ -45,8 +45,8 @@ The full player guide (controls, saving, tips) is in [README.txt](README.txt), w
 | B | Right click (context verb, skips cutscenes) |
 | X | Cycle the verb (Select) |
 | Y | Skip the current message |
-| Start | The game's own menu (save / restore) |
-| Back | Pause menu; D-pad moves in it, A confirms, B goes back |
+| Start, Back / Select, Guide | Pause menu; D-pad moves in it, A confirms, B goes back |
+| Left shoulder | The game's own menu (save / restore) |
 
 ## Keyboard
 
