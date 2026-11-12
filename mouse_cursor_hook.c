@@ -561,7 +561,7 @@ static SlotInfo s_slots[NUM_SLOTS + 1];
 
 static int      s_game_saved_frames = -1;  /* -1 idle, else frames since the game's own save */
 static int      s_toast_frames = 0;        /* "SAVED TO SLOT N" banner countdown */
-static char     s_toast_text[96] = "";     /* "title" or "title\nbody" */
+static char     s_toast_text[192] = "";     /* "title" or "title\nbody" */
 static int      s_game_thumb_frames = -1;  /* frames until the game-save slot's screenshot is taken */
 static int      s_game_thumb_slot = 0;
 static bool     s_menu_open = false;
@@ -627,15 +627,57 @@ static const char *const k_trophy_art[19] = {
 
 /* Achievement unlock banner: big chunky name on a solid card with a trophy (native-pixel overlay, so it
  * scales with the picture). Layout is in units of k = frame width / 256. */
-static void ach_toast_draw(uint32_t *buf, int cw, int ch, const char *name)
+/* Squashed 3x4 text for the description: the 3x5 overlay glyph minus its fourth row (descenders and the
+ * lower bowls survive well enough at this size). Same 4 px advance, 1 px shorter. */
+static void small_text(uint32_t *buf, int cw, int ch, int x, int y, int k, uint32_t color, const char *s)
 {
-    int k = cw / 256 > 1 ? cw / 256 : 1, ns = 2 * k;
+    static const int src_row[4] = {0, 1, 2, 4};
+    for (; *s; ++s, x += 4 * k) {
+        const uint8_t *g = cyc_overlay_glyph(*s);
+        if (!g) continue;
+        for (int r = 0; r < 4; r++)
+            for (int c = 0; c < 3; c++)
+                if (g[src_row[r]] & (4 >> c))
+                    for (int dy = 0; dy < k; dy++)
+                        for (int dx = 0; dx < k; dx++) {
+                            int px = x + c * k + dx, py = y + r * k + dy;
+                            if (px >= 0 && py >= 0 && px < cw && py < ch) buf[py * cw + px] = 0xFF000000u | color;
+                        }
+    }
+}
+static int s_ach_cx = 0;   /* banner center in native px, latched when the unlock fires (0 = frame center) */
+static void ach_toast_draw(uint32_t *buf, int cw, int ch, const char *text)
+{
+    int k = cw / 256 > 1 ? cw / 256 : 1, ns = k;
     const char *title = "ACHIEVEMENT UNLOCKED";
+    /* text = "NAME" or "NAME\nDESCRIPTION"; the description is word-wrapped (max 34 chars a line, 2 lines) */
+    char name[64], desc[128];
+    const char *nl = strchr(text, '\n');
+    snprintf(name, sizeof name, "%.*s", nl ? (int)(nl - text) : (int)strlen(text), text);
+    snprintf(desc, sizeof desc, "%s", nl ? nl + 1 : "");
+    char lines[2][40] = {"", ""};
+    int nlines = 0;
+    for (const char *w = desc; *w && nlines < 2; ) {
+        while (*w == ' ') w++;
+        const char *e = w; while (*e && *e != ' ') e++;
+        int wl = (int)(e - w), cl = (int)strlen(lines[nlines]);
+        if (cl && cl + 1 + wl > 34) { if (++nlines >= 2) break; cl = 0; }
+        if (cl) lines[nlines][cl++] = ' ';
+        snprintf(lines[nlines] + cl, sizeof lines[0] - cl, "%.*s", wl, w);
+        w = e;
+    }
+    nlines = lines[1][0] ? 2 : (lines[0][0] ? 1 : 0);
     int pad = 4 * k, tro = 14 * k + 4 * k;
     int tw = (int)strlen(title) * 4 * k - k, nw = (int)strlen(name) * 4 * ns - ns;
-    int bw = (tw > nw ? tw : nw) + 2 * pad + tro, bh = 25 * k;
+    int dw = 0;
+    for (int i = 0; i < nlines; i++) { int w = (int)strlen(lines[i]) * 4 * k - k; if (w > dw) dw = w; }
+    if (dw > nw) nw = dw;
+    int bw = (tw > nw ? tw : nw) + 2 * pad + tro;
+    int bh = (22 + (nlines ? 3 + 7 * nlines - 2 : 0)) * k;
     if (bw > cw - 4 * k) bw = cw - 4 * k;
-    int x0 = (cw - bw) / 2, y0 = 38 * k;   /* centered, just under the two lines of game text at the top */
+    int x0 = (s_ach_cx > 0 ? s_ach_cx * k : cw / 2) - bw / 2, y0 = 38 * k;
+    if (x0 > cw - bw) x0 = cw - bw;
+    if (x0 < 0) x0 = 0;   /* centered, just under the two lines of game text at the top */
     for (int y = 0; y < bh; y++)
         for (int x = 0; x < bw; x++) {
             int px = x0 + x, py = y0 + y;
@@ -660,9 +702,12 @@ static void ach_toast_draw(uint32_t *buf, int cw, int ch, const char *name)
                     if (px >= 0 && py >= 0 && px < cw && py < ch) buf[py * cw + px] = 0xFF000000u | c;
                 }
         }
-    int tx = x0 + pad + tro;
-    cyc_overlay_text(buf, cw, ch, tx, y0 + 4 * k, k, 0xFFD25A, title);
-    cyc_overlay_text(buf, cw, ch, tx, y0 + 4 * k + 5 * k + 3 * k, ns, 0xFFFFFF, name);
+    int tx = x0 + pad + tro, tbw = (tw > nw ? tw : nw);   /* text column: lines are centered in it */
+    cyc_overlay_text(buf, cw, ch, tx + (tbw - tw) / 2, y0 + 5 * k, k, 0xFFD25A, title);
+    cyc_overlay_text(buf, cw, ch, tx + (tbw - ((int)strlen(name) * 4 * ns - ns)) / 2, y0 + (5 + 5 + 3) * k, k, 0xFFFFFF, name);
+    for (int i = 0; i < nlines; i++)
+        cyc_overlay_text(buf, cw, ch, tx + (tbw - ((int)strlen(lines[i]) * 4 * k - k)) / 2,
+                         y0 + (5 + 5 + 3 + 5 + 3 + 7 * i) * k, k, 0xB4B4C8, lines[i]);
 }
 
 /* Draw the toast: text up to a newline is the title, the rest is the body. */
@@ -1890,9 +1935,10 @@ static void achievements_step(void) {
     if (s_toast_frames <= 0) {
         int a = ach_next_toast();
         if (a >= 0) {
-            snprintf(s_toast_text, sizeof s_toast_text, "ACHIEVEMENT UNLOCKED\n%s", ach_name(a));
+            snprintf(s_toast_text, sizeof s_toast_text, "ACHIEVEMENT UNLOCKED\n%s\n%s", ach_name(a), ach_desc(a));
             for (char *c = s_toast_text; *c; c++) if (*c >= 'a' && *c <= 'z') *c = (char)(*c - 32);
             s_toast_frames = 240;
+            { int ry0, ry1, rx0, rx1; s_ach_cx = room_extent(&ry0, &ry1, &rx0, &rx1) ? (rx0 + rx1 + 1) / 2 : 0; }
             s_chime_pos = 0;
             menu_log("achievement", ach_name(a));
         }
