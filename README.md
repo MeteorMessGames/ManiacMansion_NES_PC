@@ -44,7 +44,6 @@ The full player guide (controls, saving, tips) is in [README.txt](README.txt), w
 | F9 | Filter: Sharp / CRT / CRT Strong |
 | F11 | Fullscreen |
 | F12 | Screenshot |
-| Tab | Cycle through the verbs |
 | Z | A button (same as left click) |
 | Arrow keys | NES d-pad |
 
