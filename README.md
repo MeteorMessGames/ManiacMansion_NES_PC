@@ -17,6 +17,7 @@ Get `ManiacMansion_NES_PC_win64.zip` from the [latest release](https://github.co
   - Two-step commands still work the classic way: pick a verb, then the object(s).
 - **Mouse wheel** scrolls the inventory.
 - **Pause menu (Esc):** Resume, Save State and Load State (10 slots with screenshots, scrolling list; a toast confirms each save and load), Options, Exit. The sound is silenced while it is open. Closing the window or choosing Exit Game asks first (in-game, not a system dialog): save to a slot and exit, exit without saving, or cancel.
+- **Achievements:** 37 of them. Esc > Achievements lists every one with a trophy (gold and colored when earned, grey when not). A banner with a sound announces each unlock. Unlocks are saved in `ManiacMansion.achievements` next to the exe; the file is signed, so editing it unlocks nothing.
 - **Options:** separate Music and Sound FX volume, fullscreen, filter, scale (Auto or a fixed 2x to 6x, for both filters), shape (square pixels or TV 4:3).
 - **Filters:**
   - *Sharp*: pixel-perfect integer scaling. *Auto* uses the largest whole scale that fits (6x on 1440p, 4x on 1080p), or pick a fixed 2x to 6x. At TV shape it stays crisp (sharp-bilinear: whole pixels, a one-pixel blend where two meet).
