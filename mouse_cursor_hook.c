@@ -89,6 +89,8 @@
 #include "cyc_session.h"
 #include "cyc_overlay.h"
 #include "menu_render.h"
+#include "achievement_sfx.h"
+#include "achievements.h"
 #include "crt_filter.h"
 #include "crt_gpu.h"
 #include "cyc_render.h"
@@ -402,6 +404,7 @@ static bool room_extent(int *y0, int *y1, int *x0, int *x1) {
     return *x1 > *x0;
 }
 
+
 static uint8_t s_unclamp_x, s_unclamp_y;
 static bool    s_unclamp_on = false;   /* mouse is driving the cursor */
 
@@ -525,8 +528,10 @@ static uint8_t wram(uint16_t addr);   /* defined with the context-RMB code */
 /* PCSX2-style pause sidebar (user choice): translucent panel down the left,
  * game lightly dimmed on the right, anti-aliased TrueType text rendered at
  * the window's real resolution (menu_render.c). */
-enum { MI_RESUME, MI_SAVE, MI_LOAD, MI_DISPLAY, MI_EXIT, MI_COUNT };
-static const char *const k_menu_rows[MI_COUNT] = { "Resume Game", "Save State", "Load State", "Options", "Exit Game" };
+enum { MI_RESUME, MI_SAVE, MI_LOAD, MI_ACH,
+       MI_DISPLAY, MI_EXIT, MI_COUNT };
+static const char *const k_menu_rows[MI_COUNT] = { "Resume Game", "Save State", "Load State", "Achievements",
+    "Options", "Exit Game" };
 
 /* 2026-11-10: display options (Display sub-menu, F9 filter, F10 widescreen,
  * F11 fullscreen via the host). Filters: Sharp = nearest + integer scale,
@@ -540,8 +545,9 @@ static const char *const k_menu_rows[MI_COUNT] = { "Resume Game", "Save State", 
  * plus a .thumb sidecar (screenshot shown in the slot list). The old
  * single-file ManiacMansion.state is no longer used (any snapshot only
  * loads in the exe that wrote it anyway). */
-enum { MODE_MAIN, MODE_SAVE, MODE_LOAD, MODE_DISPLAY, MODE_QUIT };
+enum { MODE_MAIN, MODE_SAVE, MODE_LOAD, MODE_DISPLAY, MODE_QUIT, MODE_ACH, MODE_DBG };
 #define NUM_SLOTS 10
+#define ACH_ROWS_VISIBLE 5    /* achievement list rows on screen (two lines each) */
 #define SLOT_ROWS_VISIBLE 7   /* slot list rows on screen; the rest scroll (wheel, Up/Down) */
 #define THUMB_W 128
 #define THUMB_H 120
@@ -572,6 +578,7 @@ static bool     s_menu_req_quit = false;       /* window close queued from event
 static uint8_t  s_session_bat[BAT_LEN];
 static bool     s_session_bat_valid = false;
 static int      s_session_slot = 0;            /* slot last saved to this session (0 = none yet) */
+static bool     s_dirty = false;               /* player acted since the last save/load: exit warns only then */
 static int      s_quit_slot = 1;               /* slot "Save and exit" writes */
 static int      s_menu_sel = 0;
 static int      s_menu_hover = -1;             /* row under the mouse, or -1 */
@@ -595,6 +602,46 @@ static bool     s_menu_req_toggle = false;
 static bool     s_menu_req_back = false;
 static int      s_menu_req_activate = -1;
 
+/* 14x19 trophy (silhouette of the trophy icon): D outline, G body, H highlight. */
+static const char *const k_trophy_art[19] = {
+    "..DDDDDDDDDD..",
+    "DDDHGGGGGGGDDD",
+    "DHDGGGGGGGGDGD",
+    "DHDGGGGGGGGDGD",
+    "DHDGGGGGGGGDGD",
+    "DHDGGGGGGGGDGD",
+    ".DDHGGGGGGGDD.",
+    "..DDHGGGGGDD..",
+    "....DHGGGG....",
+    "....DDHGDD....",
+    "......DD......",
+    "......DD......",
+    "......DD......",
+    "....DDDDDD....",
+    "...DHGGGGGD...",
+    "...DHGGGGGD...",
+    "...DHGGGGGD...",
+    "..DDDDDDDDDD..",
+    "..DDDDDDDDDD.."
+};
+
+/* drawn beside the achievement banner (gold) */
+static void draw_trophy(uint32_t *buf, int cw, int ch, int x0, int y0) {
+    for (int y = 0; y < 19; y++)
+        for (int x = 0; x < 14; x++) {
+            uint32_t c;
+            switch (k_trophy_art[y][x]) {
+                case 'G': c = 0xFFD25A; break;
+                case 'H': c = 0xFFF0A8; break;
+                case 'D': c = 0xB5771C; break;
+                default: continue;
+            }
+            int px = x0 + x, py = y0 + y;
+            if (px < 0 || py < 0 || px >= cw || py >= ch) continue;
+            buf[py * cw + px] = 0xFF000000u | c;
+        }
+}
+
 /* Draw the toast: text up to a newline is the title, the rest is the body. */
 static void toast_draw(uint32_t *buf, int cw, int ch) {
     char t[sizeof s_toast_text];
@@ -602,9 +649,21 @@ static void toast_draw(uint32_t *buf, int cw, int ch) {
     char *nl = strchr(t, '\n');
     if (nl) { *nl = 0; cyc_overlay_toast(buf, cw, ch, t, nl + 1); }
     else cyc_overlay_toast(buf, cw, ch, t, "");
+    if (!strncmp(s_toast_text, "ACHIEVEMENT UNLOCKED", 20)) {
+        /* same box geometry as cyc_overlay_toast: 4 px per glyph, 2 lines */
+        size_t l0 = strlen(t), l1 = nl ? strlen(nl + 1) : 0, widest = l0 > l1 ? l0 : l1;
+        int bw = (int)widest * 4 - 1 + 8, bh = 2 * 8 - 3 + 8;
+        if (bw > cw - 4) bw = cw - 4;
+        draw_trophy(buf, cw, ch, (cw - bw) / 2 - 17, 6 + (bh - 19) / 2);
+    }
 }
 
 static uint8_t wram(uint16_t addr);
+static uint8_t ach_rd(uint16_t addr) {
+    if (addr >= 0x800) return wram(addr);
+    uint8_t *p = ram_byte(addr);
+    return p ? *p : 0;
+}
 
 static void slot_file(int slot, const char *ext, char *out, size_t n) {
     char *base = SDL_GetBasePath();
@@ -672,12 +731,14 @@ static void slot_time_text(int slot, char *out, size_t n) {
 static int menu_row_count(void) {
     if (s_menu_mode == MODE_DISPLAY) return DI_COUNT;
     if (s_menu_mode == MODE_QUIT) return 3;
+    if (s_menu_mode == MODE_ACH) return ach_count() + 1;
     if (s_menu_mode != MODE_MAIN) return NUM_SLOTS + 1;
     return MI_COUNT;
 }
 /* Rows drawn at once: the slot lists scroll, the other menus fit. */
 static int menu_visible_rows(void) {
     int n = menu_row_count();
+    if (s_menu_mode == MODE_ACH) return n > ACH_ROWS_VISIBLE ? ACH_ROWS_VISIBLE : n;
     return (s_menu_mode == MODE_SAVE || s_menu_mode == MODE_LOAD) && n > SLOT_ROWS_VISIBLE ? SLOT_ROWS_VISIBLE : n;
 }
 static void menu_scroll_clamp(void) {
@@ -708,6 +769,10 @@ static MenuLayout menu_layout(int w, int h) {
         int cap = (int)(h * 256.0f / 240.0f * 0.40f);
         if (L.sw > cap) L.sw = cap;
     }
+    if (s_menu_mode == MODE_ACH) {   /* the achievement cards need room for full names: a wider panel */
+        int wide = (int)(w * 0.64f), cap = (int)(h * 256.0f / 240.0f * 0.64f);
+        L.sw = wide < cap ? wide : cap;
+    }
     L.pad = (int)(10 * L.u);
     L.title_y = (int)(16 * L.u);
     L.sub_y = (int)(33 * L.u);
@@ -717,6 +782,10 @@ static MenuLayout menu_layout(int w, int h) {
         /* Options has 7 rows: a little tighter so they clear the footer */
         L.item_h = (int)((s_menu_mode == MODE_DISPLAY ? 15 : 17) * L.u);
         L.item_gap = (int)((s_menu_mode == MODE_DISPLAY ? 2 : 3) * L.u);
+    } else if (s_menu_mode == MODE_ACH) {
+        L.item_y0 = (int)(52 * L.u);
+        L.item_h = (int)(23 * L.u);
+        L.item_gap = (int)(2 * L.u);
     } else {
         L.item_y0 = (int)(54 * L.u);
         L.item_h = (int)(14 * L.u);
@@ -853,6 +922,7 @@ static void slot_activate(int slot) {
             menu_status(msg, 0x7CE08A);
             menu_log("saved", path);
             s_session_slot = slot;
+            s_dirty = false;
             snprintf(s_toast_text, sizeof s_toast_text, "SAVED TO SLOT %d", slot);
             s_toast_frames = 120;
         } else {
@@ -870,6 +940,7 @@ static void slot_activate(int slot) {
             cyc_session_state_loaded();
             after_state_load();
             menu_log("loaded", path);
+            s_dirty = false;
             snprintf(s_toast_text, sizeof s_toast_text, "LOADED SLOT %d", slot);
             s_toast_frames = 120;
             menu_set_mode(MODE_MAIN);
@@ -917,6 +988,10 @@ static void menu_activate(int item) {
         SDL_PushEvent(&q);
         return;
     }
+    if (s_menu_mode == MODE_ACH) {
+        if (item >= ach_count()) menu_back();
+        return;
+    }
     if (s_menu_mode != MODE_MAIN) {
         int slot = row_slot(item);
         if (slot < 0) { menu_back(); return; }
@@ -927,11 +1002,14 @@ static void menu_activate(int item) {
         menu_set_mode(MODE_SAVE);
     } else if (item == MI_LOAD) {
         menu_set_mode(MODE_LOAD);
+    } else if (item == MI_ACH) {
+        menu_set_mode(MODE_ACH);
     } else if (item == MI_DISPLAY) {
         menu_set_mode(MODE_DISPLAY);
     } else if (item == MI_EXIT) {
         s_quit_from_window = false;
         menu_set_mode(MODE_QUIT);
+        if (!s_dirty) menu_activate(1);   /* nothing unsaved: exit without asking */
     } else {
         if (!restore_snapshot(err, sizeof err)) menu_log("resume restore failed", err);
         menu_log("resume", NULL);
@@ -944,7 +1022,7 @@ static void menu_back(void) {
     int from = s_menu_mode;
     if (from == MODE_QUIT && s_quit_from_window) { s_quit_from_window = false; menu_activate(MI_RESUME); return; }
     menu_set_mode(MODE_MAIN);
-    s_menu_sel = from == MODE_SAVE ? MI_SAVE : from == MODE_LOAD ? MI_LOAD : from == MODE_QUIT ? MI_EXIT : MI_DISPLAY;
+    s_menu_sel = from == MODE_SAVE ? MI_SAVE : from == MODE_LOAD ? MI_LOAD : from == MODE_ACH ? MI_ACH : from == MODE_QUIT ? MI_EXIT : MI_DISPLAY;
 }
 
 /* "Last saved" line: the newest slot. */
@@ -986,6 +1064,19 @@ static void menu_target_size(int *w, int *h) {
 static float fit_px(float px, int avail, const char *s) {
     int tw = mr_text_width(px, s);
     return (tw > avail && tw > 0) ? px * avail / tw : px;
+}
+/* Like fit_px but never shrinks below minfrac of px: what still does not fit is cut and ends in "...". */
+static float fit_trunc(char *out, size_t n, float px, float minfrac, int avail, const char *s) {
+    snprintf(out, n, "%s", s);
+    float f = fit_px(px, avail, out);
+    if (f < px * minfrac) f = px * minfrac;
+    size_t len = strlen(out);
+    while (len > 3 && mr_text_width(f, out) > avail) {
+        len--;
+        out[len] = 0;
+        if (len > 3) { out[len - 1] = '.'; out[len - 2] = '.'; out[len - 3] = '.'; }
+    }
+    return f;
 }
 
 /* Right-hand preview in the slot lists: the selected slot's screenshot. */
@@ -1268,6 +1359,7 @@ static const uint32_t *menu_present(void *ctx, int *w, int *h) {
     const char *sub = s_menu_mode == MODE_SAVE ? "Save to which slot?" :
                       s_menu_mode == MODE_LOAD ? "Load which save?" :
                       s_menu_mode == MODE_DISPLAY ? "Options" :
+                      s_menu_mode == MODE_ACH ? "Achievements" :
                       s_menu_mode == MODE_QUIT ? "Exit the game?" : "Paused";
     mr_text(d, pw, ph, L.pad, L.sub_y, 7.5f * u, 0x9AA0B4, 255, sub);
     mr_rect(d, pw, ph, L.pad, L.sep_y, L.sw - 2 * L.pad, (int)u > 1 ? (int)u : 1, 0x3A3D4C, 255);
@@ -1287,8 +1379,11 @@ static const uint32_t *menu_present(void *ctx, int *w, int *h) {
         int y0 = L.item_y0 + (i - s_menu_scroll) * (L.item_h + L.item_gap);
         bool sel = i == s_menu_sel;
         bool hov = i == s_menu_hover;
+        bool ach_row = s_menu_mode == MODE_ACH && i < ach_count();
+        if (ach_row)   /* earned = warm gold card, not yet earned = grey card */
+            mr_round_rect(d, pw, ph, L.pad / 2, y0, L.sw - L.pad, L.item_h, (int)(4 * u), ach_unlocked(i) ? 0x6B5414 : 0x262830, 235);
         if (sel) {
-            mr_round_rect(d, pw, ph, L.pad / 2, y0, L.sw - L.pad, L.item_h, (int)(4 * u), 0x2C6FE0, 215);
+            mr_round_rect(d, pw, ph, L.pad / 2, y0, L.sw - L.pad, L.item_h, (int)(4 * u), 0x2C6FE0, ach_row ? 95 : 215);
         } else if (hov) {
             mr_round_rect(d, pw, ph, L.pad / 2, y0, L.sw - L.pad, L.item_h, (int)(4 * u), 0xFFFFFF, 28);
         }
@@ -1330,6 +1425,43 @@ static const uint32_t *menu_present(void *ctx, int *w, int *h) {
             mr_text(d, pw, ph, L.pad + (int)(6 * u), y0 + (int)((L.item_h - qpx) / 2), fit_px(qpx, L.sw - 2 * L.pad - (int)(8 * u), qrows[i]), fg, 255, qrows[i]);
             continue;
         }
+        if (s_menu_mode == MODE_ACH) {
+            if (i >= ach_count()) {
+                float bpx = 7.5f * u;
+                mr_text(d, pw, ph, L.pad + (int)(6 * u), y0 + (int)((L.item_h - bpx) / 2), bpx, fg, 255, "Back");
+                continue;
+            }
+            bool got = ach_unlocked(i);
+            {   /* trophy: gold when earned, grey when not */
+                int ps = (int)(u * 0.7f) > 1 ? (int)(u * 0.7f) : 1;
+                int tx = L.pad + (int)(4 * u), ty0 = y0 + (L.item_h - 19 * ps) / 2;
+                for (int ty = 0; ty < 19; ty++)
+                    for (int tx_ = 0; tx_ < 14; tx_++) {
+                        uint32_t c;
+                        switch (k_trophy_art[ty][tx_]) {
+                            case 'G': c = got ? 0xFFD25A : 0x4C4F5D; break;
+                            case 'H': c = got ? 0xFFF0A8 : 0x676B7C; break;
+                            case 'D': c = got ? 0xB5771C : 0x2E303A; break;
+                            default: continue;
+                        }
+                        mr_rect(d, pw, ph, tx + tx_ * ps, ty0 + ty * ps, ps, ps, c, 255);
+                    }
+            }
+            int tro = (int)(4 * u) + 14 * ((int)(u * 0.7f) > 1 ? (int)(u * 0.7f) : 1) + (int)(4 * u);   /* text starts after the trophy */
+            int avail = L.sw - 2 * L.pad - (int)(8 * u) - tro;
+            char pts[16];
+            snprintf(pts, sizeof pts, "%dp", ach_points(i));
+            float ppx = 6.0f * u;
+            int pw_ = mr_text_width(ppx, pts);
+            mr_text(d, pw, ph, L.sw - L.pad / 2 - (int)(6 * u) - pw_, y0 + (int)(3 * u), ppx,
+                    got ? 0xFFD25A : 0x5E6274, 255, pts);
+            char nb[96], db[160];
+            float npx = fit_trunc(nb, sizeof nb, 7.2f * u, 0.72f, avail - pw_ - (int)(3 * u), ach_name(i));
+            mr_text(d, pw, ph, L.pad + tro, y0 + (int)(2.5f * u), npx, got ? 0xFFFFFF : 0x7D8296, 255, nb);
+            float dpx = fit_trunc(db, sizeof db, 5.6f * u, 0.72f, avail, ach_desc(i));
+            mr_text(d, pw, ph, L.pad + tro, y0 + (int)(13 * u), dpx, got ? 0xF3E3B0 : 0x6A6F82, 255, db);
+            continue;
+        }
         float tpx = 7.5f * u;
         int ty = y0 + (int)((L.item_h - tpx) / 2);
         int slot = row_slot(i);
@@ -1354,7 +1486,8 @@ static const uint32_t *menu_present(void *ctx, int *w, int *h) {
     } else {
         char info[96];
         if (s_menu_mode == MODE_DISPLAY) snprintf(info, sizeof info, "Left / Right adjust   F9 filter   F11 fullscreen");
-        else if (s_menu_mode == MODE_QUIT) snprintf(info, sizeof info, "Unsaved progress will be lost.");
+        else if (s_menu_mode == MODE_QUIT) snprintf(info, sizeof info, "%s", s_dirty ? "Unsaved progress will be lost." : "");
+        else if (s_menu_mode == MODE_ACH) snprintf(info, sizeof info, "%d / %d unlocked   %d / %d points", ach_unlocked_count(), ach_count(), ach_points_unlocked(), ach_points_total());
         else last_saved_text(info, sizeof info);
         int foot_y = ph - (int)(58 * u);
         int avail = L.sw - 2 * L.pad;
@@ -1530,6 +1663,7 @@ static void follow_game_save(void) {
     slot_file(slot, "state", path, sizeof path);
     if (cyc_state_save_file(path, err, sizeof err)) {
         s_session_slot = slot;
+        s_dirty = false;
         {   /* this session's latest in-game save: what Restore saved game must load */
             const uint8_t *bat = cart_ram_byte(BAT_ADDR);
             if (bat && cart_ram_byte(BAT_ADDR + BAT_LEN - 1)) { memcpy(s_session_bat, bat, BAT_LEN); s_session_bat_valid = true; }
@@ -1725,6 +1859,29 @@ static void splash_step(void) {
     }
 }
 
+static volatile int s_chime_pos;   /* unlock chime playback position, defined with the audio hook */
+/* Evaluate achievements while the game runs (not under the menu or splash) and show unlock banners. */
+static void achievements_step(void) {
+    static bool inited = false;
+    if (!inited) {
+        char *base = SDL_GetBasePath();
+        ach_init(base ? base : "");
+        inited = true;
+    }
+    if (s_menu_open || s_splash_state == 1) return;
+    ach_poll(ach_rd);
+    if (s_toast_frames <= 0) {
+        int a = ach_next_toast();
+        if (a >= 0) {
+            snprintf(s_toast_text, sizeof s_toast_text, "ACHIEVEMENT UNLOCKED\n%s", ach_name(a));
+            for (char *c = s_toast_text; *c; c++) if (*c >= 'a' && *c <= 'z') *c = (char)(*c - 32);
+            s_toast_frames = 240;
+            s_chime_pos = 0;
+            menu_log("achievement", ach_name(a));
+        }
+    }
+}
+
 static void menu_frame_end(void *ctx) {
     (void)ctx;
     splash_step();
@@ -1736,6 +1893,7 @@ static void menu_frame_end(void *ctx) {
     }
     display_frame_end();
     follow_game_save();
+    achievements_step();
     if (s_menu_req_back) {
         s_menu_req_back = false;
         if (s_menu_open && s_menu_mode != MODE_MAIN) menu_back();
@@ -2620,6 +2778,7 @@ static int joypad_poll_hook(uint16_t addr) {
         *lower = (uint8_t)(cur & (BTN_B | BTN_SELECT | BTN_START));
     if (upper && (pressed_edge & BTN_A))
         *upper = (uint8_t)(cur & BTN_A);
+    if (s_game_started && (pressed_edge & (BTN_A | BTN_B))) s_dirty = true;
 
     /* 2026-11-07: this used to only go to stderr, which a Windows GUI build
      * has nowhere to send -- made it invisible in mouse_debug.log, so there
@@ -2696,7 +2855,7 @@ NES_MOD_CONSTRUCTOR(register_mouse_cursor_hook) {
  * instead of quitting at once. A second close while it is up quits for real. */
 static bool quit_request(void *ctx) {
     (void)ctx;
-    if (s_quit_confirmed || !s_game_started || s_splash_state == 1) return true;
+    if (s_quit_confirmed || !s_game_started || s_splash_state == 1 || !s_dirty) return true;   /* nothing unsaved: no prompt */
     if (s_menu_open && s_menu_mode == MODE_QUIT) return true;
     s_menu_req_quit = true;
     return false;
@@ -2705,9 +2864,18 @@ static bool quit_request(void *ctx) {
 /* 2026-11-10: the game keeps stepping behind the Esc menu (and is rewound to
  * the paused moment on close), so silence its audio while the menu is up:
  * Esc now pauses the sound as well as freezing the picture. */
+static volatile int s_chime_pos = -1;   /* samples played of the unlock chime, -1 = idle */
 static void menu_audio_mix(void *ctx, int16_t *samples, size_t count) {
     (void)ctx;
     if (s_menu_open || s_splash_state == 1) memset(samples, 0, count * sizeof samples[0]);
+    /* Achievement unlock sound (achievement_sfx.h, 48 kHz mono), follows the Sound FX volume. */
+    int pos = s_chime_pos;
+    if (pos < 0) return;
+    for (size_t i = 0; i < count && pos < ACH_SFX_LEN; i++, pos++) {
+        int m = samples[i] + k_ach_sfx[pos] * s_sfx_vol / 100;
+        samples[i] = (int16_t)(m > 32767 ? 32767 : m < -32768 ? -32768 : m);
+    }
+    s_chime_pos = pos >= ACH_SFX_LEN ? -1 : pos;
 }
 static const CycHostExtras s_extras = {
     .audio_mix = menu_audio_mix,

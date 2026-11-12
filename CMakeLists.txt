@@ -13,7 +13,7 @@ endif()
 nesrecomp_add_cycle_game(nes_game
     ROM "${MM_ROM}"
     GAME_CONFIG "${CMAKE_CURRENT_LIST_DIR}/game.toml"
-    HOST_EXTRAS "${CMAKE_CURRENT_LIST_DIR}/mouse_cursor_hook.c" "${CMAKE_CURRENT_LIST_DIR}/menu_render.c" "${CMAKE_CURRENT_LIST_DIR}/crt_filter.c" "${CMAKE_CURRENT_LIST_DIR}/crt_gpu.c"
+    HOST_EXTRAS "${CMAKE_CURRENT_LIST_DIR}/mouse_cursor_hook.c" "${CMAKE_CURRENT_LIST_DIR}/menu_render.c" "${CMAKE_CURRENT_LIST_DIR}/achievements.c" "${CMAKE_CURRENT_LIST_DIR}/crt_filter.c" "${CMAKE_CURRENT_LIST_DIR}/crt_gpu.c"
     MODS GAME_ID "maniac-mansion-proto"
     RECOMPILER "${NESRECOMP_ROOT}/build/recompiler/NESRecomp"
 )
