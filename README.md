@@ -15,13 +15,14 @@ Get `ManiacMansion_NES_PC_win64.zip` from the [latest release](https://github.co
   - **Right click** does the obvious thing with the object under the cursor: GET what can be taken, OPEN/CLOSE doors, READ signs, PUSH/PULL, TURN ON/OFF, USE. The sentence line previews it while you hover ("READ SIGN"). Right click also skips cutscenes.
   - **Middle click** opens the **in-game save menu**: the game's own Save game / Restore saved game / New game screen (Start on the NES pad).
   - Two-step commands still work the classic way: pick a verb, then the object(s).
-- **Pause menu (Esc):** Resume, Save State and Load State (10 slots with screenshots, scrolling list), Options, Exit.
+- **Mouse wheel** scrolls the inventory.
+- **Pause menu (Esc):** Resume, Save State and Load State (10 slots with screenshots, scrolling list; a toast confirms each save and load), Options, Exit. The sound is silenced while it is open. Closing the window or choosing Exit Game asks first (in-game, not a system dialog): save to a slot and exit, exit without saving, or cancel.
 - **Options:** separate Music and Sound FX volume, fullscreen, filter, scale (Auto or a fixed 2x to 6x, for both filters), shape (square pixels or TV 4:3).
 - **Filters:**
   - *Sharp*: pixel-perfect integer scaling. *Auto* uses the largest whole scale that fits (6x on 1440p, 4x on 1080p), or pick a fixed 2x to 6x. At TV shape it stays crisp (sharp-bilinear: whole pixels, a one-pixel blend where two meet).
   - *CRT* and *CRT Strong*: scanlines that widen on bright colors, an RGB stripe mask and a soft glow (this project's own filter); Strong has thinner beams and darker gaps. Run on the GPU (OpenGL) with a CPU fallback. *Auto* fills the screen, or pick a fixed 2x to 6x.
 - **Shape:** square pixels, or TV (4:3) with NES pixels 8:7 wide as on a real TV, for every filter.
-- The game's own battery save also updates your most recent save-state slot.
+- The game's own battery save is also copied into the save-state slot you last saved to this session (the first time in a session, an empty slot). The game's own Restore loads the latest in-game save of the session.
 
 The full player guide (controls, saving, tips) is in [README.txt](README.txt), which ships next to the exe.
 
@@ -32,6 +33,7 @@ The full player guide (controls, saving, tips) is in [README.txt](README.txt), w
 | Left click | Walk, pick a verb or item (GO TO on objects) |
 | Right click | Context verb on the object under the cursor; skips cutscenes |
 | Middle click | In-game save menu (Save game / Restore / New game) |
+| Wheel | Scroll the inventory |
 
 ## Keyboard
 
@@ -42,7 +44,7 @@ The full player guide (controls, saving, tips) is in [README.txt](README.txt), w
 | F9 | Filter: Sharp / CRT / CRT Strong |
 | F11 | Fullscreen |
 | F12 | Screenshot |
-| Tab (hold) | Fast forward |
+| Tab | Cycle through the verbs |
 | Z | A button (same as left click) |
 | Arrow keys | NES d-pad |
 
@@ -52,7 +54,7 @@ The port hooks the game at a few ROM sites (listed in `game.toml`, each checked 
 
 - **Joypad reads**: mouse buttons become A / B / Start, written the way the ROM latches them (on the rising edge only).
 - **Cursor clamp** (`$9539`): restores the mouse position after the game clamps its cursor, so it reaches the screen edges (and, in play, stops at the room's first line).
-- **Game save** (`$9659`): mirrors the battery save into a save-state slot.
+- **Game save** (`$9659`): mirrors the battery save into this session's save-state slot (first save: an empty slot).
 
 The context verb comes from reading the room's object tables and each object's SCUMM v2 verb scripts (for example, whether its GET script really picks it up). The click is then replayed through the game's own verb/sentence variables, so the game runs the command itself.
 

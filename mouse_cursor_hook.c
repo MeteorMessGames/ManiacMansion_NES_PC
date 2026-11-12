@@ -294,6 +294,7 @@ static int  s_scale_req_dir = 0;                  /* queued from events */
  * through the filter module's sharp-bilinear style (crt_set_style) instead
  * of the host's integer scaling. Saved as [Game] Aspect. */
 static int  s_aspect = 0;
+static bool s_game_started = false;               /* cursor sprite seen once: past the title screens */
 static volatile int s_inv_wheel = 0;              /* wheel notches queued from events (+ = up) */
 static bool s_shape_req = false;                  /* toggle queued from events */
 static bool host_draws_sharp(void);
@@ -535,11 +536,11 @@ static const char *const k_menu_rows[MI_COUNT] = { "Resume Game", "Save State", 
 /* 2026-11-09: multiple save slots (user request), slots 1..6 (1..10 since
  * 2026-11-10, with a scrolling list). The game's
  * own Start-menu save also writes the most recently saved slot
- * (follow_game_save; Slot 1 if none yet). Each slot = <exe dir>/ManiacMansion.<name>.state (cyc_state file)
+ * (follow_game_save: the slot last saved to this session, else the first empty one). Each slot = <exe dir>/ManiacMansion.<name>.state (cyc_state file)
  * plus a .thumb sidecar (screenshot shown in the slot list). The old
  * single-file ManiacMansion.state is no longer used (any snapshot only
  * loads in the exe that wrote it anyway). */
-enum { MODE_MAIN, MODE_SAVE, MODE_LOAD, MODE_DISPLAY };
+enum { MODE_MAIN, MODE_SAVE, MODE_LOAD, MODE_DISPLAY, MODE_QUIT };
 #define NUM_SLOTS 10
 #define SLOT_ROWS_VISIBLE 7   /* slot list rows on screen; the rest scroll (wheel, Up/Down) */
 #define THUMB_W 128
@@ -554,12 +555,24 @@ static SlotInfo s_slots[NUM_SLOTS + 1];
 
 static int      s_game_saved_frames = -1;  /* -1 idle, else frames since the game's own save */
 static int      s_toast_frames = 0;        /* "SAVED TO SLOT N" banner countdown */
-static char     s_toast_text[32] = "";
+static char     s_toast_text[96] = "";     /* "title" or "title\nbody" */
 static int      s_game_thumb_frames = -1;  /* frames until the game-save slot's screenshot is taken */
 static int      s_game_thumb_slot = 0;
 static bool     s_menu_open = false;
 static bool     s_menu_guard = false;          /* swallow input until all released */
 static int      s_menu_mode = MODE_MAIN;
+static bool     s_quit_confirmed = false;      /* the in-game exit prompt was answered: let SDL_QUIT through */
+static bool     s_quit_from_window = false;    /* prompt came from closing the window (Cancel resumes) */
+static bool     s_menu_req_quit = false;       /* window close queued from events */
+/* The game's own save area ($72DB..$7EDC: $0C01 bytes of game state + checksum, see b00:$9759).
+ * Its Restore reads this, so after every state load we put this session's latest in-game save
+ * back, making "Restore saved game" load the most recent save of this session. */
+#define BAT_ADDR 0x72DB
+#define BAT_LEN  0x0C02
+static uint8_t  s_session_bat[BAT_LEN];
+static bool     s_session_bat_valid = false;
+static int      s_session_slot = 0;            /* slot last saved to this session (0 = none yet) */
+static int      s_quit_slot = 1;               /* slot "Save and exit" writes */
 static int      s_menu_sel = 0;
 static int      s_menu_hover = -1;             /* row under the mouse, or -1 */
 static int      s_menu_scroll = 0;             /* first row shown in the slot lists */
@@ -581,6 +594,17 @@ static uint32_t s_menu_status_rgb = 0x7CE08A;
 static bool     s_menu_req_toggle = false;
 static bool     s_menu_req_back = false;
 static int      s_menu_req_activate = -1;
+
+/* Draw the toast: text up to a newline is the title, the rest is the body. */
+static void toast_draw(uint32_t *buf, int cw, int ch) {
+    char t[sizeof s_toast_text];
+    snprintf(t, sizeof t, "%s", s_toast_text);
+    char *nl = strchr(t, '\n');
+    if (nl) { *nl = 0; cyc_overlay_toast(buf, cw, ch, t, nl + 1); }
+    else cyc_overlay_toast(buf, cw, ch, t, "");
+}
+
+static uint8_t wram(uint16_t addr);
 
 static void slot_file(int slot, const char *ext, char *out, size_t n) {
     char *base = SDL_GetBasePath();
@@ -647,6 +671,7 @@ static void slot_time_text(int slot, char *out, size_t n) {
 /* Rows per mode: slots 1..NUM_SLOTS + Back. */
 static int menu_row_count(void) {
     if (s_menu_mode == MODE_DISPLAY) return DI_COUNT;
+    if (s_menu_mode == MODE_QUIT) return 3;
     if (s_menu_mode != MODE_MAIN) return NUM_SLOTS + 1;
     return MI_COUNT;
 }
@@ -687,7 +712,7 @@ static MenuLayout menu_layout(int w, int h) {
     L.title_y = (int)(16 * L.u);
     L.sub_y = (int)(33 * L.u);
     L.sep_y = (int)(46 * L.u);
-    if (s_menu_mode == MODE_MAIN || s_menu_mode == MODE_DISPLAY) {
+    if (s_menu_mode == MODE_MAIN || s_menu_mode == MODE_DISPLAY || s_menu_mode == MODE_QUIT) {
         L.item_y0 = (int)(58 * L.u);
         /* Options has 7 rows: a little tighter so they clear the footer */
         L.item_h = (int)((s_menu_mode == MODE_DISPLAY ? 15 : 17) * L.u);
@@ -753,6 +778,18 @@ static void menu_set_mode(int mode) {
     s_menu_status[0] = 0;
     if (mode == MODE_MAIN) return;
     if (mode == MODE_DISPLAY) { s_menu_sel = 0; return; }
+    if (mode == MODE_QUIT) {
+        s_menu_sel = 0;
+        refresh_slots();
+        int slot = 0;
+        for (int i = 1; i <= NUM_SLOTS && !slot; i++) if (!s_slots[i].used) slot = i;
+        if (!slot) {
+            slot = 1;
+            for (int i = 2; i <= NUM_SLOTS; i++) if (s_slots[i].mtime < s_slots[slot].mtime) slot = i;
+        }
+        s_quit_slot = slot;
+        return;
+    }
     refresh_slots();
     /* start on the newest save (load) / first empty slot (save) */
     int best = -1;
@@ -815,6 +852,9 @@ static void slot_activate(int slot) {
             snprintf(msg, sizeof msg, "Saved to %s", name);
             menu_status(msg, 0x7CE08A);
             menu_log("saved", path);
+            s_session_slot = slot;
+            snprintf(s_toast_text, sizeof s_toast_text, "SAVED TO SLOT %d", slot);
+            s_toast_frames = 120;
         } else {
             menu_status("Save failed", 0xF07070);
             menu_log("save failed", err);
@@ -830,6 +870,8 @@ static void slot_activate(int slot) {
             cyc_session_state_loaded();
             after_state_load();
             menu_log("loaded", path);
+            snprintf(s_toast_text, sizeof s_toast_text, "LOADED SLOT %d", slot);
+            s_toast_frames = 120;
             menu_set_mode(MODE_MAIN);
             menu_close();
         } else {
@@ -850,6 +892,31 @@ static void menu_activate(int item) {
         else display_activate(item);
         return;
     }
+    if (s_menu_mode == MODE_QUIT) {
+        if (item == 2) { menu_back(); return; }
+        if (item == 0) {
+            char path[1100];
+            slot_file(s_quit_slot, "state", path, sizeof path);
+            if (restore_snapshot(err, sizeof err) && cyc_state_save_file(path, err, sizeof err)) {
+                write_thumb(s_quit_slot, s_menu_native);
+                menu_log("saved on exit", path);
+            } else {
+                menu_status("Save failed", 0xF07070);
+                menu_log("save on exit failed", err);
+                return;
+            }
+        } else if (!restore_snapshot(err, sizeof err)) {
+            menu_log("exit restore failed", err);
+        }
+        menu_log("exit", NULL);
+        menu_close();
+        s_quit_confirmed = true;
+        SDL_Event q;
+        memset(&q, 0, sizeof q);
+        q.type = SDL_QUIT;
+        SDL_PushEvent(&q);
+        return;
+    }
     if (s_menu_mode != MODE_MAIN) {
         int slot = row_slot(item);
         if (slot < 0) { menu_back(); return; }
@@ -863,15 +930,8 @@ static void menu_activate(int item) {
     } else if (item == MI_DISPLAY) {
         menu_set_mode(MODE_DISPLAY);
     } else if (item == MI_EXIT) {
-        /* back to the paused moment first (the battery save the host writes
-         * on exit then matches what was on screen), then a normal quit */
-        if (!restore_snapshot(err, sizeof err)) menu_log("exit restore failed", err);
-        menu_log("exit", NULL);
-        menu_close();
-        SDL_Event q;
-        memset(&q, 0, sizeof q);
-        q.type = SDL_QUIT;
-        SDL_PushEvent(&q);
+        s_quit_from_window = false;
+        menu_set_mode(MODE_QUIT);
     } else {
         if (!restore_snapshot(err, sizeof err)) menu_log("resume restore failed", err);
         menu_log("resume", NULL);
@@ -882,8 +942,9 @@ static void menu_activate(int item) {
 /* Leave a slot list (Esc / right-click / Back): back to the main rows. */
 static void menu_back(void) {
     int from = s_menu_mode;
+    if (from == MODE_QUIT && s_quit_from_window) { s_quit_from_window = false; menu_activate(MI_RESUME); return; }
     menu_set_mode(MODE_MAIN);
-    s_menu_sel = from == MODE_SAVE ? MI_SAVE : from == MODE_LOAD ? MI_LOAD : MI_DISPLAY;
+    s_menu_sel = from == MODE_SAVE ? MI_SAVE : from == MODE_LOAD ? MI_LOAD : from == MODE_QUIT ? MI_EXIT : MI_DISPLAY;
 }
 
 /* "Last saved" line: the newest slot. */
@@ -954,6 +1015,54 @@ static void draw_slot_preview(uint32_t *d, int pw, int ph, const MenuLayout *L) 
     mr_text(d, pw, ph, bx, by + bh + (int)(6 * u), fit_px(7.0f * u, bw, cap), 0xFFFFFF, 255, cap);
 }
 
+/* 2026-11-10: Meteor Mess Games startup splash (splash_data.h, from
+ * tools/make_splash.py). A 256x240 picture on the NES palette whose stars are
+ * palette-cycling pixels: each star pixel names a cycle group, and the colour
+ * of a group steps through a fixed list of NES colours over time (the stars
+ * twinkle by colour cycling, no pixels move). The game keeps stepping behind
+ * it; a snapshot taken on the first frame is restored when the splash ends,
+ * so the game's own intro starts from its beginning. Any key/click skips. */
+#include "splash_data.h"
+#define SPLASH_FRAMES   270
+#define SPLASH_FADE     30
+#define SPLASH_CYCLE_FR 5    /* frames per colour step */
+static int       s_splash_state = 0;           /* 0 not started, 1 showing, 2 done */
+static bool      s_splash_enabled = true;      /* config [Game] Splash */
+static int       s_splash_frame = 0;
+static bool      s_splash_skip = false;
+static uint8_t  *s_splash_snap = NULL;
+static size_t    s_splash_snap_len = 0;
+static uint8_t   s_splash_idx[256 * 240];
+static uint32_t  s_splash_buf[256 * 240];
+
+static void splash_decode(void) {
+    size_t o = 0;
+    for (int i = 0; i + 1 < SPLASH_RLE_LEN && o < sizeof s_splash_idx; i += 2)
+        for (int n = 0; n < k_splash_rle[i] && o < sizeof s_splash_idx; n++) s_splash_idx[o++] = k_splash_rle[i + 1];
+}
+
+static uint32_t splash_rgb(uint8_t nes, int fade) {
+    const uint8_t *c = &k_splash_nes_rgb[(nes & 63) * 3];
+    return 0xFF000000u | (uint32_t)(c[0] * fade / 255) << 16 | (uint32_t)(c[1] * fade / 255) << 8 | (uint32_t)(c[2] * fade / 255);
+}
+
+/* The splash picture for the current frame (colour cycling + fade in/out). */
+static const uint32_t *splash_frame(void) {
+    int f = s_splash_frame, fade = 255;
+    if (f < SPLASH_FADE) fade = 255 * f / SPLASH_FADE;
+    else if (f > SPLASH_FRAMES - SPLASH_FADE) fade = 255 * (SPLASH_FRAMES - f) / SPLASH_FADE;
+    if (fade < 0) fade = 0;
+    uint32_t lut[SPLASH_STATIC_N + 8];
+    for (int i = 0; i < SPLASH_STATIC_N; i++) lut[i] = splash_rgb(k_splash_static[i], fade);
+    int step = f / SPLASH_CYCLE_FR;
+    for (int g = 0; g < 4; g++) {
+        lut[SPLASH_STATIC_N + g]     = splash_rgb(k_splash_gold[(step + g * 2) & 7], fade);
+        lut[SPLASH_STATIC_N + 4 + g] = splash_rgb(k_splash_violet[(step + g * 2) & 7], fade);
+    }
+    for (size_t i = 0; i < sizeof s_splash_idx; i++) s_splash_buf[i] = lut[s_splash_idx[i]];
+    return s_splash_buf;
+}
+
 /* Gameplay picture: the host's own (NULL), the canvas with a toast on it,
  * or the CRT filter's at window resolution. */
 static const uint32_t *display_present(int *w, int *h) {
@@ -963,7 +1072,7 @@ static const uint32_t *display_present(int *w, int *h) {
      * so give it the plain one */
     SDL_Window *win = find_game_window();
     if (!win || !SDL_GetRenderer(win)) crt = false;
-    if (!crt && s_toast_frames <= 0) {
+    if (!crt && s_toast_frames <= 0 && s_splash_state != 1) {
         s_pres_kind = PRES_HOST;
         s_pres_cw = s_pres_w = cyc_video_width();
         s_pres_h = 240;
@@ -971,9 +1080,10 @@ static const uint32_t *display_present(int *w, int *h) {
     }
     const uint32_t *pic = cyc_render_present(&cw, &ch);
     if (!pic || cw > CYC_VIDEO_MAX_WIDTH || ch != 240) return NULL;
-    if (s_toast_frames > 0) {
+    if (s_splash_state == 1) { pic = splash_frame(); cw = 256; ch = 240; }
+    else if (s_toast_frames > 0) {
         memcpy(s_wide_copy, pic, (size_t)cw * ch * 4);
-        cyc_overlay_toast(s_wide_copy, cw, ch, s_toast_text, "");
+        toast_draw(s_wide_copy, cw, ch);
         pic = s_wide_copy;
     }
     if (!crt) {
@@ -1055,9 +1165,10 @@ static void *display_present_texture(void *ctx, void *renderer, int *w, int *h) 
     int cw = 256, ch = 240;
     const uint32_t *pic = cyc_render_present(&cw, &ch);
     if (!pic || cw > CYC_VIDEO_MAX_WIDTH || ch != 240) return NULL;
-    if (s_toast_frames > 0) {
+    if (s_splash_state == 1) { pic = splash_frame(); cw = 256; ch = 240; }
+    else if (s_toast_frames > 0) {
         memcpy(s_wide_copy, pic, (size_t)cw * ch * 4);
-        cyc_overlay_toast(s_wide_copy, cw, ch, s_toast_text, "");
+        toast_draw(s_wide_copy, cw, ch);
         pic = s_wide_copy;
     }
     int dw = 0, dh = 0;
@@ -1156,7 +1267,8 @@ static const uint32_t *menu_present(void *ctx, int *w, int *h) {
     }
     const char *sub = s_menu_mode == MODE_SAVE ? "Save to which slot?" :
                       s_menu_mode == MODE_LOAD ? "Load which save?" :
-                      s_menu_mode == MODE_DISPLAY ? "Options" : "Paused";
+                      s_menu_mode == MODE_DISPLAY ? "Options" :
+                      s_menu_mode == MODE_QUIT ? "Exit the game?" : "Paused";
     mr_text(d, pw, ph, L.pad, L.sub_y, 7.5f * u, 0x9AA0B4, 255, sub);
     mr_rect(d, pw, ph, L.pad, L.sep_y, L.sw - 2 * L.pad, (int)u > 1 ? (int)u : 1, 0x3A3D4C, 255);
 
@@ -1209,6 +1321,15 @@ static const uint32_t *menu_present(void *ctx, int *w, int *h) {
             }
             continue;
         }
+        if (s_menu_mode == MODE_QUIT) {
+            char ql[48], qn[32];
+            slot_name(s_quit_slot, qn, sizeof qn);
+            snprintf(ql, sizeof ql, "Save to %s and exit", qn);
+            const char *qrows[3] = { ql, "Exit without saving", "Cancel" };
+            float qpx = 8.0f * u;
+            mr_text(d, pw, ph, L.pad + (int)(6 * u), y0 + (int)((L.item_h - qpx) / 2), fit_px(qpx, L.sw - 2 * L.pad - (int)(8 * u), qrows[i]), fg, 255, qrows[i]);
+            continue;
+        }
         float tpx = 7.5f * u;
         int ty = y0 + (int)((L.item_h - tpx) / 2);
         int slot = row_slot(i);
@@ -1233,6 +1354,7 @@ static const uint32_t *menu_present(void *ctx, int *w, int *h) {
     } else {
         char info[96];
         if (s_menu_mode == MODE_DISPLAY) snprintf(info, sizeof info, "Left / Right adjust   F9 filter   F11 fullscreen");
+        else if (s_menu_mode == MODE_QUIT) snprintf(info, sizeof info, "Unsaved progress will be lost.");
         else last_saved_text(info, sizeof info);
         int foot_y = ph - (int)(58 * u);
         int avail = L.sw - 2 * L.pad;
@@ -1254,6 +1376,10 @@ static const uint32_t *menu_present(void *ctx, int *w, int *h) {
 static void menu_event(void *ctx, const void *event, int player) {
     (void)ctx; (void)player;
     const SDL_Event *ev = (const SDL_Event *)event;
+    if (s_splash_state == 1) {
+        if ((ev->type == SDL_KEYDOWN && !ev->key.repeat) || ev->type == SDL_MOUSEBUTTONDOWN) s_splash_skip = true;
+        return;
+    }
     if (ev->type == SDL_KEYDOWN && !ev->key.repeat) {
         SDL_Scancode sc = ev->key.keysym.scancode;
         if (sc == SDL_SCANCODE_F9)  { s_req_filter_cycle = true; return; }
@@ -1391,11 +1517,23 @@ static void follow_game_save(void) {
     s_game_saved_frames = -1;
     char path[1100], err[160];
     refresh_slots();
-    int slot = 1;
-    for (int s = 1; s <= NUM_SLOTS; s++)
-        if (s_slots[s].used && (!s_slots[slot].used || s_slots[s].mtime > s_slots[slot].mtime)) slot = s;
+    /* 2026-11-10: the game's own save goes to the slot last saved to this
+     * session; the first save of a session takes an empty slot (else the oldest). */
+    int slot = s_session_slot;
+    if (!slot) {
+        for (int s = 1; s <= NUM_SLOTS && !slot; s++) if (!s_slots[s].used) slot = s;
+        if (!slot) {
+            slot = 1;
+            for (int s = 2; s <= NUM_SLOTS; s++) if (s_slots[s].mtime < s_slots[slot].mtime) slot = s;
+        }
+    }
     slot_file(slot, "state", path, sizeof path);
     if (cyc_state_save_file(path, err, sizeof err)) {
+        s_session_slot = slot;
+        {   /* this session's latest in-game save: what Restore saved game must load */
+            const uint8_t *bat = cart_ram_byte(BAT_ADDR);
+            if (bat && cart_ram_byte(BAT_ADDR + BAT_LEN - 1)) { memcpy(s_session_bat, bat, BAT_LEN); s_session_bat_valid = true; }
+        }
         /* the room is still fading in at this point (thumbnail came out
          * black): take the screenshot ~1.5 s later */
         s_game_thumb_slot = slot;
@@ -1547,6 +1685,7 @@ static void display_load_setting(void *ctx, const char *key, const char *value) 
     else if (!strcmp(key, "SfxVolume")) s_sfx_vol = atoi(value);
     else if (!strcmp(key, "Scale")) { int v = atoi(value); s_scale = v >= 2 && v <= 6 ? v : 0; }
     else if (!strcmp(key, "Aspect")) s_aspect = atoi(value) == 1 ? 1 : 0;
+    else if (!strcmp(key, "Splash")) s_splash_enabled = atoi(value) != 0;
     s_music_vol = s_music_vol < 0 ? 0 : s_music_vol > 100 ? 100 : s_music_vol;
     s_sfx_vol = s_sfx_vol < 0 ? 0 : s_sfx_vol > 100 ? 100 : s_sfx_vol;
     if (s_filter < 0 || s_filter >= FILTER_COUNT) s_filter = FILTER_SHARP;
@@ -1554,12 +1693,41 @@ static void display_load_setting(void *ctx, const char *key, const char *value) 
 
 static void display_save_settings(void *ctx, FILE *f) {
     (void)ctx;
-    fprintf(f, "Filter = %d\nMusicVolume = %d\nSfxVolume = %d\nScale = %d\nAspect = %d\n",
-            s_filter == FILTER_CRT_STRONG ? 4 : s_filter == FILTER_CRT ? 2 : 0, s_music_vol, s_sfx_vol, s_scale, s_aspect);
+    fprintf(f, "Filter = %d\nMusicVolume = %d\nSfxVolume = %d\nScale = %d\nAspect = %d\nSplash = %d\n",
+            s_filter == FILTER_CRT_STRONG ? 4 : s_filter == FILTER_CRT ? 2 : 0, s_music_vol, s_sfx_vol, s_scale, s_aspect, s_splash_enabled ? 1 : 0);
+}
+
+static void splash_step(void) {
+    if (s_splash_state == 0) {
+        s_splash_state = 2;
+        if (!s_splash_enabled || getenv("NESRECOMP_NO_SPLASH")) return;
+        char err[160];
+        if (!cyc_state_save(&s_splash_snap, &s_splash_snap_len, err, sizeof err)) { menu_log("splash snapshot failed", err); return; }
+        splash_decode();
+        s_splash_frame = 0;
+        s_splash_skip = false;
+        s_splash_state = 1;
+        menu_log("splash start", NULL);
+        return;
+    }
+    if (s_splash_state != 1) return;
+    if (++s_splash_frame >= SPLASH_FRAMES || s_splash_skip) {
+        char err[160];
+        if (cyc_state_load(s_splash_snap, s_splash_snap_len, err, sizeof err)) {
+            cyc_session_state_loaded();
+            after_state_load();
+        } else menu_log("splash restore failed", err);
+        free(s_splash_snap);
+        s_splash_snap = NULL;
+        s_splash_state = 2;
+        s_menu_guard = true;   /* the skipping key/click must not reach the game */
+        menu_log("splash end", NULL);
+    }
 }
 
 static void menu_frame_end(void *ctx) {
     (void)ctx;
+    splash_step();
     if (!s_menu_open) {
         SDL_Window *win = find_game_window();
         sync_grab(win);
@@ -1571,6 +1739,14 @@ static void menu_frame_end(void *ctx) {
     if (s_menu_req_back) {
         s_menu_req_back = false;
         if (s_menu_open && s_menu_mode != MODE_MAIN) menu_back();
+    }
+    if (s_menu_req_quit) {
+        s_menu_req_quit = false;
+        if (!s_menu_open && !menu_input_busy()) menu_open_now();
+        if (s_menu_open) {
+            s_quit_from_window = true;
+            menu_set_mode(MODE_QUIT);
+        }
     }
     if (s_menu_req_toggle) {
         s_menu_req_toggle = false;
@@ -1588,7 +1764,7 @@ static void menu_frame_end(void *ctx) {
  * after the menu closes until every key/button that could leak through
  * (the activating Enter/Space/click, Escape) is released. */
 static bool menu_blocks_input(bool lmb, bool rmb, bool mmb) {
-    if (s_menu_open) return true;
+    if (s_menu_open || s_splash_state == 1) return true;
     if (s_menu_guard) {
         const uint8_t *k = SDL_GetKeyboardState(NULL);
         if (lmb || rmb || mmb || k[SDL_SCANCODE_RETURN] || k[SDL_SCANCODE_SPACE] ||
@@ -1919,6 +2095,10 @@ static bool lmb_busy = false;
 static bool menu_input_busy(void) { return ctx_busy || lmb_busy; }
 
 static void after_state_load(void) {
+    if (s_session_bat_valid) {
+        uint8_t *bat = cart_ram_byte(BAT_ADDR);
+        if (bat && cart_ram_byte(BAT_ADDR + BAT_LEN - 1)) memcpy(bat, s_session_bat, BAT_LEN);
+    }
     /* A preview verb sitting in $611A must be one the preview logic knows
      * it owns, else it would stick (and LMB would adopt it). */
     uint8_t ca = wram(0x6120), sv = wram(0x611A);
@@ -2071,10 +2251,10 @@ static uint8_t real_mouse_buttons(void) {
      * `game_started` stays set for the process lifetime and RMB is always A:
      * Start in gameplay opens the save menu, and A advances/skips Dave's
      * dialogue. Keyboard Enter/Space still send Start explicitly. */
-    static bool game_started = false;
+    bool game_started = s_game_started;
     {
         uint16_t cya, cxa;
-        if (find_cursor_oam(&cya, &cxa) && *ram_byte(cya) < 0xEF) game_started = true;
+        if (find_cursor_oam(&cya, &cxa) && *ram_byte(cya) < 0xEF) s_game_started = game_started = true;
     }
     if (rmb) out |= game_started ? BTN_A : BTN_START;
     /* 2026-11-09: middle button = Start (user request): in gameplay that
@@ -2132,8 +2312,11 @@ static uint8_t real_mouse_buttons(void) {
         if (w && game_started && sc && rd && ego && ovl && ovh && !(*ovl | *ovh)) {
             int count = 0;
             for (int i = 0; i < 0x3C; i++) {
-                uint8_t *o = cart_ram_byte((uint16_t)(0x6260 + i)), *ow = cart_ram_byte((uint16_t)(0x660A + i));
-                if (o && ow && *o && (*ow & 0x0F) == *ego) count++;
+                /* like b00:$93D7: X = $6260[i] (object slot), owner = $660A[X] & $0F */
+                uint8_t *o = cart_ram_byte((uint16_t)(0x6260 + i));
+                if (!o || !*o) continue;
+                uint8_t *ow = cart_ram_byte((uint16_t)(0x660A + *o));
+                if (ow && (*ow & 0x0F) == *ego) count++;
             }
             int m = count > 2 ? count - 2 : 0;
             int v = *sc;
@@ -2296,7 +2479,7 @@ static uint8_t real_mouse_buttons(void) {
      * convention) so the character-select screen -- and anything else
      * gated on A -- is reachable regardless of that bug. */
     if (keys[SDL_SCANCODE_Z]) out |= BTN_A;
-    if (keys[SDL_SCANCODE_TAB] || keys[SDL_SCANCODE_S]) out |= BTN_SELECT; /* RE aid: Select */
+    if (keys[SDL_SCANCODE_TAB] || keys[SDL_SCANCODE_S]) out |= BTN_SELECT; /* Tab / S = Select: cycles the sentence verb */
 
     /* 2026-11-06: D-pad was defined (BTN_UP/DOWN/LEFT/RIGHT) but never
      * wired to any input source -- this mod only ever drove A/B/Start.
@@ -2509,10 +2692,29 @@ NES_MOD_CONSTRUCTOR(register_mouse_cursor_hook) {
 
 /* 2026-11-09: the host-extras surface, for the Escape menu (SDL builds). */
 #ifdef CYC_WITH_SDL
+/* 2026-11-10: window closed: the in-game exit prompt (Esc menu, "Exit the game?")
+ * instead of quitting at once. A second close while it is up quits for real. */
+static bool quit_request(void *ctx) {
+    (void)ctx;
+    if (s_quit_confirmed || !s_game_started || s_splash_state == 1) return true;
+    if (s_menu_open && s_menu_mode == MODE_QUIT) return true;
+    s_menu_req_quit = true;
+    return false;
+}
+
+/* 2026-11-10: the game keeps stepping behind the Esc menu (and is rewound to
+ * the paused moment on close), so silence its audio while the menu is up:
+ * Esc now pauses the sound as well as freezing the picture. */
+static void menu_audio_mix(void *ctx, int16_t *samples, size_t count) {
+    (void)ctx;
+    if (s_menu_open || s_splash_state == 1) memset(samples, 0, count * sizeof samples[0]);
+}
 static const CycHostExtras s_extras = {
+    .audio_mix = menu_audio_mix,
     .present = menu_present,
     .frame_end = menu_frame_end,
     .event = menu_event,
+    .quit_request = quit_request,
     .present_texture = display_present_texture,
     .load_setting = display_load_setting,
     .save_settings = display_save_settings,

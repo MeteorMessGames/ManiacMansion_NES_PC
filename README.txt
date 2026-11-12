@@ -37,6 +37,8 @@ Middle click   In-game save menu: opens the game's own menu (Back to the
                Mansion / Save game / Restore saved game / New game), same as
                Start on the NES pad.
 
+Mouse wheel    Scroll the inventory.
+
 Two-step commands still work the classic way: left click a verb
 (for example USE), then left click the object(s).
 
@@ -48,14 +50,14 @@ Enter / Space  Skip a cutscene
 F9             Switch the picture filter: Sharp / CRT / CRT Strong
 F11            Fullscreen on / off
 F12            Save a screenshot (cyc_shot_0000.png etc. in the game folder)
-Tab (hold)     Fast forward
+Tab            Cycle through the verbs
 Z              Same as a left click (A button)
 Arrow keys     NES d-pad
 
 
 PAUSE MENU (Esc)
 ----------------
-The game is paused while the menu is open. Use the mouse, or Up/Down and
+The game is paused (and silent) while the menu is open. Use the mouse, or Up/Down and
 Enter. Esc or right click goes back.
 
   Resume Game   Back to the game.
@@ -68,7 +70,8 @@ Enter. Esc or right click goes back.
   Options       Music volume, Sound FX volume, Fullscreen, Filter, Scale and
                 Shape.
                 Volumes: drag or click the bar, or Left / Right in 5% steps.
-  Exit Game     Quit.
+  Exit Game     Asks first: Save to a slot and exit, Exit without saving, or
+                Cancel. Closing the window asks the same thing.
 
 
 SAVING
@@ -81,9 +84,11 @@ There are two kinds of saves:
    update, old save states may say "from a different version".
 
 2. The game's own save (middle click -> Save game). This is the cartridge
-   battery save and it survives updates. It is also copied into your most
-   recently used save-state slot (Slot 1 if you have none yet); a banner
-   "SAVED TO SLOT N" confirms it.
+   battery save and it survives updates. It is also copied into the
+   save-state slot you last saved to this session (the first time in a
+   session it goes to an empty slot); a banner "SAVED TO SLOT N" confirms
+   it. "Restore saved game" in that menu loads the latest in-game save
+   of the session.
 
 Tip: save often and use different slots before risky moves. In Maniac
 Mansion kids can die, and some mistakes make the game unwinnable.
