@@ -1655,7 +1655,29 @@ static void menu_event(void *ctx, const void *event, int player) {
     (void)ctx; (void)player;
     const SDL_Event *ev = (const SDL_Event *)event;
     if (s_splash_state == 1) {
-        if ((ev->type == SDL_KEYDOWN && !ev->key.repeat) || ev->type == SDL_MOUSEBUTTONDOWN) s_splash_skip = true;
+        if ((ev->type == SDL_KEYDOWN && !ev->key.repeat) || ev->type == SDL_MOUSEBUTTONDOWN || ev->type == SDL_CONTROLLERBUTTONDOWN)
+            s_splash_skip = true;
+        return;
+    }
+    if (ev->type == SDL_CONTROLLERBUTTONDOWN) {   /* controller in the pause menu: act like the matching keys */
+        SDL_Scancode sc = SDL_SCANCODE_UNKNOWN;
+        switch (ev->cbutton.button) {
+        case SDL_CONTROLLER_BUTTON_DPAD_UP:    sc = SDL_SCANCODE_UP; break;
+        case SDL_CONTROLLER_BUTTON_DPAD_DOWN:  sc = SDL_SCANCODE_DOWN; break;
+        case SDL_CONTROLLER_BUTTON_DPAD_LEFT:  sc = SDL_SCANCODE_LEFT; break;
+        case SDL_CONTROLLER_BUTTON_DPAD_RIGHT: sc = SDL_SCANCODE_RIGHT; break;
+        case SDL_CONTROLLER_BUTTON_A:          if (s_menu_open) sc = SDL_SCANCODE_RETURN; break;
+        case SDL_CONTROLLER_BUTTON_B:          if (s_menu_open) sc = SDL_SCANCODE_ESCAPE; break;
+        case SDL_CONTROLLER_BUTTON_BACK:       sc = SDL_SCANCODE_ESCAPE; break;      /* opens / closes the pause menu */
+        default: break;
+        }
+        if (sc != SDL_SCANCODE_UNKNOWN) {
+            SDL_Event k;
+            memset(&k, 0, sizeof k);
+            k.type = SDL_KEYDOWN;
+            k.key.keysym.scancode = sc;
+            menu_event(ctx, &k, player);
+        }
         return;
     }
     if (ev->type == SDL_KEYDOWN && !ev->key.repeat) {
@@ -2111,6 +2133,42 @@ static void menu_frame_end(void *ctx) {
 /* Input gate for real_mouse_buttons: true = send the game nothing. Holds
  * after the menu closes until every key/button that could leak through
  * (the activating Enter/Space/click, Escape) is released. */
+/* Game controller (SDL GameController API, first attached pad). The runner opens the pads for its own
+ * mapping, which this mod's joypad hook bypasses, so the hook reads the pad itself:
+ *   D-pad / left stick  cursor (speed from Options > Key Speed)     A  left click
+ *   B  right click (context verb, skips cutscenes)                    X  Select (cycle verb)
+ *   Y  skip the current message      Start  game menu      Back  pause menu (Esc) */
+typedef struct { bool a, b, x, y, start, up, down, left, right; } PadState;
+static PadState pad_read(void) {
+    static SDL_GameController *pad = NULL;
+    static int recheck = 0;
+    PadState st = {0};
+    if (pad && !SDL_GameControllerGetAttached(pad)) pad = NULL;
+    if (!pad && recheck-- <= 0) {
+        recheck = 60;
+        for (int i = 0; i < SDL_NumJoysticks() && !pad; i++) {
+            if (!SDL_IsGameController(i)) continue;
+            pad = SDL_GameControllerFromInstanceID(SDL_JoystickGetDeviceInstanceID(i));   /* the runner's open handle */
+            if (!pad) pad = SDL_GameControllerOpen(i);
+        }
+    }
+    if (!pad) return st;
+    static bool sl = false, sr = false, su = false, sd = false;   /* stick directions, with hysteresis */
+    int ax = SDL_GameControllerGetAxis(pad, SDL_CONTROLLER_AXIS_LEFTX), ay = SDL_GameControllerGetAxis(pad, SDL_CONTROLLER_AXIS_LEFTY);
+    sl = ax < (sl ? -9000 : -16000); sr = ax > (sr ? 9000 : 16000);
+    su = ay < (su ? -9000 : -16000); sd = ay > (sd ? 9000 : 16000);
+    st.up = su || SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_DPAD_UP);
+    st.down = sd || SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_DPAD_DOWN);
+    st.left = sl || SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_DPAD_LEFT);
+    st.right = sr || SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_DPAD_RIGHT);
+    st.a = SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_A);
+    st.b = SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_B);
+    st.x = SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_X);
+    st.y = SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_Y);
+    st.start = SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_START);
+    return st;
+}
+
 static bool menu_blocks_input(bool lmb, bool rmb, bool mmb) {
     if (s_menu_open || s_splash_state == 1) return true;
     if (s_menu_guard) {
@@ -2581,6 +2639,10 @@ static uint8_t real_mouse_buttons(void) {
                (have_focus && (focused_buttons & SDL_BUTTON(SDL_BUTTON_RIGHT)));
     bool mmb = (buttons & SDL_BUTTON(SDL_BUTTON_MIDDLE)) ||
                (have_focus && (focused_buttons & SDL_BUTTON(SDL_BUTTON_MIDDLE)));
+    PadState pad = pad_read();
+    lmb = lmb || pad.a;      /* controller A = left click, B = right click, Start = middle click */
+    rmb = rmb || pad.b;
+    mmb = mmb || pad.start;
     /* 2026-11-09: Escape menu open (or its activating press still held):
      * the game gets no input at all. */
     if (menu_blocks_input(lmb, rmb, mmb)) return 0;
@@ -2626,16 +2688,19 @@ static uint8_t real_mouse_buttons(void) {
      * cutscene (UI frozen or an override armed); the click is swallowed so it can't also act. */
     {
         static bool skip_prev = false, skip_eat = false;
+        static bool pad_y_prev = false;
+        bool pad_skip = pad.y && !pad_y_prev;    /* controller Y: skip the current message anywhere */
+        pad_y_prev = pad.y;
         bool fresh = lmb && !skip_prev;
         skip_prev = lmb;
         uint8_t *a8 = ram_byte(0xA8), *aa = ram_byte(0xAA), *ab = ram_byte(0xAB);
         uint8_t *cy = cart_ram_byte(0x7118);
-        if (fresh && game_started && a8 && aa && ab && *a8 != 0 && (*aa | *ab) != 0) {
+        if ((fresh || pad_skip) && game_started && a8 && aa && ab && *a8 != 0 && (*aa | *ab) != 0) {
             bool in_text_band = cy && *cy <= 38;   /* the cursor stops at the room top, so a click above the room lands here */
             bool cutscene = wram(0x6D3C) != 0 || wram(0x6B06) != 0 || wram(0x6B07) != 0;
-            if (in_text_band || cutscene) {
+            if (in_text_band || cutscene || pad_skip) {
                 *aa = 0; *ab = 0;
-                skip_eat = true;
+                skip_eat = fresh;
                 if (log) fprintf(log, "[textskip] message skipped (band=%d cutscene=%d)\n", in_text_band, cutscene);
             }
         }
@@ -2878,8 +2943,14 @@ static uint8_t real_mouse_buttons(void) {
      * that screen (and any other index-driven menu) work the original
      * way, independent of the mouse-click path above. */
     /* d-pad takes the cursor back: stop restoring the mouse position */
-    if (keys[SDL_SCANCODE_UP] || keys[SDL_SCANCODE_DOWN] || keys[SDL_SCANCODE_LEFT] || keys[SDL_SCANCODE_RIGHT])
+    if (keys[SDL_SCANCODE_UP] || keys[SDL_SCANCODE_DOWN] || keys[SDL_SCANCODE_LEFT] || keys[SDL_SCANCODE_RIGHT] ||
+        pad.up || pad.down || pad.left || pad.right)
         s_unclamp_on = false;
+    if (pad.up) out |= BTN_UP;
+    if (pad.down) out |= BTN_DOWN;
+    if (pad.left) out |= BTN_LEFT;
+    if (pad.right) out |= BTN_RIGHT;
+    if (pad.x) out |= BTN_SELECT;
     if (keys[SDL_SCANCODE_UP])    out |= BTN_UP;
     if (keys[SDL_SCANCODE_DOWN])  out |= BTN_DOWN;
     if (keys[SDL_SCANCODE_LEFT])  out |= BTN_LEFT;

@@ -43,6 +43,17 @@ Two-step commands still work the classic way: left click a verb
 (for example USE), then left click the object(s).
 
 
+CONTROLLER
+----------
+D-pad / stick  Move the cursor (speed: pause menu -> Options -> Key Speed)
+A              Left click
+B              Right click (context verb; skips cutscenes)
+X              Cycle the verb (Select)
+Y              Skip the current message
+Start          The game's own menu (save / restore)
+Back           Pause menu (D-pad moves, A confirms, B goes back)
+
+
 KEYBOARD
 --------
 Esc            Pause menu (see below)
