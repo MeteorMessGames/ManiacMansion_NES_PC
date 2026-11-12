@@ -3,7 +3,7 @@
 #define ACHIEVEMENTS_TABLE_H
 #include <stdint.h>
 
-#define ACH_MAX_CONDS 5
+#define ACH_MAX_CONDS 6
 typedef enum { ACH_EQ, ACH_NE, ACH_GE, ACH_LE, ACH_GT, ACH_LT, ACH_LEQ, ACH_SCRIPT } AchOp; /* ACH_LEQ: == seen at any earlier time this session */
 typedef struct { uint16_t addr; uint8_t mask; uint8_t op; uint8_t val; } AchCond;
 typedef struct { const char *id, *name, *desc; uint8_t points, nconds; AchCond c[ACH_MAX_CONDS]; } AchDef;
@@ -11,16 +11,16 @@ typedef struct { const char *id, *name, *desc; uint8_t points, nconds; AchCond c
 static const AchDef k_ach[] = {
   { "enter_mansion", "Welcome Home, Almost", "Step inside the mansion for the first time.", 5, 4, { {0x63C5, 0xFF, ACH_LEQ, 0x01}, {0x63C5, 0xFF, ACH_EQ, 0x0A}, {0x6B06, 0xFF, ACH_EQ, 0x00}, {0x6B07, 0xFF, ACH_EQ, 0x00} } },
   { "basement_light", "Into The Dark", "Find the basement and bring the lights up.", 5, 5, { {0x6B0A, 0x80, ACH_EQ, 0x80}, {0x6100, 0xFF, ACH_GE, 0x01}, {0x6100, 0xFF, ACH_LE, 0x07}, {0x60B0, 0x01, ACH_LEQ, 0x01}, {0x60B0, 0x01, ACH_EQ, 0x00} } },
-  { "get_tools", "Gearhead", "Grab the tools from the car trunk.", 5, 5, { {0x6B0A, 0x80, ACH_EQ, 0x80}, {0x6100, 0xFF, ACH_GE, 0x01}, {0x6100, 0xFF, ACH_LE, 0x07}, {0x66A2, 0x0F, ACH_GE, 0x01}, {0x66A2, 0x0F, ACH_LE, 0x07} } },
+  { "get_tools", "Gearhead", "Find the tools.", 5, 5, { {0x6B0A, 0x80, ACH_EQ, 0x80}, {0x6100, 0xFF, ACH_GE, 0x01}, {0x6100, 0xFF, ACH_LE, 0x07}, {0x66A2, 0x0F, ACH_GE, 0x01}, {0x66A2, 0x0F, ACH_LE, 0x07} } },
   { "fix_phone", "Hello? Hello?", "Get the phone working again.", 5, 5, { {0x6B0A, 0x80, ACH_EQ, 0x80}, {0x6100, 0xFF, ACH_GE, 0x01}, {0x6100, 0xFF, ACH_LE, 0x07}, {0x6692, 0x40, ACH_LEQ, 0x40}, {0x6692, 0x40, ACH_EQ, 0x00} } },
   { "observatory", "Big Telescope Energy", "Visit the observatory room.", 5, 1, { {0x63C5, 0xFF, ACH_EQ, 0x1C} } },
   { "wall_safe", "Safe Cracker", "Open the wall safe and take what is inside.", 5, 4, { {0x6B0A, 0x80, ACH_EQ, 0x80}, {0x6100, 0xFF, ACH_GE, 0x01}, {0x6100, 0xFF, ACH_LE, 0x07}, {0x66E5, 0x80, ACH_EQ, 0x80} } },
   { "hunk_o_matic", "Muscle Mansion", "Use the Hunk-O-Matic to bulk up.", 5, 4, { {0x6B0A, 0x80, ACH_EQ, 0x80}, {0x6100, 0xFF, ACH_GE, 0x01}, {0x6100, 0xFF, ACH_LE, 0x07}, {0x61B8, 0xFF, ACH_GT, 0x00} } },
   { "fix_radio", "Tuned In", "Get the short-wave radio working.", 5, 4, { {0x6B0A, 0x80, ACH_EQ, 0x80}, {0x6100, 0xFF, ACH_GE, 0x01}, {0x6100, 0xFF, ACH_LE, 0x07}, {0x6653, 0x0F, ACH_EQ, 0x0E} } },
-  { "meteor_mess", "Quarter Muncher", "Fire up the arcade game.", 10, 1, { {0x63C5, 0xFF, ACH_EQ, 0x27} } },
+  { "meteor_mess", "Quarter Muncher", "Play Meteor Mess.", 10, 1, { {0x63C5, 0xFF, ACH_EQ, 0x27} } },
   { "start_car", "Ignition", "Turn the key on the Weird Edsel.", 5, 1, { {0x63C5, 0xFF, ACH_EQ, 0x2E} } },
-  { "green_fav_food", "Picky Eater", "Give the Green Tentacle the one thing he loves.", 5, 3, { {0x0000, 0xFF, ACH_SCRIPT, 0x67}, {0x6109, 0xFF, ACH_EQ, 0xC6}, {0x610A, 0xFF, ACH_EQ, 0x0E} } },
-  { "green_other_food", "Not Picky Enough", "Keep him fed without the favorite dish.", 10, 4, { {0x0000, 0xFF, ACH_SCRIPT, 0x67}, {0x6109, 0xFF, ACH_NE, 0xC6}, {0x610A, 0xFF, ACH_EQ, 0x0E}, {0x6162, 0xFF, ACH_GE, 0x07} } },
+  { "green_fav_food", "Picky Eater", "Give the Green Tentacle the one thing he loves.", 5, 6, { {0x6F0B, 0xFF, ACH_EQ, 0x57}, {0x6F0C, 0xFF, ACH_EQ, 0x4F}, {0x6F0D, 0xFF, ACH_EQ, 0x57}, {0x6F10, 0xFF, ACH_EQ, 0x4D}, {0x6F13, 0xFF, ACH_EQ, 0x66}, {0x6F1B, 0xFF, ACH_EQ, 0x21} } },
+  { "green_other_food", "Not Picky Enough", "Keep him fed without the favorite dish.", 10, 3, { {0x6162, 0xFF, ACH_LEQ, 0x06}, {0x6162, 0xFF, ACH_GE, 0x07}, {0x6163, 0xFF, ACH_EQ, 0x01} } },
   { "green_contract", "Rock Star Tentacle", "Get the Green Tentacle signed.", 10, 1, { {0x6165, 0xFF, ACH_EQ, 0x03} } },
   { "ed_plans", "Ed's Big Plan", "Get Weird Ed's plans in order.", 10, 2, { {0x615D, 0xFF, ACH_EQ, 0x01}, {0x619B, 0xFF, ACH_NE, 0x02} } },
   { "purple_deal", "Closing The Deal", "Make the Purple Tentacle an offer he cannot refuse.", 10, 1, { {0x6197, 0xFF, ACH_EQ, 0x01} } },
@@ -43,9 +43,10 @@ static const AchDef k_ach[] = {
   { "meltdown_self_destruct", "Countdown To Zero", "Let the self-destruct run out.", 10, 2, { {0x0000, 0xFF, ACH_SCRIPT, 0x3E}, {0x0000, 0xFF, ACH_SCRIPT, 0x7B} } },
   { "killed_by_ed", "Ed Gets Even", "Pay for what happened to the hamster.", 10, 2, { {0x0000, 0xFF, ACH_SCRIPT, 0x3D}, {0x615F, 0xFF, ACH_EQ, 0x03} } },
   { "killed_by_green", "Green With Envy", "Make the Green Tentacle lose his temper.", 10, 2, { {0x0000, 0xFF, ACH_SCRIPT, 0x3D}, {0x615F, 0xFF, ACH_EQ, 0x04} } },
-  { "invisible_keypad", "Enter Code", "Try the secret keypad.", 10, 1, { {0x0000, 0xFF, ACH_SCRIPT, 0xA7} } },
   { "all_kids_dead", "Total Wipeout", "Lose every kid.", 10, 2, { {0x0000, 0xFF, ACH_SCRIPT, 0x3E}, {0x6161, 0xFF, ACH_EQ, 0x03} } },
+  { "deprive_ed", "Sorry, Ed!", "Deprive Ed of his tasty snack.", 3, 6, { {0x0000, 0xFF, ACH_SCRIPT, 0x97}, {0x6F0B, 0xFF, ACH_EQ, 0x57}, {0x6F10, 0xFF, ACH_EQ, 0x27}, {0x6F17, 0xFF, ACH_EQ, 0x63}, {0x6F1D, 0xFF, ACH_EQ, 0x21}, {0x6F1E, 0xFF, ACH_EQ, 0x3F} } },
+  { "interesting_development", "An Interesting Development", "Don't cry over spilled fluid.", 3, 1, { {0x61A8, 0xFF, ACH_EQ, 0x03} } },
 };
-#define ACH_COUNT 36
+#define ACH_COUNT 37
 
 #endif

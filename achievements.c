@@ -15,26 +15,74 @@ static int    s_queue[QMAX], s_qhead = 0, s_qtail = 0;
 static char   s_path[1100] = "";
 static bool   s_latch[ACH_COUNT > 0 ? ACH_COUNT : 1][ACH_MAX_CONDS]; /* ACH_LEQ conditions seen true earlier this session */
 
+/* ---- Unlock file ----
+ * ManiacMansion.achievements is a small binary file, not text: "MMA1", then 16-byte records
+ * { u32 id hash, u32 unix time, u64 SipHash-2-4 tag of the first 8 bytes }. A record whose tag does not
+ * verify is ignored, so adding lines to the file (or hand-editing it) unlocks nothing. This stops casual
+ * edits only: the key is in the program. Old plain-text files are not read. */
+static const uint8_t k_key[16] = { 0x4D, 0x4D, 0xA7, 0x31, 0x9C, 0x52, 0xE0, 0x6B, 0x18, 0xD4, 0x7F, 0x03, 0xB9, 0x2A, 0xC5, 0x61 };
+
+#define ROTL(x, b) (((x) << (b)) | ((x) >> (64 - (b))))
+static uint64_t rd64(const uint8_t *p) { uint64_t v = 0; for (int i = 7; i >= 0; i--) v = (v << 8) | p[i]; return v; }
+static void wr32(uint8_t *p, uint32_t v) { for (int i = 0; i < 4; i++) p[i] = (uint8_t)(v >> (8 * i)); }
+static void wr64(uint8_t *p, uint64_t v) { for (int i = 0; i < 8; i++) p[i] = (uint8_t)(v >> (8 * i)); }
+static uint32_t rd32(const uint8_t *p) { return p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24); }
+
+/* SipHash-2-4 of exactly 8 bytes */
+static uint64_t siphash8(const uint8_t *m)
+{
+    uint64_t k0 = rd64(k_key), k1 = rd64(k_key + 8);
+    uint64_t v0 = 0x736f6d6570736575ULL ^ k0, v1 = 0x646f72616e646f6dULL ^ k1;
+    uint64_t v2 = 0x6c7967656e657261ULL ^ k0, v3 = 0x7465646279746573ULL ^ k1;
+#define SIPROUND do { v0 += v1; v1 = ROTL(v1, 13); v1 ^= v0; v0 = ROTL(v0, 32); v2 += v3; v3 = ROTL(v3, 16); v3 ^= v2; \
+    v0 += v3; v3 = ROTL(v3, 21); v3 ^= v0; v2 += v1; v1 = ROTL(v1, 17); v1 ^= v2; v2 = ROTL(v2, 32); } while (0)
+    uint64_t mi = rd64(m), last = (uint64_t)8 << 56;
+    v3 ^= mi; SIPROUND; SIPROUND; v0 ^= mi;
+    v3 ^= last; SIPROUND; SIPROUND; v0 ^= last;
+    v2 ^= 0xff; SIPROUND; SIPROUND; SIPROUND; SIPROUND;
+    return v0 ^ v1 ^ v2 ^ v3;
+#undef SIPROUND
+}
+
+static uint32_t id_hash(const char *id)   /* FNV-1a */
+{
+    uint32_t h = 2166136261u;
+    for (; *id; id++) { h ^= (uint8_t)*id; h *= 16777619u; }
+    return h;
+}
+
 static void save_file(void)
 {
     if (!s_path[0]) return;
-    FILE *f = fopen(s_path, "w");
+    FILE *f = fopen(s_path, "wb");
     if (!f) return;
-    for (int i = 0; i < ACH_COUNT; i++)
-        if (s_got[i]) fprintf(f, "%s %lld\n", k_ach[i].id, (long long)s_when[i]);
+    fwrite("MMA1", 1, 4, f);
+    for (int i = 0; i < ACH_COUNT; i++) {
+        if (!s_got[i]) continue;
+        uint8_t rec[16];
+        wr32(rec, id_hash(k_ach[i].id));
+        wr32(rec + 4, (uint32_t)s_when[i]);
+        wr64(rec + 8, siphash8(rec));
+        fwrite(rec, 1, 16, f);
+    }
     fclose(f);
 }
 
 void ach_init(const char *dir)
 {
     snprintf(s_path, sizeof s_path, "%sManiacMansion.achievements", dir ? dir : "");
-    FILE *f = fopen(s_path, "r");
+    FILE *f = fopen(s_path, "rb");
     if (!f) return;
-    char id[96];
-    long long t;
-    while (fscanf(f, "%95s %lld", id, &t) == 2)
-        for (int i = 0; i < ACH_COUNT; i++)
-            if (!strcmp(id, k_ach[i].id)) { s_got[i] = true; s_when[i] = (time_t)t; }
+    uint8_t magic[4];
+    if (fread(magic, 1, 4, f) == 4 && !memcmp(magic, "MMA1", 4)) {
+        uint8_t rec[16];
+        while (fread(rec, 1, 16, f) == 16) {
+            if (rd64(rec + 8) != siphash8(rec)) continue;            /* tampered or not ours: ignore */
+            uint32_t h = rd32(rec);
+            for (int i = 0; i < ACH_COUNT; i++)
+                if (id_hash(k_ach[i].id) == h) { s_got[i] = true; s_when[i] = (time_t)rd32(rec + 4); }
+        }
+    }
     fclose(f);
 }
 

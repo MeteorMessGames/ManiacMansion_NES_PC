@@ -625,8 +625,26 @@ static const char *const k_trophy_art[19] = {
     "..DDDDDDDDDD.."
 };
 
-/* drawn beside the achievement banner (gold) */
-static void draw_trophy(uint32_t *buf, int cw, int ch, int x0, int y0) {
+/* Achievement unlock banner: big chunky name on a solid card with a trophy (native-pixel overlay, so it
+ * scales with the picture). Layout is in units of k = frame width / 256. */
+static void ach_toast_draw(uint32_t *buf, int cw, int ch, const char *name)
+{
+    int k = cw / 256 > 1 ? cw / 256 : 1, ns = 2 * k;
+    const char *title = "ACHIEVEMENT UNLOCKED";
+    int pad = 4 * k, tro = 14 * k + 4 * k;
+    int tw = (int)strlen(title) * 4 * k - k, nw = (int)strlen(name) * 4 * ns - ns;
+    int bw = (tw > nw ? tw : nw) + 2 * pad + tro, bh = 25 * k;
+    if (bw > cw - 4 * k) bw = cw - 4 * k;
+    int x0 = (cw - bw) / 2, y0 = 38 * k;   /* centered, just under the two lines of game text at the top */
+    for (int y = 0; y < bh; y++)
+        for (int x = 0; x < bw; x++) {
+            int px = x0 + x, py = y0 + y;
+            if (px < 0 || py < 0 || px >= cw || py >= ch) continue;
+            bool edge = x < k || y < k || x >= bw - k || y >= bh - k;
+            buf[py * cw + px] = 0xFF000000u | (edge ? 0xFFD25A : 0x15151F);
+        }
+    /* trophy, scaled by k */
+    int ty0 = y0 + (bh - 19 * k) / 2, tx0 = x0 + pad;
     for (int y = 0; y < 19; y++)
         for (int x = 0; x < 14; x++) {
             uint32_t c;
@@ -636,10 +654,15 @@ static void draw_trophy(uint32_t *buf, int cw, int ch, int x0, int y0) {
                 case 'D': c = 0xB5771C; break;
                 default: continue;
             }
-            int px = x0 + x, py = y0 + y;
-            if (px < 0 || py < 0 || px >= cw || py >= ch) continue;
-            buf[py * cw + px] = 0xFF000000u | c;
+            for (int dy = 0; dy < k; dy++)
+                for (int dx = 0; dx < k; dx++) {
+                    int px = tx0 + x * k + dx, py = ty0 + y * k + dy;
+                    if (px >= 0 && py >= 0 && px < cw && py < ch) buf[py * cw + px] = 0xFF000000u | c;
+                }
         }
+    int tx = x0 + pad + tro;
+    cyc_overlay_text(buf, cw, ch, tx, y0 + 4 * k, k, 0xFFD25A, title);
+    cyc_overlay_text(buf, cw, ch, tx, y0 + 4 * k + 5 * k + 3 * k, ns, 0xFFFFFF, name);
 }
 
 /* Draw the toast: text up to a newline is the title, the rest is the body. */
@@ -647,15 +670,9 @@ static void toast_draw(uint32_t *buf, int cw, int ch) {
     char t[sizeof s_toast_text];
     snprintf(t, sizeof t, "%s", s_toast_text);
     char *nl = strchr(t, '\n');
+    if (nl && !strncmp(t, "ACHIEVEMENT UNLOCKED", 20)) { ach_toast_draw(buf, cw, ch, nl + 1); return; }
     if (nl) { *nl = 0; cyc_overlay_toast(buf, cw, ch, t, nl + 1); }
     else cyc_overlay_toast(buf, cw, ch, t, "");
-    if (!strncmp(s_toast_text, "ACHIEVEMENT UNLOCKED", 20)) {
-        /* same box geometry as cyc_overlay_toast: 4 px per glyph, 2 lines */
-        size_t l0 = strlen(t), l1 = nl ? strlen(nl + 1) : 0, widest = l0 > l1 ? l0 : l1;
-        int bw = (int)widest * 4 - 1 + 8, bh = 2 * 8 - 3 + 8;
-        if (bw > cw - 4) bw = cw - 4;
-        draw_trophy(buf, cw, ch, (cw - bw) / 2 - 17, 6 + (bh - 19) / 2);
-    }
 }
 
 static uint8_t wram(uint16_t addr);
@@ -2173,7 +2190,16 @@ static const struct { uint16_t obj; uint8_t verb; } k_ctx_overrides[] = {
     { 0x0036, V_GET },    /* door mat: user choice (its GET is a joke reply; PULL finds the key) */
     { 0x0232, V_PULL },   /* bushes (front yard, hide the grating) */
     { 0x0115, V_PULL },   /* bushes (other side) */
+    { 0x00DA, V_PULL },   /* Edna's painting: PULL it to reveal the wall safe */
 };
+
+/* Paintings, pictures, portraits, posters and charts have OPEN/CLOSE joke replies: never default to those. */
+static bool ctx_is_artwork(uint16_t obj) {
+    static const uint16_t art[] = { 0x00B7, 0x00B8, 0x00DA, 0x0173, 0x0137, 0x01BE, 0x0194, 0x0195, 0x018C, 0x018D,
+                                    0x01A3, 0x013F, 0x0111, 0x012F, 0x0199 };
+    for (size_t i = 0; i < sizeof art / sizeof art[0]; i++) if (art[i] == obj) return true;
+    return false;
+}
 
 static uint8_t ctx_choose_verb(int slot, const uint8_t *v, int n) {
     /* User rule: anything that can actually be picked up defaults to GET. */
@@ -2187,8 +2213,9 @@ static uint8_t ctx_choose_verb(int slot, const uint8_t *v, int n) {
         if (k_ctx_overrides[i].obj == obj && has_verb(v, n, k_ctx_overrides[i].verb))
             return k_ctx_overrides[i].verb;
     bool on = (wram((uint16_t)(0x65E7 + slot)) & 0x80) != 0;
-    if (has_verb(v, n, V_OPEN) && has_verb(v, n, V_CLOSE)) return on ? V_CLOSE : V_OPEN;
-    if (has_verb(v, n, V_OPEN)) return V_OPEN;
+    bool art = ctx_is_artwork(obj);
+    if (!art && has_verb(v, n, V_OPEN) && has_verb(v, n, V_CLOSE)) return on ? V_CLOSE : V_OPEN;
+    if (!art && has_verb(v, n, V_OPEN)) return V_OPEN;
     if (has_verb(v, n, V_PUSH)) return V_PUSH;
     if (has_verb(v, n, V_PULL)) return V_PULL;
     if (has_verb(v, n, V_TURN_ON) && has_verb(v, n, V_TURN_OFF)) return on ? V_TURN_OFF : V_TURN_ON;
@@ -2467,7 +2494,9 @@ static uint8_t real_mouse_buttons(void) {
         s_inv_wheel = 0;
         uint8_t *sc = cart_ram_byte(0x711F), *rd = cart_ram_byte(0x6F0A);
         uint8_t *ego = cart_ram_byte(0x6100), *ovl = cart_ram_byte(0x6B06), *ovh = cart_ram_byte(0x6B07);
-        if (w && game_started && sc && rd && ego && ovl && ovh && !(*ovl | *ovh)) {
+        /* only while the verb bar is up (cutscenes and room loads hide it): forcing an inventory redraw in the middle
+         * of a scene change scrambled the palette and hung the game */
+        if (w && game_started && sc && rd && ego && ovl && ovh && !(*ovl | *ovh) && (wram(0x6B0A) & 0x80) && !ctx_script_running(4)) {
             int count = 0;
             for (int i = 0; i < 0x3C; i++) {
                 /* like b00:$93D7: X = $6260[i] (object slot), owner = $660A[X] & $0F */
