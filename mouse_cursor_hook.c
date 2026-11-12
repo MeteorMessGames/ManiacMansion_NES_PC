@@ -680,6 +680,17 @@ static const char *const k_trophy_art[19] = {
     "..DDDDDDDDDD.."
 };
 
+/* Trophy colours by rarity: Common = bronze, Rare = silver, Epic = gold. */
+static void rarity_colors(int tier, uint32_t *body, uint32_t *shine, uint32_t *edge) {
+    static const uint32_t k[3][3] = {
+        { 0xD08A4E, 0xF0BE8A, 0x8A4F1F },   /* bronze */
+        { 0xC4CAD6, 0xF2F5FA, 0x7C8494 },   /* silver */
+        { 0xFFD25A, 0xFFF0A8, 0xB5771C },   /* gold */
+    };
+    if (tier < 0) tier = 0; else if (tier > 2) tier = 2;
+    *body = k[tier][0]; *shine = k[tier][1]; *edge = k[tier][2];
+}
+
 /* Achievement unlock banner: big chunky name on a solid card with a trophy (native-pixel overlay, so it
  * scales with the picture). Layout is in units of k = frame width / 256. */
 /* Squashed 3x4 text for the description: the 3x5 overlay glyph minus its fourth row (descenders and the
@@ -700,10 +711,13 @@ static void small_text(uint32_t *buf, int cw, int ch, int x, int y, int k, uint3
                         }
     }
 }
+static int s_ach_tier = 2;   /* rarity of the achievement being shown */
 static int s_ach_cx = 0;   /* banner center in native px, latched when the unlock fires (0 = frame center) */
 static void ach_toast_draw(uint32_t *buf, int cw, int ch, const char *text)
 {
     int k = cw / 256 > 1 ? cw / 256 : 1, ns = k;
+    uint32_t col_body, col_shine, col_edge;
+    rarity_colors(s_ach_tier, &col_body, &col_shine, &col_edge);
     const char *title = "ACHIEVEMENT UNLOCKED";
     /* text = "NAME" or "NAME\nDESCRIPTION"; the description is word-wrapped (max 34 chars a line, 2 lines) */
     char name[64], desc[128];
@@ -738,7 +752,7 @@ static void ach_toast_draw(uint32_t *buf, int cw, int ch, const char *text)
             int px = x0 + x, py = y0 + y;
             if (px < 0 || py < 0 || px >= cw || py >= ch) continue;
             bool edge = x < k || y < k || x >= bw - k || y >= bh - k;
-            buf[py * cw + px] = 0xFF000000u | (edge ? 0xFFD25A : 0x15151F);
+            buf[py * cw + px] = 0xFF000000u | (edge ? col_body : 0x15151F);
         }
     /* trophy, scaled by k */
     int ty0 = y0 + (bh - 19 * k) / 2, tx0 = x0 + pad;
@@ -746,9 +760,9 @@ static void ach_toast_draw(uint32_t *buf, int cw, int ch, const char *text)
         for (int x = 0; x < 14; x++) {
             uint32_t c;
             switch (k_trophy_art[y][x]) {
-                case 'G': c = 0xFFD25A; break;
-                case 'H': c = 0xFFF0A8; break;
-                case 'D': c = 0xB5771C; break;
+                case 'G': c = col_body; break;
+                case 'H': c = col_shine; break;
+                case 'D': c = col_edge; break;
                 default: continue;
             }
             for (int dy = 0; dy < k; dy++)
@@ -758,7 +772,7 @@ static void ach_toast_draw(uint32_t *buf, int cw, int ch, const char *text)
                 }
         }
     int tx = x0 + pad + tro, tbw = (tw > nw ? tw : nw);   /* text column: lines are centered in it */
-    cyc_overlay_text(buf, cw, ch, tx + (tbw - tw) / 2, y0 + 5 * k, k, 0xFFD25A, title);
+    cyc_overlay_text(buf, cw, ch, tx + (tbw - tw) / 2, y0 + 5 * k, k, col_body, title);
     cyc_overlay_text(buf, cw, ch, tx + (tbw - ((int)strlen(name) * 4 * ns - ns)) / 2, y0 + (5 + 5 + 3) * k, k, 0xFFFFFF, name);
     for (int i = 0; i < nlines; i++)
         cyc_overlay_text(buf, cw, ch, tx + (tbw - ((int)strlen(lines[i]) * 4 * k - k)) / 2,
@@ -1504,7 +1518,7 @@ static const uint32_t *menu_present(void *ctx, int *w, int *h) {
         bool hov = i == s_menu_hover;
         bool ach_row = s_menu_mode == MODE_ACH && i < ach_count();
         if (ach_row)   /* earned = warm gold card, not yet earned = grey card */
-            mr_round_rect(d, pw, ph, L.pad / 2, y0, L.sw - L.pad, L.item_h, (int)(4 * u), ach_unlocked(i) ? 0x6B5414 : 0x262830, 235);
+            mr_round_rect(d, pw, ph, L.pad / 2, y0, L.sw - L.pad, L.item_h, (int)(4 * u), ach_unlocked(i) ? (ach_rarity(i) == 0 ? 0x5A3A1E : ach_rarity(i) == 1 ? 0x454B5C : 0x6B5414) : 0x262830, 235);
         if (sel) {
             mr_round_rect(d, pw, ph, L.pad / 2, y0, L.sw - L.pad, L.item_h, (int)(4 * u), 0x2C6FE0, ach_row ? 95 : 215);
         } else if (hov) {
@@ -1555,16 +1569,18 @@ static const uint32_t *menu_present(void *ctx, int *w, int *h) {
                 continue;
             }
             bool got = ach_unlocked(i);
-            {   /* trophy: gold when earned, grey when not */
+            uint32_t rc_body, rc_shine, rc_edge;
+            rarity_colors(ach_rarity(i), &rc_body, &rc_shine, &rc_edge);
+            {   /* trophy: rarity colour when earned (bronze / silver / gold), grey when not */
                 int ps = (int)(u * 0.7f) > 1 ? (int)(u * 0.7f) : 1;
                 int tx = L.pad + (int)(4 * u), ty0 = y0 + (L.item_h - 19 * ps) / 2;
                 for (int ty = 0; ty < 19; ty++)
                     for (int tx_ = 0; tx_ < 14; tx_++) {
                         uint32_t c;
                         switch (k_trophy_art[ty][tx_]) {
-                            case 'G': c = got ? 0xFFD25A : 0x4C4F5D; break;
-                            case 'H': c = got ? 0xFFF0A8 : 0x676B7C; break;
-                            case 'D': c = got ? 0xB5771C : 0x2E303A; break;
+                            case 'G': c = got ? rc_body : 0x4C4F5D; break;
+                            case 'H': c = got ? rc_shine : 0x676B7C; break;
+                            case 'D': c = got ? rc_edge : 0x2E303A; break;
                             default: continue;
                         }
                         mr_rect(d, pw, ph, tx + tx_ * ps, ty0 + ty * ps, ps, ps, c, 255);
@@ -1577,12 +1593,17 @@ static const uint32_t *menu_present(void *ctx, int *w, int *h) {
             float ppx = 6.0f * u;
             int pw_ = mr_text_width(ppx, pts);
             mr_text(d, pw, ph, L.sw - L.pad / 2 - (int)(6 * u) - pw_, y0 + (int)(3 * u), ppx,
-                    got ? 0xFFD25A : 0x5E6274, 255, pts);
+                    got ? rc_body : 0x5E6274, 255, pts);
+            const char *rn = ach_rarity_name(ach_rarity(i));   /* rarity word under the points */
+            float rpx = 4.8f * u;
+            int rw = mr_text_width(rpx, rn);
+            mr_text(d, pw, ph, L.sw - L.pad / 2 - (int)(6 * u) - rw, y0 + (int)(13 * u), rpx,
+                    got ? rc_body : 0x5E6274, 255, rn);
             char nb[96], db[160];
             bool veil = ach_hidden(i) && !got;   /* hidden until unlocked */
             float npx = fit_trunc(nb, sizeof nb, 7.2f * u, 0.72f, avail - pw_ - (int)(3 * u), veil ? "???" : ach_name(i));
             mr_text(d, pw, ph, L.pad + tro, y0 + (int)(2.5f * u), npx, got ? 0xFFFFFF : 0x7D8296, 255, nb);
-            float dpx = fit_trunc(db, sizeof db, 5.6f * u, 0.72f, avail, veil ? "Hidden achievement." : ach_desc(i));
+            float dpx = fit_trunc(db, sizeof db, 5.6f * u, 0.72f, avail - rw - (int)(4 * u), veil ? "Hidden achievement." : ach_desc(i));
             mr_text(d, pw, ph, L.pad + tro, y0 + (int)(13 * u), dpx, got ? 0xF3E3B0 : 0x6A6F82, 255, db);
             continue;
         }
@@ -2042,6 +2063,7 @@ static void achievements_step(void) {
             snprintf(s_toast_text, sizeof s_toast_text, "ACHIEVEMENT UNLOCKED\n%s\n%s", ach_name(a), ach_desc(a));
             for (char *c = s_toast_text; *c; c++) if (*c >= 'a' && *c <= 'z') *c = (char)(*c - 32);
             s_toast_frames = 240;
+            s_ach_tier = ach_rarity(a);
             { int ry0, ry1, rx0, rx1; s_ach_cx = room_extent(&ry0, &ry1, &rx0, &rx1) ? (rx0 + rx1 + 1) / 2 : 0; }
             s_chime_pos = 0;
             menu_log("achievement", ach_name(a));

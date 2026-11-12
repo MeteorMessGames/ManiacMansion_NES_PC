@@ -90,6 +90,8 @@ int         ach_count(void)         { return ACH_COUNT; }
 const char *ach_name(int i)         { return i >= 0 && i < ACH_COUNT ? k_ach[i].name : ""; }
 const char *ach_desc(int i)         { return i >= 0 && i < ACH_COUNT ? k_ach[i].desc : ""; }
 int         ach_points(int i)       { return i >= 0 && i < ACH_COUNT ? k_ach[i].points : 0; }
+int         ach_rarity(int i)       { int p = ach_points(i); return p < 5 ? 0 : p < 10 ? 1 : 2; }
+const char *ach_rarity_name(int t)  { static const char *const n[3] = { "Common", "Rare", "Epic" }; return n[t < 0 ? 0 : t > 2 ? 2 : t]; }
 bool        ach_hidden(int i)       { return i >= 0 && i < ACH_COUNT && k_ach[i].hidden; }
 bool        ach_unlocked(int i)     { return i >= 0 && i < ACH_COUNT && s_got[i]; }
 

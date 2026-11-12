@@ -13,6 +13,8 @@ void        ach_init(const char *dir);          /* load the unlock file (dir may
 int         ach_count(void);
 const char *ach_name(int i);
 const char *ach_desc(int i);
+int         ach_rarity(int i);                  /* 0 Common (<5 pts), 1 Rare (<10), 2 Epic (10+) */
+const char *ach_rarity_name(int tier);
 bool        ach_hidden(int i);                  /* shown as "???" in the menu until unlocked */
 int         ach_points(int i);
 bool        ach_unlocked(int i);
