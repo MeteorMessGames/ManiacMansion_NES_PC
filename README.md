@@ -17,8 +17,9 @@ Get `ManiacMansion_NES_PC_win64.zip` from the [latest release](https://github.co
   - Two-step commands still work the classic way: pick a verb, then the object(s).
 - **Mouse wheel** scrolls the inventory.
 - **Pause menu (Esc):** Resume, Save State and Load State (10 slots with screenshots, scrolling list; a toast confirms each save and load), Options, Exit. The sound is silenced while it is open. Closing the window or choosing Exit Game asks first (in-game, not a system dialog): save to a slot and exit, exit without saving, or cancel.
-- **Achievements:** 37 of them. Esc > Achievements lists every one with a trophy (gold and colored when earned, grey when not). A banner with a sound announces each unlock. Unlocks are saved in `ManiacMansion.achievements` next to the exe; the file is signed, so editing it unlocks nothing.
-- **Options:** separate Music and Sound FX volume, fullscreen, filter, scale (Auto or a fixed 2x to 6x, for both filters), shape (square pixels or TV 4:3).
+- **Achievements:** 38 of them, in three rarities (Common, Rare, Epic) shown as bronze, silver and gold trophies. Esc > Achievements lists every one (grey when locked; a few secret ones stay hidden as "???" until you earn them). A banner with a sound announces each unlock. Unlocks are saved in `ManiacMansion.achievements` next to the exe; the file is signed, so editing it unlocks nothing.
+- **Options:** separate Music and Sound FX volume, fullscreen, filter, scale (Auto or a fixed 2x to 6x, for both filters), shape (square pixels or TV 4:3), mouse speed and key speed (cursor speed, 50% to 300%).
+- **Update check:** at launch the game asks GitHub once whether a newer release exists (a plain request in the background, nothing is sent about you) and shows a short notice if so. Turn it off with `UpdateCheck = 0` in `config.ini`.
 - **Filters:**
   - *Sharp*: pixel-perfect integer scaling. *Auto* uses the largest whole scale that fits (6x on 1440p, 4x on 1080p), or pick a fixed 2x to 6x. At TV shape it stays crisp (sharp-bilinear: whole pixels, a one-pixel blend where two meet).
   - *CRT* and *CRT Strong*: scanlines that widen on bright colors, an RGB stripe mask and a soft glow (this project's own filter); Strong has thinner beams and darker gaps. Run on the GPU (OpenGL) with a CPU fallback. *Auto* fills the screen, or pick a fixed 2x to 6x.
@@ -31,7 +32,7 @@ The full player guide (controls, saving, tips) is in [README.txt](README.txt), w
 
 | Button | Action |
 |---|---|
-| Left click | Walk, pick a verb or item (GO TO on objects) |
+| Left click | Walk, pick a verb or item (GO TO on objects); skips the current message when you click above the room or during a cutscene |
 | Right click | Context verb on the object under the cursor; skips cutscenes |
 | Middle click | In-game save menu (Save game / Restore / New game) |
 | Wheel | Scroll the inventory |

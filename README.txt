@@ -67,8 +67,8 @@ Enter. Esc or right click goes back.
                 second time first.
   Load State    Pick a slot to load. The screenshot on the right shows what
                 you will get.
-  Options       Music volume, Sound FX volume, Fullscreen, Filter, Scale and
-                Shape.
+  Options       Music volume, Sound FX volume, Fullscreen, Filter, Scale,
+                Shape, Mouse Speed and Key Speed.
                 Volumes: drag or click the bar, or Left / Right in 5% steps.
   Exit Game     Asks first: Save to a slot and exit, Exit without saving, or
                 Cancel. Closing the window asks the same thing.
@@ -130,6 +130,19 @@ Shape (pause menu -> Options)
 
 Fullscreen (F11)
   Uses your monitor's own resolution (1080p, 1440p, 4K ...).
+
+Mouse Speed / Key Speed (pause menu -> Options)
+  How fast the cursor moves with the mouse and with the arrow keys:
+  50% to 300%, 100% is normal.
+
+Skipping text
+  Left click above the room (on the text lines) or during a cutscene to
+  skip the current message.
+
+Update check
+  At launch the game asks GitHub once whether a newer release exists and
+  shows a short notice if so. Nothing about you is sent. To turn it off,
+  set UpdateCheck = 0 in config.ini.
 
 Your volume, filter and scale choices are remembered (config.ini).
 
