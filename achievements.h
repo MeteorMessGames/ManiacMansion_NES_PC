@@ -13,6 +13,7 @@ void        ach_init(const char *dir);          /* load the unlock file (dir may
 int         ach_count(void);
 const char *ach_name(int i);
 const char *ach_desc(int i);
+bool        ach_hidden(int i);                  /* shown as "???" in the menu until unlocked */
 int         ach_points(int i);
 bool        ach_unlocked(int i);
 int         ach_unlocked_count(void);

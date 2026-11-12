@@ -1518,9 +1518,10 @@ static const uint32_t *menu_present(void *ctx, int *w, int *h) {
             mr_text(d, pw, ph, L.sw - L.pad / 2 - (int)(6 * u) - pw_, y0 + (int)(3 * u), ppx,
                     got ? 0xFFD25A : 0x5E6274, 255, pts);
             char nb[96], db[160];
-            float npx = fit_trunc(nb, sizeof nb, 7.2f * u, 0.72f, avail - pw_ - (int)(3 * u), ach_name(i));
+            bool veil = ach_hidden(i) && !got;   /* hidden until unlocked */
+            float npx = fit_trunc(nb, sizeof nb, 7.2f * u, 0.72f, avail - pw_ - (int)(3 * u), veil ? "???" : ach_name(i));
             mr_text(d, pw, ph, L.pad + tro, y0 + (int)(2.5f * u), npx, got ? 0xFFFFFF : 0x7D8296, 255, nb);
-            float dpx = fit_trunc(db, sizeof db, 5.6f * u, 0.72f, avail, ach_desc(i));
+            float dpx = fit_trunc(db, sizeof db, 5.6f * u, 0.72f, avail, veil ? "Hidden achievement." : ach_desc(i));
             mr_text(d, pw, ph, L.pad + tro, y0 + (int)(13 * u), dpx, got ? 0xF3E3B0 : 0x6A6F82, 255, db);
             continue;
         }

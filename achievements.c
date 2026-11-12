@@ -90,6 +90,7 @@ int         ach_count(void)         { return ACH_COUNT; }
 const char *ach_name(int i)         { return i >= 0 && i < ACH_COUNT ? k_ach[i].name : ""; }
 const char *ach_desc(int i)         { return i >= 0 && i < ACH_COUNT ? k_ach[i].desc : ""; }
 int         ach_points(int i)       { return i >= 0 && i < ACH_COUNT ? k_ach[i].points : 0; }
+bool        ach_hidden(int i)       { return i >= 0 && i < ACH_COUNT && k_ach[i].hidden; }
 bool        ach_unlocked(int i)     { return i >= 0 && i < ACH_COUNT && s_got[i]; }
 
 int ach_unlocked_count(void)
