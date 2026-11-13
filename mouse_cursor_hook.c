@@ -2198,6 +2198,8 @@ static uint8_t ctx_choose_verb(int slot, const uint8_t *v, int n) {
         if (k_ctx_overrides[i].obj == obj && has_verb(v, n, k_ctx_overrides[i].verb))
             return k_ctx_overrides[i].verb;
     bool on = (wram((uint16_t)(0x65E7 + slot)) & 0x80) != 0;
+    /* some machines keep their on/off state in a SCUMM variable instead of the object's state bit */
+    if (obj == 0x016E) on = wram(0x61A7) == 1;   /* Victrola: Var[167] = 1 while a record is playing */
     if (has_verb(v, n, V_OPEN) && has_verb(v, n, V_CLOSE)) return on ? V_CLOSE : V_OPEN;
     if (has_verb(v, n, V_OPEN)) return V_OPEN;
     /* switchable things (lamps, radios, machines): while ON the default is TURN OFF, while OFF it is TURN ON,
