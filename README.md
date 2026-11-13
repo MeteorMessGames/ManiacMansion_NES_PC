@@ -22,7 +22,7 @@ Get `ManiacMansion_NES_PC_win64.zip` from the [latest release](https://github.co
 - **Pause menu (Esc):** Resume, Save State and Load State (10 slots with screenshots, scrolling list; a toast confirms each save and load), Options, Exit. The sound is silenced while it is open. Closing the window or choosing Exit Game asks first (in-game, not a system dialog): save to a slot and exit, exit without saving, or cancel.
 - **Achievements:** 39 of them, rated by how complicated they are to earn.
   - Four rarities with matching trophies and points: **Common** (bronze, 5), **Rare** (silver, 10), **Epic** (purple, 20) and **Legendary** (gold, 40), 535 points in all.
-  - Esc > Achievements lists every one: a colour-outlined card per achievement (bronze, blue, purple or gold by rarity; muted when locked). A few secret ones stay hidden as "???" until you earn them.
+  - Esc > Achievements lists every one: earned ones get a rarity-coloured outline (bronze, blue, purple or gold), locked ones stay plain grey. A few secret ones stay hidden as "???" until you earn them.
   - A banner and a sound announce each unlock, with the achievement's name and description.
   - Your unlocks are stored inside the game's own exe, so there is no file to edit; replacing the exe with a newer release starts you fresh. "Reset all achievements" at the bottom of the list erases everything (press twice to confirm).
 - **Options:** separate Music and Sound FX volume, fullscreen, filter, scale (Auto or a fixed 2x to 6x, for both filters), shape (square pixels or TV 4:3), mouse speed and key speed (cursor speed, 50% to 300%).
