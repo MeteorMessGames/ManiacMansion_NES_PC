@@ -628,6 +628,7 @@ static bool     s_menu_req_quit = false;       /* window close queued from event
 static uint8_t  s_session_bat[BAT_LEN];
 static bool     s_session_bat_valid = false;
 static int      s_session_slot = 0;            /* slot last saved to this session (0 = none yet) */
+static bool     s_dirty = false;               /* player acted since the last save/load: exit warns only then */
 static int      s_quit_slot = 1;               /* slot "Save and exit" writes */
 static int      s_menu_sel = 0;
 static int      s_menu_hover = -1;             /* row under the mouse, or -1 */
@@ -909,6 +910,7 @@ static void slot_activate(int slot) {
             menu_status(msg, 0x7CE08A);
             menu_log("saved", path);
             s_session_slot = slot;
+            s_dirty = false;
             snprintf(s_toast_text, sizeof s_toast_text, "SAVED TO SLOT %d", slot);
             s_toast_frames = 120;
         } else {
@@ -926,6 +928,7 @@ static void slot_activate(int slot) {
             cyc_session_state_loaded();
             after_state_load();
             menu_log("loaded", path);
+            s_dirty = false;
             snprintf(s_toast_text, sizeof s_toast_text, "LOADED SLOT %d", slot);
             s_toast_frames = 120;
             menu_set_mode(MODE_MAIN);
@@ -988,6 +991,7 @@ static void menu_activate(int item) {
     } else if (item == MI_EXIT) {
         s_quit_from_window = false;
         menu_set_mode(MODE_QUIT);
+        if (!s_dirty) menu_activate(1);   /* nothing unsaved: exit without asking */
     } else {
         if (!restore_snapshot(err, sizeof err)) menu_log("resume restore failed", err);
         menu_log("resume", NULL);
@@ -1416,7 +1420,7 @@ static const uint32_t *menu_present(void *ctx, int *w, int *h) {
     } else {
         char info[96];
         if (s_menu_mode == MODE_DISPLAY) snprintf(info, sizeof info, "Left / Right adjust   F9 filter   F11 fullscreen");
-        else if (s_menu_mode == MODE_QUIT) snprintf(info, sizeof info, "Unsaved progress will be lost.");
+        else if (s_menu_mode == MODE_QUIT) snprintf(info, sizeof info, "%s", s_dirty ? "Unsaved progress will be lost." : "");
         else last_saved_text(info, sizeof info);
         int foot_y = ph - (int)(58 * u);
         int avail = L.sw - 2 * L.pad;
@@ -1625,6 +1629,7 @@ static void follow_game_save(void) {
     slot_file(slot, "state", path, sizeof path);
     if (cyc_state_save_file(path, err, sizeof err)) {
         s_session_slot = slot;
+        s_dirty = false;
         {   /* this session's latest in-game save: what Restore saved game must load */
             const uint8_t *bat = cart_ram_byte(BAT_ADDR);
             if (bat && cart_ram_byte(BAT_ADDR + BAT_LEN - 1)) { memcpy(s_session_bat, bat, BAT_LEN); s_session_bat_valid = true; }
@@ -2193,7 +2198,16 @@ static bool has_verb(const uint8_t *v, int n, uint8_t want) {
  * Overrides only apply if the object actually has that verb. */
 static const struct { uint16_t obj; uint8_t verb; } k_ctx_overrides[] = {
     { 0x0036, V_GET },    /* door mat: user choice (its GET is a joke reply; PULL finds the key) */
+    { 0x00DA, V_PULL },   /* Edna's painting: PULL it to reveal the wall safe */
 };
+
+/* Paintings, pictures, portraits, posters and charts have OPEN/CLOSE joke replies: never default to those. */
+static bool ctx_is_artwork(uint16_t obj) {
+    static const uint16_t art[] = { 0x00B7, 0x00B8, 0x00DA, 0x0173, 0x0137, 0x01BE, 0x0194, 0x0195, 0x018C, 0x018D,
+                                    0x01A3, 0x013F, 0x0111, 0x012F, 0x0199 };
+    for (size_t i = 0; i < sizeof art / sizeof art[0]; i++) if (art[i] == obj) return true;
+    return false;
+}
 
 static uint8_t ctx_choose_verb(int slot, const uint8_t *v, int n) {
     uint16_t obj = (uint16_t)((wram((uint16_t)(0x64CF + slot)) << 8) | wram((uint16_t)(0x64F2 + slot)));
@@ -2215,8 +2229,9 @@ static uint8_t ctx_choose_verb(int slot, const uint8_t *v, int n) {
      * holds the on state. */
     if (obj == 0x0076 && has_verb(v, n, V_TURN_ON) && has_verb(v, n, V_TURN_OFF))
         return (wram((uint16_t)(0x660A + 0xE9)) & 0x80) ? V_TURN_OFF : V_TURN_ON;
-    if (has_verb(v, n, V_OPEN) && has_verb(v, n, V_CLOSE)) return on ? V_CLOSE : V_OPEN;
-    if (has_verb(v, n, V_OPEN)) return V_OPEN;
+    bool art = ctx_is_artwork(obj);
+    if (!art && has_verb(v, n, V_OPEN) && has_verb(v, n, V_CLOSE)) return on ? V_CLOSE : V_OPEN;
+    if (!art && has_verb(v, n, V_OPEN)) return V_OPEN;
     /* switchable things (lamps, radios, machines): while ON the default is TURN OFF, while OFF it is TURN ON,
      * ahead of PUSH / PULL */
     if (has_verb(v, n, V_TURN_ON) && has_verb(v, n, V_TURN_OFF)) return on ? V_TURN_OFF : V_TURN_ON;
@@ -2871,6 +2886,7 @@ static int joypad_poll_hook(uint16_t addr) {
         *lower = (uint8_t)(cur & (BTN_B | BTN_SELECT | BTN_START));
     if (upper && (pressed_edge & BTN_A))
         *upper = (uint8_t)(cur & BTN_A);
+    if (s_game_started && (pressed_edge & (BTN_A | BTN_B))) s_dirty = true;
 
     /* 2026-11-07: this used to only go to stderr, which a Windows GUI build
      * has nowhere to send -- made it invisible in mouse_debug.log, so there
@@ -2967,7 +2983,7 @@ NES_MOD_CONSTRUCTOR(register_mouse_cursor_hook) {
  * instead of quitting at once. A second close while it is up quits for real. */
 static bool quit_request(void *ctx) {
     (void)ctx;
-    if (s_quit_confirmed || !s_game_started || s_splash_state == 1) return true;
+    if (s_quit_confirmed || !s_game_started || s_splash_state == 1 || !s_dirty) return true;   /* nothing unsaved: no prompt */
     if (s_menu_open && s_menu_mode == MODE_QUIT) return true;
     s_menu_req_quit = true;
     return false;
