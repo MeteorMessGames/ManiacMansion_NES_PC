@@ -98,7 +98,7 @@ Windows builds are cross-compiled with MinGW (`-DCMAKE_TOOLCHAIN_FILE=mingw-tool
 
 Add `-DMM_ROMLESS=ON` for the release build: it leaves the recompiled game code out of the exe, and the player's own ROM (found next to the exe) runs on the runner's interpreter at full speed. The exe then contains none of the game. It is named `ManiacMansion.exe` and opens no console window (`-DMM_CONSOLE=ON` brings the console back for testing). Without it you get `nes_game`, built on the recompiled code, with the console.
 
-**Note:** this project also needs a few additions to the NESRecomp runner that aren't published yet: host display controls (fullscreen, filter, fixed scale), a GPU texture present hook, an APU write hook and per-channel volume. Upstream NESRecomp alone won't build it.
+**Building from source:** the mod is built on [NESRecomp](https://github.com/mstan/nesrecomp) (PolyForm Noncommercial) and relies on a few host features stock upstream does not have yet: display controls (fullscreen, filter, fixed scale), a GPU texture present hook, an APU write hook and per-channel volume. Those runner changes live in a private branch for now, so this repo cannot be built against stock upstream by itself. Prebuilt Windows binaries (no ROM) are on the [releases page](https://github.com/MeteorMessGames/ManiacMansion_NES_PC/releases).
 
 ## License
 

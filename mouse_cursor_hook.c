@@ -2050,12 +2050,20 @@ static void display_save_settings(void *ctx, FILE *f) {
 /* Meteor Mess screen (room 39, shown for a few seconds when the arcade game is switched on): play a short
  * chiptune jingle over it. Starts on entering the room, stops when the room changes; follows Sound FX volume. */
 static volatile int s_arcade_pos = -1;   /* samples played of the jingle, -1 = idle */
+static volatile int s_arcade_mixed = 0;  /* samples actually mixed into the output this visit (logged when the screen ends) */
 static void arcade_step(void) {
     static int prev_room = -1;
     if (s_splash_state == 1 || !s_game_started) return;
     int room = wram(0x63C5);
-    if (room == 39 && prev_room != 39) { s_arcade_pos = 0; menu_log("arcade jingle", "Meteor Mess"); }
-    else if (room != 39) s_arcade_pos = -1;
+    if (room == 39 && prev_room != 39) { s_arcade_pos = 0; s_arcade_mixed = 0; menu_log("arcade jingle", "Meteor Mess"); }
+    else if (room != 39) {
+        if (prev_room == 39) {
+            char v[96];
+            snprintf(v, sizeof v, "%d samples mixed, Sound FX %d%%", s_arcade_mixed, s_sfx_vol);
+            menu_log("arcade jingle done", v);
+        }
+        s_arcade_pos = -1;
+    }
     prev_room = room;
 }
 
@@ -3254,9 +3262,11 @@ static void menu_audio_mix(void *ctx, int16_t *samples, size_t count) {
     if (apos >= 0 && !s_menu_open) {
         int alen;
         const int16_t *aj = arcade_sfx(&alen);
+        int gain = s_sfx_vol <= 0 ? 0 : s_sfx_vol < 60 ? 60 : s_sfx_vol;   /* quiet Sound FX settings would bury the sparkles: floor of 60% (0 stays silent) */
         for (size_t i = 0; i < count && apos < alen; i++, apos++) {
-            int m = samples[i] + aj[apos] * s_sfx_vol / 100;
+            int m = samples[i] + aj[apos] * gain / 100;
             samples[i] = (int16_t)(m > 32767 ? 32767 : m < -32768 ? -32768 : m);
+            s_arcade_mixed++;
         }
         s_arcade_pos = apos >= alen ? -1 : apos;
     }
