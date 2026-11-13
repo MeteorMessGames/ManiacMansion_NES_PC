@@ -3,7 +3,7 @@
 #define ACHIEVEMENTS_TABLE_H
 #include <stdint.h>
 
-#define ACH_MAX_CONDS 6
+#define ACH_MAX_CONDS 8
 typedef enum { ACH_EQ, ACH_NE, ACH_GE, ACH_LE, ACH_GT, ACH_LT, ACH_LEQ, ACH_SCRIPT } AchOp; /* ACH_LEQ: == seen at any earlier time this session */
 typedef struct { uint16_t addr; uint8_t mask; uint8_t op; uint8_t val; } AchCond;
 typedef struct { const char *id, *name, *desc; uint8_t points, nconds; AchCond c[ACH_MAX_CONDS]; uint8_t hidden; uint8_t rarity; } AchDef; /* rarity: 0 Common, 1 Rare, 2 Epic, 3 Legendary */
@@ -12,7 +12,7 @@ static const AchDef k_ach[] = {
   { "enter_mansion", "Welcome Home, Almost", "Step inside the mansion for the first time.", 5, 4, { {0x63C5, 0xFF, ACH_LEQ, 0x01}, {0x63C5, 0xFF, ACH_EQ, 0x0A}, {0x6B06, 0xFF, ACH_EQ, 0x00}, {0x6B07, 0xFF, ACH_EQ, 0x00} }, 0, 0 },
   { "basement_light", "Into The Dark", "Find the basement and bring the lights up.", 5, 5, { {0x6B0A, 0x80, ACH_EQ, 0x80}, {0x6100, 0xFF, ACH_GE, 0x01}, {0x6100, 0xFF, ACH_LE, 0x07}, {0x60B0, 0x01, ACH_LEQ, 0x01}, {0x60B0, 0x01, ACH_EQ, 0x00} }, 0, 0 },
   { "get_tools", "Gearhead", "Find the tools.", 5, 5, { {0x6B0A, 0x80, ACH_EQ, 0x80}, {0x6100, 0xFF, ACH_GE, 0x01}, {0x6100, 0xFF, ACH_LE, 0x07}, {0x66A2, 0x0F, ACH_GE, 0x01}, {0x66A2, 0x0F, ACH_LE, 0x07} }, 0, 0 },
-  { "fix_phone", "Hello? Hello?", "Get the phone working again.", 5, 5, { {0x6B0A, 0x80, ACH_EQ, 0x80}, {0x6100, 0xFF, ACH_GE, 0x01}, {0x6100, 0xFF, ACH_LE, 0x07}, {0x6692, 0x40, ACH_LEQ, 0x40}, {0x6692, 0x40, ACH_EQ, 0x00} }, 0, 0 },
+  { "fix_phone", "Hello? Hello?", "Get the phone working again.", 5, 8, { {0x6B0A, 0x80, ACH_EQ, 0x80}, {0x6100, 0xFF, ACH_GE, 0x01}, {0x6100, 0xFF, ACH_LE, 0x07}, {0x6692, 0x40, ACH_LEQ, 0x40}, {0x6692, 0x40, ACH_EQ, 0x00}, {0x00A8, 0xFF, ACH_EQ, 0x00}, {0x728B, 0xFF, ACH_EQ, 0x00}, {0x6103, 0xFF, ACH_EQ, 0x00} }, 0, 0 },
   { "observatory", "Big Telescope Energy", "Visit the observatory room.", 5, 1, { {0x63C5, 0xFF, ACH_EQ, 0x1C} }, 0, 0 },
   { "wall_safe", "Safe Cracker", "Open the wall safe and take what is inside.", 10, 4, { {0x6B0A, 0x80, ACH_EQ, 0x80}, {0x6100, 0xFF, ACH_GE, 0x01}, {0x6100, 0xFF, ACH_LE, 0x07}, {0x66E5, 0x80, ACH_EQ, 0x80} }, 0, 1 },
   { "hunk_o_matic", "Muscle Mansion", "Use the Hunk-O-Matic to bulk up.", 5, 4, { {0x6B0A, 0x80, ACH_EQ, 0x80}, {0x6100, 0xFF, ACH_GE, 0x01}, {0x6100, 0xFF, ACH_LE, 0x07}, {0x61B8, 0xFF, ACH_GT, 0x00} }, 0, 0 },
