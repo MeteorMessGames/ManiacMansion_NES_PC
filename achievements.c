@@ -207,9 +207,14 @@ void ach_init(const char *dir)
     fclose(f);
 }
 
+static bool     s_resync = false;     /* set when a state was loaded; consumed by the test-build logic in ach_poll */
+static unsigned s_reset_gen = 0;      /* bumped by every reset, so test builds can re-arm their once-per-session pops */
+void ach_state_loaded(void) { s_resync = true; }
+
 /* Forget every unlock (the menu's "Reset all achievements"). */
 void ach_reset_all(void)
 {
+    s_reset_gen++;
     for (int i = 0; i < ACH_COUNT; i++) { s_got[i] = false; s_when[i] = 0; s_hold[i] = 0; }
     s_qhead = s_qtail = 0;
     save_file();

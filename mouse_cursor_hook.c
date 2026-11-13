@@ -2551,6 +2551,7 @@ static bool lmb_busy = false;
 static bool menu_input_busy(void) { return ctx_busy || lmb_busy; }
 
 static void after_state_load(void) {
+    ach_state_loaded();   /* achievements: whatever is true in the loaded state is not new */
     if (s_session_bat_valid) {
         uint8_t *bat = cart_ram_byte(BAT_ADDR);
         if (bat && cart_ram_byte(BAT_ADDR + BAT_LEN - 1)) memcpy(bat, s_session_bat, BAT_LEN);
