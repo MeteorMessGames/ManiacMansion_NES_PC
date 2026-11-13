@@ -2819,7 +2819,7 @@ static uint8_t real_mouse_buttons(void) {
         static int wheel_cool = 0;   /* frames to wait after a scroll: the hover script redraws the sentence line for the new item under the cursor */
         if (wheel_cool > 0) wheel_cool--;
         if (wheel_ok && ppu_idle && wheel_cool == 0) {
-            wheel_cool = 24;
+            wheel_cool = 10;
             int dir = w > 0 ? 1 : -1;
             w -= dir;
             int count = 0;
