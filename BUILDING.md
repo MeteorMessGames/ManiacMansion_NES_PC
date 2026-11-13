@@ -15,6 +15,7 @@ git checkout e8091c8dd149f64ee3bd3489d00c011c50100f09
 git apply path/to/ManiacMansion_NES_PC/runner-patches/0001-maniac-mansion-host-extras.patch
 
 # this repo must sit inside the NESRecomp checkout, named mm-proto-port
+# (add -b achievements for the version with the achievements)
 git clone https://github.com/MeteorMessGames/ManiacMansion_NES_PC.git mm-proto-port
 
 # 1. the recompiler (a plain C tool)
@@ -43,5 +44,6 @@ cmake --build build-win -j
 ## Notes
 
 - `-DMM_NO_SIM=ON` keeps the developer-only simulator out of the build; the repo does not contain it, so a normal clone builds the same either way.
-- Unlocked achievements are stored inside the built exe itself; building a new exe starts with none.
+- Unlocked achievements are stored inside the built exe itself (a signed block in its data, rewritten when you earn something); building a new exe starts with none.
+- `git apply` the runner patch only to the pinned NESRecomp commit above. Verified: a fresh clone at that commit plus the patch plus this repo builds the recompiler and the game from scratch.
 - The runner patch is a derivative of NESRecomp and carries its license (PolyForm Noncommercial, see `licenses/`). This repo's own code is MIT.
