@@ -87,7 +87,7 @@ Main files:
 
 ## Building
 
-You need a NESRecomp checkout with this folder inside it, CMake 3.20+, SDL2, and your ROM:
+Full steps are in **[BUILDING.md](BUILDING.md)**. In short: you need NESRecomp at the pinned commit with the small runner patch from [`runner-patches/`](runner-patches/) applied, this folder inside that checkout, CMake 3.20+, SDL2, and your own ROM:
 
 ```sh
 cmake -S . -B build -DMM_ROM="/path/to/Maniac Mansion (Prototype).nes"
@@ -98,7 +98,7 @@ Windows builds are cross-compiled with MinGW (`-DCMAKE_TOOLCHAIN_FILE=mingw-tool
 
 Add `-DMM_ROMLESS=ON` for the release build: it leaves the recompiled game code out of the exe, and the player's own ROM (found next to the exe) runs on the runner's interpreter at full speed. The exe then contains none of the game. It is named `ManiacMansion.exe` and opens no console window (`-DMM_CONSOLE=ON` brings the console back for testing). Without it you get `nes_game`, built on the recompiled code, with the console.
 
-**Building from source:** the mod is built on [NESRecomp](https://github.com/mstan/nesrecomp) (PolyForm Noncommercial) and relies on a few host features stock upstream does not have yet: display controls (fullscreen, filter, fixed scale), a GPU texture present hook, an APU write hook and per-channel volume. Those runner changes live in a private branch for now, so this repo cannot be built against stock upstream by itself. Prebuilt Windows binaries (no ROM) are on the [releases page](https://github.com/MeteorMessGames/ManiacMansion_NES_PC/releases).
+The runner patch (display controls, a GPU texture present hook, an APU write hook, per-channel volume) is a small derivative of [NESRecomp](https://github.com/mstan/nesrecomp) and keeps its PolyForm Noncommercial license; see [BUILDING.md](BUILDING.md).
 
 ## License
 
