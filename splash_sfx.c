@@ -54,10 +54,10 @@ static void build(void)
         }
         t += 0.18 + 0.42 * ((seed >> 12 & 255) / 255.0);
     }
-    /* normalize to about 85% of full scale: the sparkles are soft on their own, and the sound follows the Sound FX volume */
+    /* normalize to about 51% of full scale (85% less 40%: it was too loud); the sound follows the Sound FX volume */
     int peak = 1;
     for (int i = 0; i < LEN; i++) { int v = s_buf[i] < 0 ? -s_buf[i] : s_buf[i]; if (v > peak) peak = v; }
-    for (int i = 0; i < LEN; i++) s_buf[i] = (int16_t)((int)s_buf[i] * 27800 / peak);
+    for (int i = 0; i < LEN; i++) s_buf[i] = (int16_t)((int)s_buf[i] * 16680 / peak);
 }
 
 const int16_t *splash_sfx(int *len)
