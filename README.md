@@ -10,7 +10,7 @@ Play the **Maniac Mansion NES prototype** on PC with a mouse, as a real point-an
 |---|---|---|
 | ![Right-click preview](docs/screenshots/preview.png) | ![Pause menu](docs/screenshots/menu.png) | ![CRT filter](docs/screenshots/crt.png) |
 
-![Achievements page](docs/screenshots/achievements.png)
+![Razor and the hamster](docs/screenshots/hamster.png)
 
 *Screenshots show the original game, © Lucasfilm Games / LucasArts.*
 
@@ -33,6 +33,12 @@ Get `ManiacMansion_NES_PC_win64.zip` from the [latest release](https://github.co
 - A launch-time update check (turn off with `UpdateCheck = 0` in `config.ini`).
 
 The full player guide (controls, saving, tips) is in [README.txt](README.txt), which ships next to the exe.
+
+## Achievements
+
+![Achievement unlocked](docs/screenshots/achievement.png)
+
+40 achievements in four rarities (Common, Rare, Epic, Legendary). A banner and a sound announce each one, and Esc > Achievements lists them all. Some are secret until earned.
 
 ## Mouse
 
