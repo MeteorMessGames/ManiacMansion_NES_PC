@@ -1,0 +1,269 @@
+diff --git a/runner/cyc/cyc_host_extras.h b/runner/cyc/cyc_host_extras.h
+index 6c9c768..cafb9d2 100644
+--- a/runner/cyc/cyc_host_extras.h
++++ b/runner/cyc/cyc_host_extras.h
+@@ -105,6 +105,14 @@ typedef struct CycHostExtras {
+     unsigned audio_rate;
+     void (*audio_mix)(void *ctx, int16_t *samples, size_t count);
+     void (*state_loaded)(void *ctx);
++    /* Optional GPU picture (SDL host): renderer is the host's SDL_Renderer.
++     * Return an SDL_Texture the game rendered (e.g. a shader pass into a
++     * render-target texture) and its size; the host presents it instead of
++     * the CPU picture (present / the native frame). NULL: use the CPU path. */
++    void *(*present_texture)(void *ctx, void *renderer, int *w, int *h);
++    /* SDL host: the window was closed / SDL_QUIT arrived. Return true to quit,
++     * false to cancel (the game may show its own confirm dialog). NULL: quit. */
++    bool (*quit_request)(void *ctx);
+ } CycHostExtras;
+ 
+ const CycHostExtras *cyc_host_extras(void);
+@@ -114,6 +122,22 @@ const CycHostExtras *cyc_host_extras(void);
+  * Explicit command-line passwords may still be used without loading a save. */
+ bool cyc_host_saves_enabled(void);
+ 
++/* Host display controls a game's own menu can drive (SDL host only).
++ * display_set: -1 leaves a value unchanged; applies at once and saves the
++ * settings file. display_refit: resize a windowed window to the current
++ * picture width (cyc_video) times the window scale. save_settings: write the
++ * settings file now (a game's [Game] keys come from its save_settings). */
++void cyc_host_display_set(int fullscreen, int linear_filter, int integer_scale);
++void cyc_host_display_get(int *fullscreen, int *linear_filter, int *integer_scale);
++void cyc_host_display_refit(void);
++void cyc_host_save_settings(void);
++/* Fixed whole-number picture scale while integer scaling is on (0 = the
++ * largest that fits). A scale that doesn't fit the drawable falls back to
++ * the largest that does. Not saved by the host (the game keeps it).
++ * display_max_scale: largest whole scale of the native picture that fits. */
++void cyc_host_display_set_scale(int scale);
++int  cyc_host_display_max_scale(void);
++
+ #ifdef __cplusplus
+ }
+ #endif
+diff --git a/runner/cyc/cyc_input.c b/runner/cyc/cyc_input.c
+index dd53166..0026ffc 100644
+--- a/runner/cyc/cyc_input.c
++++ b/runner/cyc/cyc_input.c
+@@ -59,7 +59,7 @@ void cyc_bindings_default(CycBindings *b)
+      * keeps for itself (F1-F6). F7/F8 open states and rewind. */
+     b->shortcut[CYC_SC_DISK]         = (CycBinding){ SDL_SCANCODE_D, CYC_PAD_BUTTON(SDL_CONTROLLER_BUTTON_LEFTSHOULDER) };
+     b->shortcut[CYC_SC_MENU]         = (CycBinding){ SDL_SCANCODE_ESCAPE, CYC_PAD_BUTTON(SDL_CONTROLLER_BUTTON_RIGHTSHOULDER) };
+-    b->shortcut[CYC_SC_FAST_FORWARD] = (CycBinding){ SDL_SCANCODE_TAB, CYC_PAD_AXIS(SDL_CONTROLLER_AXIS_TRIGGERRIGHT, 1) };
++    b->shortcut[CYC_SC_FAST_FORWARD] = (CycBinding){ SDL_SCANCODE_UNKNOWN, 0 };
+     b->shortcut[CYC_SC_SCREENSHOT]   = (CycBinding){ SDL_SCANCODE_F12, 0 };
+     b->shortcut[CYC_SC_FULLSCREEN]   = (CycBinding){ SDL_SCANCODE_F11, 0 };
+     b->shortcut[CYC_SC_STATE_MENU]   = (CycBinding){ SDL_SCANCODE_F7, CYC_PAD_COMBO((1u << SDL_CONTROLLER_BUTTON_BACK) | (1u << SDL_CONTROLLER_BUTTON_LEFTSTICK)) };
+diff --git a/runner/cyc/cyc_mod.h b/runner/cyc/cyc_mod.h
+index ec92422..f5580f0 100644
+--- a/runner/cyc/cyc_mod.h
++++ b/runner/cyc/cyc_mod.h
+@@ -125,6 +125,15 @@ bool cyc_mod_ciram_upload(size_t offset, const uint8_t *bytes, size_t size);
+  * The hook is host policy and is not serialized as machine state. */
+ typedef void (*CycModPpuWriteHook)(unsigned reg, uint16_t addr, uint8_t value, unsigned increment);
+ void cyc_mod_set_ppu_write_hook(CycModPpuWriteHook hook);
++/* CPU writes to the APU ($4000-$4017), with the PC the CPU state holds at
++ * the write (native code keeps it at a routine/block entry, not per
++ * instruction). Suppressed during isolated calls; host policy, not state. */
++typedef void (*CycModApuWriteHook)(uint16_t addr, uint8_t value, uint16_t pc);
++void cyc_mod_set_apu_write_hook(CycModApuWriteHook hook);
++/* Output gain of one APU channel in the mixer (0 pulse 1, 1 pulse 2,
++ * 2 triangle, 3 noise, 4 DMC), 1.0 = as the console mixes it. Host policy,
++ * not machine state. */
++void cyc_apu_set_channel_gain(int ch, float gain);
+ 
+ typedef struct {
+     uint8_t  a, x, y, s, p;     /* p: N V - B D I Z C as pushed (B and bit 5 ignored on set) */
+diff --git a/runner/cyc/cyc_sdl.c b/runner/cyc/cyc_sdl.c
+index 91b2647..262cca8 100644
+--- a/runner/cyc/cyc_sdl.c
++++ b/runner/cyc/cyc_sdl.c
+@@ -484,18 +484,91 @@ static void apply_picture_scale(void)
+         SDL_RenderSetIntegerScale(s_ren, integer);
+ }
+ 
++/* Fixed integer scale (cyc_host_display_set_scale). SDL's integer mode
++ * always picks the largest whole scale; for a smaller one, override the
++ * scale and the centered viewport SDL computed. Mouse events and
++ * SDL_RenderWindowToLogical use the renderer's current viewport and scale,
++ * so input mapping follows. SDL recomputes both on a window resize or a
++ * logical-size change, so this runs every frame before drawing. */
++static int s_fixed_scale;
++
++static void apply_fixed_scale(void)
++{
++    if (!s_ren || s_fixed_scale <= 0 || !SDL_RenderGetIntegerScale(s_ren)) return;
++    int ow = 0, oh = 0;
++    SDL_GetRendererOutputSize(s_ren, &ow, &oh);
++    int lw = s_tex_w, lh = logical_h();
++    if (lw <= 0 || lh <= 0) return;
++    int fit = ow / lw < oh / lh ? ow / lw : oh / lh;
++    int k = s_fixed_scale;
++    if (k >= fit) return;                          /* SDL's own fit is already k (or k doesn't fit) */
++    float sx = 0, sy = 0;
++    SDL_RenderGetScale(s_ren, &sx, &sy);
++    if (sx == (float)k && sy == (float)k) return;  /* ours is in place (SDL's own would be `fit`) */
++    SDL_Rect vp = { (ow - lw * k) / 2, (oh - lh * k) / 2, lw * k, lh * k };
++    SDL_RenderSetScale(s_ren, 1.0f, 1.0f);
++    SDL_RenderSetViewport(s_ren, &vp);
++    SDL_RenderSetScale(s_ren, (float)k, (float)k);
++}
++
++void cyc_host_display_set_scale(int scale)
++{
++    s_fixed_scale = scale > 0 ? scale : 0;
++    if (!s_ren) return;
++    SDL_RenderSetLogicalSize(s_ren, s_tex_w, logical_h());   /* back to SDL's own fit */
++    apply_picture_scale();
++    apply_fixed_scale();
++}
++
++int cyc_host_display_max_scale(void)
++{
++    if (!s_ren) return 1;
++    int ow = 0, oh = 0;
++    SDL_GetRendererOutputSize(s_ren, &ow, &oh);
++    int lw = cyc_video_width(), lh = 240 + (s_bar ? BAR_ROWS : 0);
++    int fit = ow / lw < oh / lh ? ow / lw : oh / lh;
++    return fit < 1 ? 1 : fit;
++}
++
+ static void apply_settings(void)
+ {
+     if (!s_win) return;
+     Uint32 fs = s_set.fullscreen == 1 ? SDL_WINDOW_FULLSCREEN_DESKTOP : s_set.fullscreen == 2 ? SDL_WINDOW_FULLSCREEN : 0;
+     if ((SDL_GetWindowFlags(s_win) & (SDL_WINDOW_FULLSCREEN | SDL_WINDOW_FULLSCREEN_DESKTOP)) != fs)
+         SDL_SetWindowFullscreen(s_win, fs);
+-    if (!fs) SDL_SetWindowSize(s_win, s_tex_w * s_set.window_scale, logical_h() * s_set.window_scale);
++    /* Size from the game's own picture width (cyc_video), not the texture:
++     * a game may present a picture at the window's resolution (a CRT
++     * filter, a hi-res menu), and scaling that again would grow the window. */
++    if (!fs) SDL_SetWindowSize(s_win, cyc_video_width() * s_set.window_scale,
++                               (240 + (s_bar ? BAR_ROWS : 0)) * s_set.window_scale);
+     SDL_RenderSetLogicalSize(s_ren, s_tex_w, logical_h());
+     apply_picture_scale();
+     if (s_tex) SDL_SetTextureScaleMode(s_tex, s_set.linear_filter ? SDL_ScaleModeLinear : SDL_ScaleModeNearest);
+ }
+ 
++/* Host display controls for a game's own menu (cyc_host_extras.h). */
++void cyc_host_display_set(int fullscreen, int linear_filter, int integer_scale)
++{
++    if (fullscreen >= 0) s_set.fullscreen = fullscreen;
++    if (linear_filter >= 0) s_set.linear_filter = linear_filter ? 1 : 0;
++    if (integer_scale >= 0) s_set.integer_scale = integer_scale ? 1 : 0;
++    apply_settings();
++    save_settings();
++}
++void cyc_host_display_get(int *fullscreen, int *linear_filter, int *integer_scale)
++{
++    if (fullscreen) *fullscreen = s_set.fullscreen;
++    if (linear_filter) *linear_filter = s_set.linear_filter;
++    if (integer_scale) *integer_scale = s_set.integer_scale;
++}
++void cyc_host_display_refit(void)
++{
++    if (!s_win || (SDL_GetWindowFlags(s_win) & (SDL_WINDOW_FULLSCREEN | SDL_WINDOW_FULLSCREEN_DESKTOP))) return;
++    SDL_SetWindowSize(s_win, cyc_video_width() * s_set.window_scale,
++                      (240 + (s_bar ? BAR_ROWS : 0)) * s_set.window_scale);
++}
++void cyc_host_save_settings(void) { save_settings(); }
++
+ static bool ensure_texture(int w, int h)
+ {
+     if (s_tex && w == s_tex_w && h == s_tex_h) return true;
+@@ -1229,6 +1302,13 @@ static void show(bool loading, const char *toast_title, const char *toast_body)
+         }
+     }
+ #endif
++    if(!gpu_texture && s_extras && s_extras->present_texture){
++        int tw=0,th=0;
++        SDL_Texture *t=(SDL_Texture *)s_extras->present_texture(s_extras->ctx,s_ren,&tw,&th);
++        if(t && tw>0 && th>0 && tw<=CYC_PRESENT_MAX_DIMENSION && th<=CYC_PRESENT_MAX_DIMENSION){
++            gpu_texture=t;w=tw;h=th;s_picture_rendered=false;
++        }
++    }
+     if(!gpu_texture)pic=picture(&w,&h);
+ #ifdef CYC_WITH_RECOMP_UI
+     /* Rewind captures refresh their exact preview above the presentation step.
+@@ -1261,6 +1341,7 @@ static void show(bool loading, const char *toast_title, const char *toast_body)
+     (void)toast_body;
+ #endif
+     if(!gpu_texture)SDL_UpdateTexture(s_tex, NULL, pic, w * 4);
++    apply_fixed_scale();
+     SDL_SetRenderDrawColor(s_ren, 0, 0, 0, 255);
+     SDL_RenderClear(s_ren);
+     SDL_Rect dst = { 0, 0, w, h };
+@@ -1516,7 +1597,9 @@ int cyc_sdl_main(const char *title_in, int scale)
+ #endif
+                 cyc_session_event(&ev, player);
+             }
+-            if (ev.type == SDL_QUIT) s_running = false;
++            if (ev.type == SDL_QUIT) {
++                if (!s_extras || !s_extras->quit_request || s_extras->quit_request(s_extras->ctx)) s_running = false;
++            }
+ #ifdef NESRECOMP_CYCLE_HDPACK
+             else if(ev.type==SDL_RENDER_TARGETS_RESET || ev.type==SDL_RENDER_DEVICE_RESET){
+                 cyc_hd_gpu_destroy(s_hd_gpu,ev.type==SDL_RENDER_DEVICE_RESET);
+diff --git a/runner/cyc/hw_apu.c b/runner/cyc/hw_apu.c
+index a082d54..42488b9 100644
+--- a/runner/cyc/hw_apu.c
++++ b/runner/cyc/hw_apu.c
+@@ -21,6 +21,8 @@
+ #include "cyc_core.h"
+ #include "cyc_trace.h"
+ #include "hw.h"
++#include "cyc_mod.h"
++#include "cpu6502.h"
+ 
+ #include <math.h>
+ #include <stdio.h>
+@@ -140,6 +142,32 @@ static struct {
+     uint8_t  level_dirty, level_dmc;
+ } audio;
+ 
++/* Mod observation of APU register writes, and per-channel output gains
++ * (cyc_mod.h). Host policy, not machine state. */
++static CycModApuWriteHook s_apu_write_hook;
++void cyc_mod_set_apu_write_hook(CycModApuWriteHook hook) { s_apu_write_hook = hook; }
++static float s_ch_gain[5] = { 1, 1, 1, 1, 1 };
++static bool  s_ch_gain_on = false;
++void cyc_apu_set_channel_gain(int ch, float gain)
++{
++    if (ch < 0 || ch > 4) return;
++    if (gain < 0) gain = 0;
++    if (s_ch_gain[ch] == gain) return;
++    s_ch_gain[ch] = gain;
++    s_ch_gain_on = false;
++    for (int i = 0; i < 5; i++) if (s_ch_gain[i] != 1.0f) s_ch_gain_on = true;
++    audio.level_dirty = 1;
++}
++static double gained_level(const uint8_t out[5])
++{
++    double p = s_ch_gain[0] * out[0] + s_ch_gain[1] * out[1];
++    double t = 3.0 * s_ch_gain[2] * out[2] + 2.0 * s_ch_gain[3] * out[3] + s_ch_gain[4] * out[4];
++    double lp = p > 0 ? 95.52 / (8128.0 / p + 100) : 0;
++    double lt = t > 0 ? 163.67 / (24329.0 / t + 100) : 0;
++    return lp + lt;
++}
++
++
+ static int console_request = CYC_CONSOLE_DEFAULT;
+ 
+ int apu_console(void)
+@@ -394,7 +422,8 @@ static void audio_cycle(void)
+     if (audio.level_dirty || audio.level_dmc != apu.dmc_level) {
+         uint8_t out[5];
+         apu_channel_levels(out);
+-        audio.base_level = audio.pulse_mix[out[0] + out[1]] + audio.tnd_mix[3 * out[2] + 2 * out[3] + out[4]];
++        audio.base_level = s_ch_gain_on ? gained_level(out)
++                         : audio.pulse_mix[out[0] + out[1]] + audio.tnd_mix[3 * out[2] + 2 * out[3] + out[4]];
+         audio.level_dirty = 0;
+         audio.level_dmc = apu.dmc_level;
+     }
+@@ -443,6 +472,7 @@ static void length_write(int ch, uint8_t value)
+ 
+ void apu_write(uint16_t addr, uint8_t value)
+ {
++    if (s_apu_write_hook && !hw_isolated) s_apu_write_hook(addr, value, cpu.pc);
+     audio.level_dirty = 1;
+     if (addr <= 0x400F) apu.reg[addr & 15] = value;
+     switch (addr) {
