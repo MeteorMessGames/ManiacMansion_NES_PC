@@ -15,7 +15,7 @@ static double pulse(double p, double duty) { return p < duty ? 1.0 : -1.0; }
 /* Triangle wave at phase p. */
 static double tri(double p) { return p < 0.5 ? 4.0 * p - 1.0 : 3.0 - 4.0 * p; }
 
-/* Mix one note into the buffer starting at t0 seconds. kind 0 = lead pulse, 1 = bass triangle, 2 = ping. */
+/* Mix one note into the buffer starting at t0 seconds. kind 0 = lead pulse, 1 = bass triangle, 2 = ping, 3 = twinkle (a high, bell-like sine that fades quickly). */
 static void add_note(double t0, double dur, int midi, double amp, int kind)
 {
     double hz = note_hz(midi);
@@ -23,8 +23,10 @@ static void add_note(double t0, double dur, int midi, double amp, int kind)
     for (int i = 0; i < n && i0 + i < LEN; i++) {
         double t = (double)i / ARCADE_SFX_RATE;
         double p = fmod(t * hz, 1.0);
-        double env = (t < 0.004 ? t / 0.004 : 1.0) * exp(-t / (kind == 2 ? 0.16 : dur * 0.55));
-        double v = kind == 0 ? pulse(p, 0.25) : kind == 1 ? tri(p) : pulse(p, 0.5) * 0.6 + tri(fmod(t * hz * 2.0, 1.0)) * 0.4;
+        double env = (t < 0.004 ? t / 0.004 : 1.0) * exp(-t / (kind == 3 ? 0.07 : kind == 2 ? 0.16 : dur * 0.55));
+        double v = kind == 0 ? pulse(p, 0.25) : kind == 1 ? tri(p) : kind == 3
+            ? sin(6.283185307 * t * hz) + 0.35 * sin(6.283185307 * t * hz * 2.76) * exp(-t / 0.03)   /* inharmonic partial: the glassy attack */
+            : pulse(p, 0.5) * 0.6 + tri(fmod(t * hz * 2.0, 1.0)) * 0.4;
         if (kind == 0) v += 0.35 * pulse(fmod(t * hz * 1.003, 1.0), 0.125);     /* slight chorus */
         int s = s_buf[i0 + i] + (int)(v * env * amp * 32767.0);
         s_buf[i0 + i] = (int16_t)(s > 32767 ? 32767 : s < -32768 ? -32768 : s);
@@ -52,6 +54,21 @@ static void build(void)
             add_note(t, 0.14, lead[i], 0.12 * fade, 0);
             if (i % 4 == 0) add_note(t, 0.38, bass[i / 4], 0.20 * fade, 1);
         }
+    /* twinkles: sparkles scattered over the whole screen (fixed pseudo-random times and pitches, so it always sounds the same),
+     * in pairs now and then so they read as a glitter rather than a metronome */
+    {
+        static const int penta[] = { 93, 96, 98, 100, 103, 105, 108 };   /* high A minor pentatonic-ish bell notes */
+        unsigned seed = 0x2F6E2B1u;
+        double t = 0.45;
+        while (t < 5.1) {
+            seed = seed * 1664525u + 1013904223u;
+            int note = penta[(seed >> 16) % 7];
+            double amp = 0.07 + 0.05 * ((seed >> 8 & 15) / 15.0);
+            add_note(t, 0.35, note, amp, 3);
+            if ((seed >> 4 & 3) == 0) add_note(t + 0.06, 0.35, penta[(seed >> 20) % 7], amp * 0.8, 3);   /* a quick second sparkle */
+            t += 0.16 + 0.34 * ((seed >> 12 & 255) / 255.0);
+        }
+    }
     /* tail: a soft closing ping */
     add_note(4.95, 0.45, 81, 0.10, 2);
 }
