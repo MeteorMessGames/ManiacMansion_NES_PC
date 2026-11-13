@@ -2122,9 +2122,11 @@ static const struct { uint16_t obj; uint8_t verb; } k_ctx_overrides[] = {
 };
 
 static uint8_t ctx_choose_verb(int slot, const uint8_t *v, int n) {
+    uint16_t obj = (uint16_t)((wram((uint16_t)(0x64CF + slot)) << 8) | wram((uint16_t)(0x64F2 + slot)));
+    /* The front hall gargoyles: no default verb, a right click is just GO TO. */
+    if (obj == 0x015F || obj == 0x0161) return V_GOTO;
     /* User rule: anything that can actually be picked up defaults to GET. */
     if (has_verb(v, n, V_GET) && ctx_get_picks_up(slot)) return V_GET;
-    uint16_t obj = (uint16_t)((wram((uint16_t)(0x64CF + slot)) << 8) | wram((uint16_t)(0x64F2 + slot)));
     /* mailbox flag (front yard, left edge): user rule, PULL it up when it is
      * down, PUSH it down when it is up (state bit $80 = up) */
     if (obj == 0x0231 && has_verb(v, n, V_PULL) && has_verb(v, n, V_PUSH))
@@ -2135,9 +2137,12 @@ static uint8_t ctx_choose_verb(int slot, const uint8_t *v, int n) {
     bool on = (wram((uint16_t)(0x65E7 + slot)) & 0x80) != 0;
     if (has_verb(v, n, V_OPEN) && has_verb(v, n, V_CLOSE)) return on ? V_CLOSE : V_OPEN;
     if (has_verb(v, n, V_OPEN)) return V_OPEN;
+    /* switchable things (lamps, radios, machines): while ON the default is TURN OFF, while OFF it is TURN ON,
+     * ahead of PUSH / PULL */
+    if (has_verb(v, n, V_TURN_ON) && has_verb(v, n, V_TURN_OFF)) return on ? V_TURN_OFF : V_TURN_ON;
+    if (on && has_verb(v, n, V_TURN_OFF)) return V_TURN_OFF;
     if (has_verb(v, n, V_PUSH)) return V_PUSH;
     if (has_verb(v, n, V_PULL)) return V_PULL;
-    if (has_verb(v, n, V_TURN_ON) && has_verb(v, n, V_TURN_OFF)) return on ? V_TURN_OFF : V_TURN_ON;
     if (has_verb(v, n, V_TURN_ON)) return V_TURN_ON;
     if (has_verb(v, n, V_READ)) return V_READ;
     if (has_verb(v, n, V_USE)) return V_USE;
@@ -2361,6 +2366,9 @@ static uint8_t real_mouse_buttons(void) {
         if (find_cursor_oam(&cya, &cxa) && *ram_byte(cya) < 0xEF) s_game_started = game_started = true;
     }
     if (rmb) out |= game_started ? BTN_A : BTN_START;
+    /* click-to-skip from the very first screen: before the cursor has ever appeared (logo, credits, title) a left
+     * click skips like a right click does */
+    if (lmb && !game_started) out = (uint8_t)((out & ~BTN_A) | BTN_START);   /* Start alone: A|Start doesn't skip */
     /* 2026-11-09: middle button = Start (user request): in gameplay that
      * opens the game's own menu (save/load/new kids), like the NES pad. */
     if (mmb) out |= BTN_START;
@@ -2376,7 +2384,10 @@ static uint8_t real_mouse_buttons(void) {
         skip_prev = lmb;
         uint8_t *a8 = ram_byte(0xA8), *aa = ram_byte(0xAA), *ab = ram_byte(0xAB);
         uint8_t *cy = cart_ram_byte(0x7118);
-        if (fresh && game_started && a8 && aa && ab && *a8 != 0 && (*aa | *ab) != 0) {
+        /* only once the kids are chosen: the kid-select screen keeps its message (and an armed override) up
+         * while you pick, and a click there must select, not skip */
+        bool in_play = wram(0x6130) != 0 && wram(0x6131) != 0 && wram(0x63C5) != 45;
+        if (fresh && game_started && in_play && a8 && aa && ab && *a8 != 0 && (*aa | *ab) != 0) {
             bool in_text_band = cy && *cy <= 38;   /* the cursor stops at the room top, so a click above the room lands here */
             bool cutscene = wram(0x6D3C) != 0 || wram(0x6B06) != 0 || wram(0x6B07) != 0;
             if (in_text_band || cutscene) {
@@ -2411,7 +2422,12 @@ static uint8_t real_mouse_buttons(void) {
         uint8_t *exit_key = cart_ram_byte(0x6128);
         bool skippable = ov_lo && ov_hi && exit_key && (*ov_lo | *ov_hi) && *exit_key;
         /* (Escape removed 2026-11-09: it opens the save/load menu now) */
-        bool skip_req = rmb || keys[SDL_SCANCODE_SPACE] || keys[SDL_SCANCODE_RETURN];
+        /* middle click inside the game's own menu (room $32) goes back to the game, like RMB does; the press that
+         * opened the menu must be released first */
+        static bool mmb_ready = false;
+        bool in_game_menu = wram(0x63C5) == 0x32;
+        if (!in_game_menu) mmb_ready = false; else if (!mmb) mmb_ready = true;
+        bool skip_req = rmb || keys[SDL_SCANCODE_SPACE] || keys[SDL_SCANCODE_RETURN] || (mmb && mmb_ready && in_game_menu);
         /* Once a skip press has been sent, the same physical press must not
          * turn into Start/A when the cutscene ends under it (the edge from
          * $40 to $10 would latch a fresh Start on the next screen, e.g.
@@ -2437,7 +2453,20 @@ static uint8_t real_mouse_buttons(void) {
         s_inv_wheel = 0;
         uint8_t *sc = cart_ram_byte(0x711F), *rd = cart_ram_byte(0x6F0A);
         uint8_t *ego = cart_ram_byte(0x6100), *ovl = cart_ram_byte(0x6B06), *ovh = cart_ram_byte(0x6B07);
-        if (w && game_started && sc && rd && ego && ovl && ovh && !(*ovl | *ovh)) {
+        /* Only while the verb bar is up (cutscenes and room loads hide it): forcing an inventory redraw in the middle of
+         * a scene change scrambled the palette and hung the game. One notch at a time, only when the PPU job queue is
+         * idle, no redraw is pending and no message is being typed, and 24 frames apart (hovering the inventory
+         * redraws the sentence line for each new item under the cursor): overlapping redraws scrambled the screen's
+         * colours and froze the verbs. */
+        bool ppu_idle = rd && wram(0x6EBC) == wram(0x6EBD) && !(wram(0x6EFF) & 3) && !(*rd & 0xE0) &&
+                        ram_byte(0xA8) && *ram_byte(0xA8) == 0;
+        bool wheel_ok = w && game_started && sc && rd && ego && ovl && ovh && !(*ovl | *ovh) && (wram(0x6B0A) & 0x80) && !ctx_script_running(4);
+        static int wheel_cool = 0;
+        if (wheel_cool > 0) wheel_cool--;
+        if (wheel_ok && ppu_idle && wheel_cool == 0) {
+            wheel_cool = 24;
+            int dir = w > 0 ? 1 : -1;
+            w -= dir;
             int count = 0;
             for (int i = 0; i < 0x3C; i++) {
                 /* like b00:$93D7: X = $6260[i] (object slot), owner = $660A[X] & $0F */
@@ -2448,10 +2477,11 @@ static uint8_t real_mouse_buttons(void) {
             }
             int m = count > 2 ? count - 2 : 0;
             int v = *sc;
-            for (; w > 0; w--) v = v - 2 < 0 ? 0 : v - 2;
-            for (; w < 0; w++) if (v < m) { v += 2; if (v > m) v = (m + 1) & 0xFE; }
+            if (dir > 0) v = v - 2 < 0 ? 0 : v - 2;
+            else if (v < m) { v += 2; if (v > m) v = (m + 1) & 0xFE; }
             if (v != *sc) { *sc = (uint8_t)v; *rd |= 0xE0; }
         }
+        if (wheel_ok && w) { s_inv_wheel += w; if (s_inv_wheel > 6) s_inv_wheel = 6; else if (s_inv_wheel < -6) s_inv_wheel = -6; }   /* keep the rest for later frames */
     }
 
     /* 2026-11-09: context RMB. On a fresh RMB press in gameplay that is still
