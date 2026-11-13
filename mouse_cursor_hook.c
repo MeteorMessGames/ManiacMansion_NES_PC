@@ -2760,7 +2760,12 @@ static uint8_t real_mouse_buttons(void) {
         uint8_t *exit_key = cart_ram_byte(0x6128);
         bool skippable = ov_lo && ov_hi && exit_key && (*ov_lo | *ov_hi) && *exit_key;
         /* (Escape removed 2026-11-09: it opens the save/load menu now) */
-        bool skip_req = rmb || keys[SDL_SCANCODE_SPACE] || keys[SDL_SCANCODE_RETURN];
+        /* middle click (or the pad's left shoulder) inside the game's own menu (room $32) goes back to the game, like
+         * RMB does; the press that opened the menu must be released first */
+        static bool mmb_ready = false;
+        bool in_game_menu = wram(0x63C5) == 0x32;
+        if (!in_game_menu) mmb_ready = false; else if (!mmb) mmb_ready = true;
+        bool skip_req = rmb || keys[SDL_SCANCODE_SPACE] || keys[SDL_SCANCODE_RETURN] || (mmb && mmb_ready && in_game_menu);
         /* Once a skip press has been sent, the same physical press must not
          * turn into Start/A when the cutscene ends under it (the edge from
          * $40 to $10 would latch a fresh Start on the next screen, e.g.
