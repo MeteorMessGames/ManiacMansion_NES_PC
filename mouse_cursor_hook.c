@@ -2048,7 +2048,7 @@ static void display_save_settings(void *ctx, FILE *f) {
 }
 
 /* Startup splash (the Meteor Mess Games logo with the twinkling stars): twinkling bell sparkles play over it. They run only
- * while the splash is up (it can be skipped), over the otherwise silenced game, and follow the Sound FX volume. */
+ * while the splash is up (it can be skipped), over the otherwise silenced game, and follow the Music volume (level matched to the logo screen after it). */
 static volatile int s_splash_sfx_pos = -1;   /* samples played, -1 = idle */
 static volatile int s_splash_sfx_mixed = 0;  /* samples actually mixed into the output (logged when the splash ends) */
 
@@ -2096,7 +2096,7 @@ static void splash_step(void) {
         s_splash_sfx_pos = -1;
         {
             char v[96];
-            snprintf(v, sizeof v, "twinkles: %d samples mixed, Sound FX %d%%", s_splash_sfx_mixed, s_sfx_vol);
+            snprintf(v, sizeof v, "twinkles: %d samples mixed, Music %d%%", s_splash_sfx_mixed, s_music_vol);
             menu_log("splash end", v);
         }
     }
@@ -3252,9 +3252,12 @@ static void menu_audio_mix(void *ctx, int16_t *samples, size_t count) {
     if (spos >= 0 && s_splash_state == 1) {
         int slen;
         const int16_t *sj = splash_sfx(&slen);
-        int gain = s_sfx_vol <= 0 ? 0 : s_sfx_vol < 60 ? 60 : s_sfx_vol;   /* a quiet Sound FX setting would bury the sparkles: floor of 60% (0 stays silent) */
+        /* Level: it follows the Music volume, matched to the logo screen that comes after the splash. Measured at Music 100%:
+         * that screen's music is about 700 RMS, the twinkle buffer is about 3400 RMS, and the target is a bit louder than the
+         * logo screen (1.2x): 700 * 1.2 / 3400 = 0.247 of the buffer per 100% Music (0 stays silent). */
+        float scale = s_music_vol * 0.00247f;
         for (size_t i = 0; i < count && spos < slen; i++, spos++) {
-            int m = samples[i] + sj[spos] * gain / 100;
+            int m = samples[i] + (int)(sj[spos] * scale);
             samples[i] = (int16_t)(m > 32767 ? 32767 : m < -32768 ? -32768 : m);
             s_splash_sfx_mixed++;
         }
