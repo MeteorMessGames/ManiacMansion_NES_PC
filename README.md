@@ -13,9 +13,11 @@ Get `ManiacMansion_NES_PC_win64.zip` from the [latest release](https://github.co
 - **Point and click.** The mouse drives the game cursor over the whole screen (in play it stops at the top of the room, out of the text lines).
   - **Left click** walks, picks verbs and items (an object with no verb picked = GO TO).
   - **Right click** does the obvious thing with the object under the cursor: GET what can be taken, OPEN/CLOSE doors, READ signs, PUSH/PULL, TURN ON/OFF, USE. The sentence line previews it while you hover ("READ SIGN"). Right click also skips cutscenes.
+    - Switchable things flip between TURN ON and TURN OFF by their state (the Victrola and the water faucet track it).
+    - Some things stay plain GO TO (the front-hall gargoyles, the front-yard bushes), and paintings, posters and charts never default to OPEN/CLOSE.
   - **Middle click** opens the **in-game save menu**: the game's own Save game / Restore saved game / New game screen (Start on the NES pad).
   - Two-step commands still work the classic way: pick a verb, then the object(s).
-- **Mouse wheel** scrolls the inventory.
+- **Mouse wheel** scrolls the inventory, one notch at a time and only while the verb bar is up.
 - **Click to skip text:** a left click skips the current message page when you click above the room, and any time during a cutscene (and on the logo and title screens). Right click, Enter and Space still skip cutscenes.
 - **Startup splash:** the Meteor Mess Games logo has twinkling stars, and bell-like twinkles play with them (any key or click skips it; turn it off with `Splash = 0` in `config.ini`).
 - **Pause menu (Esc):** Resume, Save State and Load State (10 slots with screenshots, scrolling list; a toast confirms each save and load), Options, Exit. The sound is silenced while it is open. Closing the window or choosing Exit Game asks first when you have unsaved progress (in-game, not a system dialog): save to a slot and exit, exit without saving, or cancel. With nothing unsaved it just exits.
@@ -71,6 +73,8 @@ The port hooks the game at a few ROM sites (listed in `game.toml`, each checked 
 - **Joypad reads**: mouse buttons become A / B / Start, written the way the ROM latches them (on the rising edge only).
 - **Cursor clamp** (`$9539`): restores the mouse position after the game clamps its cursor, so it reaches the screen edges (and, in play, stops at the room's first line).
 - **Game save** (`$9659`): mirrors the battery save into this session's save-state slot (first save: an empty slot).
+- **Audio mix**: the Esc menu silences the game's sound; the startup-splash twinkles are mixed in here.
+- **Controller**: read through SDL's game controller API (the runner's own pad mapping is bypassed by the joypad hook).
 
 The context verb comes from reading the room's object tables and each object's SCUMM v2 verb scripts (for example, whether its GET script really picks it up). The click is then replayed through the game's own verb/sentence variables, so the game runs the command itself.
 
@@ -80,6 +84,9 @@ Main files:
 |---|---|
 | `mouse_cursor_hook.c` | Input, context verbs, pause menu, options, save slots, audio routing |
 | `menu_render.c` | Menu drawing (stb_truetype + embedded DejaVu Sans Bold) |
+| `splash_sfx.c` | The splash twinkles, synthesized at startup (no sample data) |
+| `update_check.c` | The launch-time update check (background thread) |
+| `runner-patches/`, `BUILDING.md` | The NESRecomp patch and the build-from-source guide |
 | `crt_gpu.c`, `crt_filter.c` | CRT filters and the TV-shape sharp scaler, GPU and CPU versions |
 | `romless_native.c.in` | Stand-in for the generated code in the release build (ROM hashes and hook sites only; finds the ROM next to the exe) |
 | `game.toml` | Hook sites and their CRCs |
