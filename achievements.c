@@ -5,6 +5,14 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#ifndef MM_SIM
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <unistd.h>
+#include <sys/stat.h>
+#endif
+#endif
 
 #define QMAX 64
 
@@ -51,8 +59,108 @@ static uint32_t id_hash(const char *id)   /* FNV-1a */
     return h;
 }
 
+static size_t build_payload(uint8_t *out)   /* "MMA1" + one signed 16-byte record per earned achievement */
+{
+    size_t n = 0;
+    memcpy(out, "MMA1", 4); n = 4;
+    for (int i = 0; i < ACH_COUNT; i++) {
+        if (!s_got[i]) continue;
+        wr32(out + n, id_hash(k_ach[i].id));
+        wr32(out + n + 4, (uint32_t)s_when[i]);
+        wr64(out + n + 8, siphash8(out + n));
+        n += 16;
+    }
+    return n;
+}
+
+static void load_payload(const uint8_t *p, size_t n)
+{
+    if (n < 4 || memcmp(p, "MMA1", 4)) return;
+    for (size_t o = 4; o + 16 <= n; o += 16) {
+        if (rd64(p + o + 8) != siphash8(p + o)) continue;            /* tampered or not ours: ignore */
+        uint32_t h = rd32(p + o);
+        for (int i = 0; i < ACH_COUNT; i++)
+            if (id_hash(k_ach[i].id) == h) { s_got[i] = true; s_when[i] = (time_t)rd32(p + o + 4); }
+    }
+}
+
+#ifndef MM_SIM
+/* ---- Unlocks stored inside the program itself (release builds) ----
+ * There is no unlock file to edit. The list lives in a reserved block of the executable's data (s_blob):
+ * a 16-byte marker, a 2-byte length, then the signed payload above. Loading just reads the block from memory.
+ * Saving rewrites the executable: a copy with the new block is written next to it, the running file is renamed
+ * out of the way and the copy takes its name (both Windows and Linux allow renaming a running program). If anything
+ * fails the unlocks simply stay in memory for the session. Replacing the exe with a new release starts fresh. */
+#define BLOB_MARK 16
+#define BLOB_CAP  2048
+static unsigned char s_blob[BLOB_MARK + 2 + BLOB_CAP] __attribute__((used)) = {
+    'M', 'M', 'A', 'x', 'U', 'N', 'L', 'K', 0x6E, 0x21, 0xB4, 0x9D, 0x53, 0xF0, 0x08, 0xC7 };
+
+static bool exe_path(char *out, size_t n)
+{
+#ifdef _WIN32
+    DWORD k = GetModuleFileNameA(NULL, out, (DWORD)n);
+    return k > 0 && k < n;
+#else
+    ssize_t k = readlink("/proc/self/exe", out, n - 1);
+    if (k <= 0) return false;
+    out[k] = 0;
+    return true;
+#endif
+}
+
+static bool persist_exe(void)
+{
+    char path[1100], tmp[1110], old[1110];
+    if (!exe_path(path, sizeof path)) return false;
+    snprintf(tmp, sizeof tmp, "%s.new", path);
+    snprintf(old, sizeof old, "%s.old", path);
+    uint8_t pay[BLOB_CAP];
+    size_t pn = build_payload(pay);
+    if (pn > BLOB_CAP) return false;
+    FILE *f = fopen(path, "rb");
+    if (!f) return false;
+    fseek(f, 0, SEEK_END);
+    long sz = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (sz <= 0) { fclose(f); return false; }
+    uint8_t *buf = (uint8_t *)malloc((size_t)sz);
+    if (!buf || fread(buf, 1, (size_t)sz, f) != (size_t)sz) { free(buf); fclose(f); return false; }
+    fclose(f);
+    long at = -1;
+    for (long i = 0; i + BLOB_MARK + 2 + BLOB_CAP <= sz; i++)
+        if (buf[i] == s_blob[0] && !memcmp(buf + i, s_blob, BLOB_MARK)) { at = i; break; }
+    if (at < 0) { free(buf); return false; }
+    uint8_t *blk = buf + at + BLOB_MARK;
+    memset(blk, 0, 2 + BLOB_CAP);
+    blk[0] = (uint8_t)(pn & 0xFF); blk[1] = (uint8_t)(pn >> 8);
+    memcpy(blk + 2, pay, pn);
+    f = fopen(tmp, "wb");
+    bool ok = f && fwrite(buf, 1, (size_t)sz, f) == (size_t)sz;
+    if (f) ok = (fclose(f) == 0) && ok;
+    free(buf);
+    if (!ok) { remove(tmp); return false; }
+#ifdef _WIN32
+    if (!MoveFileExA(path, old, MOVEFILE_REPLACE_EXISTING)) { remove(tmp); return false; }
+    if (!MoveFileExA(tmp, path, MOVEFILE_REPLACE_EXISTING)) { MoveFileExA(old, path, MOVEFILE_REPLACE_EXISTING); return false; }
+#else
+    struct stat st;
+    if (stat(path, &st) == 0) chmod(tmp, st.st_mode);
+    if (rename(tmp, path) != 0) { remove(tmp); return false; }
+#endif
+    memset(s_blob + BLOB_MARK, 0, 2 + BLOB_CAP);               /* keep the in-memory copy in step */
+    s_blob[BLOB_MARK] = (uint8_t)(pn & 0xFF); s_blob[BLOB_MARK + 1] = (uint8_t)(pn >> 8);
+    memcpy(s_blob + BLOB_MARK + 2, pay, pn);
+    return true;
+}
+#endif
+
 static void save_file(void)
 {
+#ifndef MM_SIM
+    persist_exe();
+    return;
+#endif
     if (!s_path[0]) return;
     FILE *f = fopen(s_path, "wb");
     if (!f) return;
@@ -70,6 +178,19 @@ static void save_file(void)
 
 void ach_init(const char *dir)
 {
+#ifndef MM_SIM
+    (void)dir;
+    {   /* tidy up leftovers of the last rewrite of the executable */
+        char path[1100], x[1110];
+        if (exe_path(path, sizeof path)) {
+            snprintf(x, sizeof x, "%s.old", path); remove(x);
+            snprintf(x, sizeof x, "%s.new", path); remove(x);
+        }
+    }
+    size_t n = (size_t)s_blob[BLOB_MARK] | ((size_t)s_blob[BLOB_MARK + 1] << 8);
+    if (n <= BLOB_CAP) load_payload(s_blob + BLOB_MARK + 2, n);
+    return;
+#endif
     snprintf(s_path, sizeof s_path, "%sManiacMansion.achievements", dir ? dir : "");
     FILE *f = fopen(s_path, "rb");
     if (!f) return;
@@ -86,12 +207,20 @@ void ach_init(const char *dir)
     fclose(f);
 }
 
+/* Forget every unlock (the menu's "Reset all achievements"). */
+void ach_reset_all(void)
+{
+    for (int i = 0; i < ACH_COUNT; i++) { s_got[i] = false; s_when[i] = 0; s_hold[i] = 0; }
+    s_qhead = s_qtail = 0;
+    save_file();
+}
+
 int         ach_count(void)         { return ACH_COUNT; }
 const char *ach_name(int i)         { return i >= 0 && i < ACH_COUNT ? k_ach[i].name : ""; }
 const char *ach_desc(int i)         { return i >= 0 && i < ACH_COUNT ? k_ach[i].desc : ""; }
 int         ach_points(int i)       { return i >= 0 && i < ACH_COUNT ? k_ach[i].points : 0; }
-int         ach_rarity(int i)       { int p = ach_points(i); return p < 5 ? 0 : p < 10 ? 1 : 2; }
-const char *ach_rarity_name(int t)  { static const char *const n[3] = { "Common", "Rare", "Epic" }; return n[t < 0 ? 0 : t > 2 ? 2 : t]; }
+int         ach_rarity(int i)       { return i >= 0 && i < ACH_COUNT ? k_ach[i].rarity : 0; }
+const char *ach_rarity_name(int t)  { static const char *const n[4] = { "Common", "Rare", "Epic", "Legendary" }; return n[t < 0 ? 0 : t > 3 ? 3 : t]; }
 bool        ach_hidden(int i)       { return i >= 0 && i < ACH_COUNT && k_ach[i].hidden; }
 bool        ach_unlocked(int i)     { return i >= 0 && i < ACH_COUNT && s_got[i]; }
 

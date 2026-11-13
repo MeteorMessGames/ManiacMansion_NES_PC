@@ -602,6 +602,8 @@ static const char *const k_menu_rows[MI_COUNT] = { "Resume Game", "Save State", 
  * single-file ManiacMansion.state is no longer used (any snapshot only
  * loads in the exe that wrote it anyway). */
 enum { MODE_MAIN, MODE_SAVE, MODE_LOAD, MODE_DISPLAY, MODE_QUIT, MODE_ACH, MODE_DBG };
+static void display_toast(const char *what, const char *value);
+static uint32_t s_ach_reset_until = 0;   /* tick until which "Reset all achievements" is armed (second press confirms) */
 #define NUM_SLOTS 10
 #define ACH_ROWS_VISIBLE 5    /* achievement list rows on screen (two lines each) */
 #define SLOT_ROWS_VISIBLE 7   /* slot list rows on screen; the rest scroll (wheel, Up/Down) */
@@ -681,14 +683,16 @@ static const char *const k_trophy_art[19] = {
     "..DDDDDDDDDD.."
 };
 
-/* Trophy colours by rarity: Common = bronze, Rare = silver, Epic = gold. */
+/* Trophy colours by rarity: Common = bronze, Rare = silver, Epic = purple, Legendary = gold. */
+#define RARITY_GOLD 3
 static void rarity_colors(int tier, uint32_t *body, uint32_t *shine, uint32_t *edge) {
-    static const uint32_t k[3][3] = {
+    static const uint32_t k[4][3] = {
         { 0xD08A4E, 0xF0BE8A, 0x8A4F1F },   /* bronze */
         { 0xC4CAD6, 0xF2F5FA, 0x7C8494 },   /* silver */
+        { 0xB57AFF, 0xE2CCFF, 0x6A3FB5 },   /* purple */
         { 0xFFD25A, 0xFFF0A8, 0xB5771C },   /* gold */
     };
-    if (tier < 0) tier = 0; else if (tier > 2) tier = 2;
+    if (tier < 0) tier = 0; else if (tier > 3) tier = 3;
     *body = k[tier][0]; *shine = k[tier][1]; *edge = k[tier][2];
 }
 
@@ -712,7 +716,7 @@ static void small_text(uint32_t *buf, int cw, int ch, int x, int y, int k, uint3
                         }
     }
 }
-static int s_ach_tier = 2;   /* rarity of the achievement being shown */
+static int s_ach_tier = RARITY_GOLD;   /* colour tier of the banner being shown */
 static int s_ach_cx = 0;   /* banner center in native px, latched when the unlock fires (0 = frame center) */
 static void ach_toast_draw(uint32_t *buf, int cw, int ch, const char *text)
 {
@@ -863,7 +867,7 @@ static void slot_time_text(int slot, char *out, size_t n) {
 static int menu_row_count(void) {
     if (s_menu_mode == MODE_DISPLAY) return DI_COUNT;
     if (s_menu_mode == MODE_QUIT) return 3;
-    if (s_menu_mode == MODE_ACH) return ach_count() + 1;
+    if (s_menu_mode == MODE_ACH) return ach_count() + 2;   /* the list, "Reset all achievements", Back */
     if (s_menu_mode != MODE_MAIN) return NUM_SLOTS + 1;
     return MI_COUNT;
 }
@@ -973,6 +977,7 @@ static void menu_status(const char *msg, uint32_t rgb) {
 
 static void menu_set_mode(int mode) {
     s_menu_mode = mode;
+    s_ach_reset_until = 0;
     s_menu_hover = -1;
     s_menu_scroll = 0;
     s_confirm_slot = -1;
@@ -1121,7 +1126,15 @@ static void menu_activate(int item) {
         return;
     }
     if (s_menu_mode == MODE_ACH) {
-        if (item >= ach_count()) menu_back();
+        if (item == ach_count()) {   /* Reset all achievements: press twice within 4 seconds */
+            if (SDL_GetTicks() < s_ach_reset_until) {
+                s_ach_reset_until = 0;
+                ach_reset_all();
+                display_toast("Achievements", "all reset");
+            } else {
+                s_ach_reset_until = SDL_GetTicks() + 4000;
+            }
+        } else if (item > ach_count()) menu_back();
         return;
     }
     if (s_menu_mode != MODE_MAIN) {
@@ -1519,7 +1532,7 @@ static const uint32_t *menu_present(void *ctx, int *w, int *h) {
         bool hov = i == s_menu_hover;
         bool ach_row = s_menu_mode == MODE_ACH && i < ach_count();
         if (ach_row)   /* earned = warm gold card, not yet earned = grey card */
-            mr_round_rect(d, pw, ph, L.pad / 2, y0, L.sw - L.pad, L.item_h, (int)(4 * u), ach_unlocked(i) ? (ach_rarity(i) == 0 ? 0x5A3A1E : ach_rarity(i) == 1 ? 0x454B5C : 0x6B5414) : 0x262830, 235);
+            mr_round_rect(d, pw, ph, L.pad / 2, y0, L.sw - L.pad, L.item_h, (int)(4 * u), ach_unlocked(i) ? (ach_rarity(i) == 0 ? 0x5A3A1E : ach_rarity(i) == 1 ? 0x454B5C : ach_rarity(i) == 2 ? 0x45296B : 0x6B5414) : 0x262830, 235);
         if (sel) {
             mr_round_rect(d, pw, ph, L.pad / 2, y0, L.sw - L.pad, L.item_h, (int)(4 * u), 0x2C6FE0, ach_row ? 95 : 215);
         } else if (hov) {
@@ -1566,7 +1579,11 @@ static const uint32_t *menu_present(void *ctx, int *w, int *h) {
         if (s_menu_mode == MODE_ACH) {
             if (i >= ach_count()) {
                 float bpx = 7.5f * u;
-                mr_text(d, pw, ph, L.pad + (int)(6 * u), y0 + (int)((L.item_h - bpx) / 2), bpx, fg, 255, "Back");
+                bool reset_row = i == ach_count();
+                bool armed = reset_row && SDL_GetTicks() < s_ach_reset_until;
+                const char *label = !reset_row ? "Back" : armed ? "Press again to erase ALL achievements" : "Reset all achievements";
+                mr_text(d, pw, ph, L.pad + (int)(6 * u), y0 + (int)((L.item_h - bpx) / 2), fit_px(bpx, L.sw - 2 * L.pad - (int)(12 * u), label),
+                        armed ? 0xFF7070 : fg, 255, label);
                 continue;
             }
             bool got = ach_unlocked(i);
@@ -2102,7 +2119,7 @@ static void achievements_step(void) {
             snprintf(s_toast_text, sizeof s_toast_text, "ACHIEVEMENT UNLOCKED\n%s\n%s", ach_name(a), ach_desc(a));
             for (char *c = s_toast_text; *c; c++) if (*c >= 'a' && *c <= 'z') *c = (char)(*c - 32);
             s_toast_frames = 240;
-            s_ach_tier = 2;   /* the unlock banner is always gold, whatever the rarity */
+            s_ach_tier = RARITY_GOLD;   /* the unlock banner is always gold, whatever the rarity */
             { int ry0, ry1, rx0, rx1; s_ach_cx = room_extent(&ry0, &ry1, &rx0, &rx1) ? (rx0 + rx1 + 1) / 2 : 0; }
             s_chime_pos = 0;
             menu_log("achievement", ach_name(a));
