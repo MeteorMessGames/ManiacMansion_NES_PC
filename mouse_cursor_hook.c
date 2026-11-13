@@ -80,6 +80,7 @@
  * press.
  */
 #include "update_check.h"
+#include "arcade_sfx.h"
 #include "mod_function_hooks.h"
 #include "mod_runtime.h"
 #include "cpu6502.h"
@@ -2029,6 +2030,18 @@ static void display_save_settings(void *ctx, FILE *f) {
             s_filter == FILTER_CRT_STRONG ? 4 : s_filter == FILTER_CRT ? 2 : 0, s_music_vol, s_sfx_vol, s_scale, s_aspect, s_splash_enabled ? 1 : 0, s_update_check ? 1 : 0, s_mouse_speed, s_pad_speed);
 }
 
+/* Meteor Mess screen (room 39, shown for a few seconds when the arcade game is switched on): play a short
+ * chiptune jingle over it. Starts on entering the room, stops when the room changes; follows Sound FX volume. */
+static volatile int s_arcade_pos = -1;   /* samples played of the jingle, -1 = idle */
+static void arcade_step(void) {
+    static int prev_room = -1;
+    if (s_splash_state == 1 || !s_game_started) return;
+    int room = wram(0x63C5);
+    if (room == 39 && prev_room != 39) { s_arcade_pos = 0; menu_log("arcade jingle", "Meteor Mess"); }
+    else if (room != 39) s_arcade_pos = -1;
+    prev_room = room;
+}
+
 /* Update check: start once the game is on screen, then toast if GitHub has a newer release. */
 static void update_step(void) {
     static bool started = false, shown = false;
@@ -2089,7 +2102,7 @@ static void achievements_step(void) {
             snprintf(s_toast_text, sizeof s_toast_text, "ACHIEVEMENT UNLOCKED\n%s\n%s", ach_name(a), ach_desc(a));
             for (char *c = s_toast_text; *c; c++) if (*c >= 'a' && *c <= 'z') *c = (char)(*c - 32);
             s_toast_frames = 240;
-            s_ach_tier = ach_rarity(a);
+            s_ach_tier = 2;   /* the unlock banner is always gold, whatever the rarity */
             { int ry0, ry1, rx0, rx1; s_ach_cx = room_extent(&ry0, &ry1, &rx0, &rx1) ? (rx0 + rx1 + 1) / 2 : 0; }
             s_chime_pos = 0;
             menu_log("achievement", ach_name(a));
@@ -2109,6 +2122,7 @@ static void menu_frame_end(void *ctx) {
     display_frame_end();
     follow_game_save();
     update_step();
+    arcade_step();
     achievements_step();
     if (s_menu_req_back) {
         s_menu_req_back = false;
@@ -2682,6 +2696,9 @@ static uint8_t real_mouse_buttons(void) {
         if (find_cursor_oam(&cya, &cxa) && *ram_byte(cya) < 0xEF) s_game_started = game_started = true;
     }
     if (rmb) out |= game_started ? BTN_A : BTN_START;
+    /* click-to-skip from the very first screen: before the cursor has ever appeared (logo, credits, title) a left
+     * click skips like a right click does */
+    if (lmb && !game_started) out = (uint8_t)((out & ~BTN_A) | BTN_START);   /* Start alone: A|Start doesn't skip */
     /* 2026-11-09: middle button = Start (user request): in gameplay that
      * opens the game's own menu (save/load/new kids), like the NES pad. */
     if (mmb) out |= BTN_START;
@@ -2700,7 +2717,10 @@ static uint8_t real_mouse_buttons(void) {
         skip_prev = lmb;
         uint8_t *a8 = ram_byte(0xA8), *aa = ram_byte(0xAA), *ab = ram_byte(0xAB);
         uint8_t *cy = cart_ram_byte(0x7118);
-        if ((fresh || pad_skip) && game_started && a8 && aa && ab && *a8 != 0 && (*aa | *ab) != 0) {
+        /* only once the kids are chosen: the kid-select screen keeps its message (and an armed override) up
+         * while you pick, and a click there must select, not skip */
+        bool in_play = wram(0x6130) != 0 && wram(0x6131) != 0 && wram(0x63C5) != 45;
+        if ((fresh || pad_skip) && game_started && in_play && a8 && aa && ab && *a8 != 0 && (*aa | *ab) != 0) {
             bool in_text_band = cy && *cy <= 38;   /* the cursor stops at the room top, so a click above the room lands here */
             bool cutscene = wram(0x6D3C) != 0 || wram(0x6B06) != 0 || wram(0x6B07) != 0;
             if (in_text_band || cutscene || pad_skip) {
@@ -2763,7 +2783,15 @@ static uint8_t real_mouse_buttons(void) {
         uint8_t *ego = cart_ram_byte(0x6100), *ovl = cart_ram_byte(0x6B06), *ovh = cart_ram_byte(0x6B07);
         /* only while the verb bar is up (cutscenes and room loads hide it): forcing an inventory redraw in the middle
          * of a scene change scrambled the palette and hung the game */
-        if (w && game_started && sc && rd && ego && ovl && ovh && !(*ovl | *ovh) && (wram(0x6B0A) & 0x80) && !ctx_script_running(4)) {
+        /* One notch at a time, and only when the PPU job queue is idle, no redraw is pending and no message is being
+         * typed: a burst of notches (or a redraw forced while the game is redrawing the sentence line) queued PPU
+         * jobs on top of each other and left the screen scrambled, the palette wrong and the game frozen. */
+        bool ppu_idle = rd && wram(0x6EBC) == wram(0x6EBD) && !(wram(0x6EFF) & 3) && !(*rd & 0xE0) &&
+                        ram_byte(0xA8) && *ram_byte(0xA8) == 0;
+        bool wheel_ok = w && game_started && sc && rd && ego && ovl && ovh && !(*ovl | *ovh) && (wram(0x6B0A) & 0x80) && !ctx_script_running(4);
+        if (wheel_ok && ppu_idle) {
+            int dir = w > 0 ? 1 : -1;
+            w -= dir;
             int count = 0;
             for (int i = 0; i < 0x3C; i++) {
                 /* like b00:$93D7: X = $6260[i] (object slot), owner = $660A[X] & $0F */
@@ -2774,10 +2802,11 @@ static uint8_t real_mouse_buttons(void) {
             }
             int m = count > 2 ? count - 2 : 0;
             int v = *sc;
-            for (; w > 0; w--) v = v - 2 < 0 ? 0 : v - 2;
-            for (; w < 0; w++) if (v < m) { v += 2; if (v > m) v = (m + 1) & 0xFE; }
+            if (dir > 0) v = v - 2 < 0 ? 0 : v - 2;
+            else if (v < m) { v += 2; if (v > m) v = (m + 1) & 0xFE; }
             if (v != *sc) { *sc = (uint8_t)v; *rd |= 0xE0; }
         }
+        if (wheel_ok && w) { s_inv_wheel += w; if (s_inv_wheel > 6) s_inv_wheel = 6; else if (s_inv_wheel < -6) s_inv_wheel = -6; }   /* keep the rest for later frames */
     }
 
     /* 2026-11-09: context RMB. On a fresh RMB press in gameplay that is still
@@ -3191,6 +3220,16 @@ static void menu_audio_mix(void *ctx, int16_t *samples, size_t count) {
     (void)ctx;
     if (s_menu_open || s_splash_state == 1) memset(samples, 0, count * sizeof samples[0]);
     /* Achievement unlock sound (achievement_sfx.h, 48 kHz mono), follows the Sound FX volume. */
+    int apos = s_arcade_pos;   /* Meteor Mess jingle: holds while the pause menu is up */
+    if (apos >= 0 && !s_menu_open) {
+        int alen;
+        const int16_t *aj = arcade_sfx(&alen);
+        for (size_t i = 0; i < count && apos < alen; i++, apos++) {
+            int m = samples[i] + aj[apos] * s_sfx_vol / 100;
+            samples[i] = (int16_t)(m > 32767 ? 32767 : m < -32768 ? -32768 : m);
+        }
+        s_arcade_pos = apos >= alen ? -1 : apos;
+    }
     int pos = s_chime_pos;
     if (pos < 0) return;
     for (size_t i = 0; i < count && pos < ACH_SFX_LEN; i++, pos++) {
