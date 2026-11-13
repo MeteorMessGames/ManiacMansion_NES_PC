@@ -96,7 +96,7 @@ ACHIEVEMENTS
 There are 38. Esc -> Achievements lists them; each is rated by how
 complicated it is to earn:
   Common     bronze   5 points
-  Rare       green    10 points
+  Rare       silver   10 points
   Epic       purple   20 points
   Legendary  gold     40 points
 A few are secret and show as ??? until you earn them. A banner and a sound
