@@ -2194,14 +2194,12 @@ static bool has_verb(const uint8_t *v, int n, uint8_t want) {
  * Overrides only apply if the object actually has that verb. */
 static const struct { uint16_t obj; uint8_t verb; } k_ctx_overrides[] = {
     { 0x0036, V_GET },    /* door mat: user choice (its GET is a joke reply; PULL finds the key) */
-    { 0x0232, V_PULL },   /* bushes (front yard, hide the grating) */
-    { 0x0115, V_PULL },   /* bushes (other side) */
 };
 
 static uint8_t ctx_choose_verb(int slot, const uint8_t *v, int n) {
     uint16_t obj = (uint16_t)((wram((uint16_t)(0x64CF + slot)) << 8) | wram((uint16_t)(0x64F2 + slot)));
-    /* The front hall gargoyles: no default verb, a right click is just GO TO. */
-    if (obj == 0x015F || obj == 0x0161) return V_GOTO;
+    /* The front hall gargoyles and the front yard bushes: no default verb, a right click is just GO TO. */
+    if (obj == 0x015F || obj == 0x0161 || obj == 0x0232 || obj == 0x0115) return V_GOTO;
     /* User rule: anything that can actually be picked up defaults to GET. */
     if (has_verb(v, n, V_GET) && ctx_get_picks_up(slot)) return V_GET;
     /* mailbox flag (front yard, left edge): user rule, PULL it up when it is
