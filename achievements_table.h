@@ -20,7 +20,7 @@ static const AchDef k_ach[] = {
   { "meteor_mess", "Quarter Muncher", "Play Meteor Mess.", 5, 1, { {0x63C5, 0xFF, ACH_EQ, 0x27} }, 0, 0 },
   { "start_car", "Ignition", "Launch the Weird Edsel into space.", 10, 1, { {0x63C5, 0xFF, ACH_EQ, 0x2E} }, 0, 1 },
   { "green_fav_food", "Picky Eater", "Give Green Tentacle the one thing Green Tentacle loves.", 10, 6, { {0x6F0B, 0xFF, ACH_EQ, 0x57}, {0x6F0C, 0xFF, ACH_EQ, 0x4F}, {0x6F0D, 0xFF, ACH_EQ, 0x57}, {0x6F10, 0xFF, ACH_EQ, 0x4D}, {0x6F13, 0xFF, ACH_EQ, 0x66}, {0x6F1B, 0xFF, ACH_EQ, 0x21} }, 0, 1 },
-  { "green_other_food", "Not Picky Enough", "Keep Green Tentacle fed without his favorite dish.", 20, 3, { {0x6162, 0xFF, ACH_LEQ, 0x06}, {0x6162, 0xFF, ACH_GE, 0x07}, {0x6163, 0xFF, ACH_EQ, 0x01} }, 0, 2 },
+  { "green_other_food", "Not Picky Enough", "Keep Green Tentacle fed without his favorite dish.", 5, 3, { {0x6162, 0xFF, ACH_LEQ, 0x06}, {0x6162, 0xFF, ACH_GE, 0x07}, {0x6163, 0xFF, ACH_EQ, 0x01} }, 0, 0 },
   { "green_contract", "Rock Star Tentacle", "Get Green Tentacle signed.", 40, 1, { {0x6165, 0xFF, ACH_EQ, 0x03} }, 0, 3 },
   { "ed_plans", "Ed's Big Plan", "Get Weird Ed's plans in order.", 20, 2, { {0x615D, 0xFF, ACH_EQ, 0x01}, {0x619B, 0xFF, ACH_NE, 0x02} }, 0, 2 },
   { "purple_deal", "Closing The Deal", "Make Purple Tentacle an offer he cannot refuse.", 20, 1, { {0x6197, 0xFF, ACH_EQ, 0x01} }, 0, 2 },

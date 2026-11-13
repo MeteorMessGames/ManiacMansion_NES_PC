@@ -264,9 +264,19 @@ static bool cond_ok(AchRead rd, const AchCond *c, bool *latch)
     }
 }
 
+/* Boot, logo and title-screen RAM holds leftovers that satisfy single-variable triggers (Var[168] == 3 was true for the
+ * first seconds after launch and popped "An Interesting Development" on the first screen), so nothing is evaluated until
+ * a game is actually in play: a kid is ego, both kids are chosen and we are past the kid-select screen. */
+static bool in_play(AchRead rd)
+{
+    uint8_t ego = rd(0x6100), room = rd(0x63C5);
+    return ego >= 1 && ego <= 7 && rd(0x6130) != 0 && rd(0x6131) != 0 && room != 0 && room != 33 && room != 45 && room != 49;
+}
+
 void ach_poll(AchRead rd)
 {
     bool changed = false;
+    if (!in_play(rd)) { memset(s_hold, 0, sizeof s_hold); return; }
     for (int i = 0; i < ACH_COUNT; i++) {
         if (s_got[i] || !k_ach[i].nconds) continue;
         bool all = true;
