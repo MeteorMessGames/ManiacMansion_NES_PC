@@ -80,6 +80,7 @@
  * press.
  */
 #include "update_check.h"
+#include "arcade_sfx.h"
 #include "mod_function_hooks.h"
 #include "mod_runtime.h"
 #include "cpu6502.h"
@@ -1811,6 +1812,18 @@ static void display_save_settings(void *ctx, FILE *f) {
             s_filter == FILTER_CRT_STRONG ? 4 : s_filter == FILTER_CRT ? 2 : 0, s_music_vol, s_sfx_vol, s_scale, s_aspect, s_splash_enabled ? 1 : 0, s_update_check ? 1 : 0, s_mouse_speed, s_pad_speed);
 }
 
+/* Meteor Mess screen (room 39, shown for a few seconds when the arcade game is switched on): play a short
+ * chiptune jingle over it. Starts on entering the room, stops when the room changes; follows Sound FX volume. */
+static volatile int s_arcade_pos = -1;   /* samples played of the jingle, -1 = idle */
+static void arcade_step(void) {
+    static int prev_room = -1;
+    if (s_splash_state == 1 || !s_game_started) return;
+    int room = wram(0x63C5);
+    if (room == 39 && prev_room != 39) { s_arcade_pos = 0; menu_log("arcade jingle", "Meteor Mess"); }
+    else if (room != 39) s_arcade_pos = -1;
+    prev_room = room;
+}
+
 /* Update check: start once the game is on screen, then toast if GitHub has a newer release. */
 static void update_step(void) {
     static bool started = false, shown = false;
@@ -1866,6 +1879,7 @@ static void menu_frame_end(void *ctx) {
     display_frame_end();
     follow_game_save();
     update_step();
+    arcade_step();
     if (s_menu_req_back) {
         s_menu_req_back = false;
         if (s_menu_open && s_menu_mode != MODE_MAIN) menu_back();
@@ -2964,6 +2978,16 @@ static bool quit_request(void *ctx) {
 static void menu_audio_mix(void *ctx, int16_t *samples, size_t count) {
     (void)ctx;
     if (s_menu_open || s_splash_state == 1) memset(samples, 0, count * sizeof samples[0]);
+    int apos = s_arcade_pos;   /* Meteor Mess jingle: holds while the pause menu is up */
+    if (apos >= 0 && !s_menu_open) {
+        int alen;
+        const int16_t *aj = arcade_sfx(&alen);
+        for (size_t i = 0; i < count && apos < alen; i++, apos++) {
+            int m = samples[i] + aj[apos] * s_sfx_vol / 100;
+            samples[i] = (int16_t)(m > 32767 ? 32767 : m < -32768 ? -32768 : m);
+        }
+        s_arcade_pos = apos >= alen ? -1 : apos;
+    }
 }
 static const CycHostExtras s_extras = {
     .audio_mix = menu_audio_mix,

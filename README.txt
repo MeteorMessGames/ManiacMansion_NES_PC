@@ -35,12 +35,17 @@ Right click    Do the obvious thing with the object under the cursor:
 
 Middle click   In-game save menu: opens the game's own menu (Back to the
                Mansion / Save game / Restore saved game / New game), same as
-               Start on the NES pad.
+               Start on the NES pad. Middle click again inside that menu goes
+               back to the game.
 
 Mouse wheel    Scroll the inventory.
 
 Two-step commands still work the classic way: left click a verb
 (for example USE), then left click the object(s).
+
+Skipping text: left click above the room (the text lines) or during a
+cutscene to skip the current message. On the logo and title screens a left
+click skips too.
 
 
 CONTROLLER
@@ -84,6 +89,12 @@ Enter. Esc or right click goes back.
                 Volumes: drag or click the bar, or Left / Right in 5% steps.
   Exit Game     Asks first: Save to a slot and exit, Exit without saving, or
                 Cancel. Closing the window asks the same thing.
+
+
+METEOR MESS
+-----------
+Switching on the Meteor Mess arcade machine plays a short chiptune jingle over
+its high-score screen.
 
 
 SAVING

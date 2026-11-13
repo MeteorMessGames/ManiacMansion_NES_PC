@@ -16,6 +16,8 @@ Get `ManiacMansion_NES_PC_win64.zip` from the [latest release](https://github.co
   - **Middle click** opens the **in-game save menu**: the game's own Save game / Restore saved game / New game screen (Start on the NES pad).
   - Two-step commands still work the classic way: pick a verb, then the object(s).
 - **Mouse wheel** scrolls the inventory.
+- **Click to skip text:** a left click skips the current message page when you click above the room, and any time during a cutscene (and on the logo and title screens). Right click, Enter and Space still skip cutscenes.
+- **Meteor Mess:** a short chiptune jingle plays on the arcade machine's high-score screen.
 - **Pause menu (Esc):** Resume, Save State and Load State (10 slots with screenshots, scrolling list; a toast confirms each save and load), Options, Exit. The sound is silenced while it is open. Closing the window or choosing Exit Game asks first (in-game, not a system dialog): save to a slot and exit, exit without saving, or cancel.
 - **Options:** separate Music and Sound FX volume, fullscreen, filter, scale (Auto or a fixed 2x to 6x, for both filters), shape (square pixels or TV 4:3), mouse speed and key speed (cursor speed, 50% to 300%).
 - **Update check:** at launch the game asks GitHub once whether a newer release exists (a plain request in the background, nothing is sent about you) and shows a short notice if so. Turn it off with `UpdateCheck = 0` in `config.ini`.
@@ -33,7 +35,7 @@ The full player guide (controls, saving, tips) is in [README.txt](README.txt), w
 |---|---|
 | Left click | Walk, pick a verb or item (GO TO on objects); skips the current message when you click above the room or during a cutscene |
 | Right click | Context verb on the object under the cursor; skips cutscenes |
-| Middle click | In-game save menu (Save game / Restore / New game) |
+| Middle click | In-game save menu (Save game / Restore / New game); click again inside it to go back to the game |
 | Wheel | Scroll the inventory |
 
 ## Controller
@@ -57,6 +59,7 @@ The full player guide (controls, saving, tips) is in [README.txt](README.txt), w
 | F9 | Filter: Sharp / CRT / CRT Strong |
 | F11 | Fullscreen |
 | F12 | Screenshot |
+| Tab | Cycle the verb (Select) |
 | Z | A button (same as left click) |
 | Arrow keys | NES d-pad |
 
