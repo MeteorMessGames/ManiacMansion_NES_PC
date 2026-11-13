@@ -683,12 +683,12 @@ static const char *const k_trophy_art[19] = {
     "..DDDDDDDDDD.."
 };
 
-/* Trophy colours by rarity: Common = bronze, Rare = silver, Epic = purple, Legendary = gold. */
+/* Trophy colours by rarity: Common = bronze, Rare = green, Epic = purple, Legendary = gold (silver looked like the grey of a locked one). */
 #define RARITY_GOLD 3
 static void rarity_colors(int tier, uint32_t *body, uint32_t *shine, uint32_t *edge) {
     static const uint32_t k[4][3] = {
         { 0xD08A4E, 0xF0BE8A, 0x8A4F1F },   /* bronze */
-        { 0xC4CAD6, 0xF2F5FA, 0x7C8494 },   /* silver */
+        { 0x57D07A, 0xC4F5D0, 0x2B8A48 },   /* green */
         { 0xB57AFF, 0xE2CCFF, 0x6A3FB5 },   /* purple */
         { 0xFFD25A, 0xFFF0A8, 0xB5771C },   /* gold */
     };
@@ -1532,7 +1532,7 @@ static const uint32_t *menu_present(void *ctx, int *w, int *h) {
         bool hov = i == s_menu_hover;
         bool ach_row = s_menu_mode == MODE_ACH && i < ach_count();
         if (ach_row)   /* earned = warm gold card, not yet earned = grey card */
-            mr_round_rect(d, pw, ph, L.pad / 2, y0, L.sw - L.pad, L.item_h, (int)(4 * u), ach_unlocked(i) ? (ach_rarity(i) == 0 ? 0x5A3A1E : ach_rarity(i) == 1 ? 0x454B5C : ach_rarity(i) == 2 ? 0x45296B : 0x6B5414) : 0x262830, 235);
+            mr_round_rect(d, pw, ph, L.pad / 2, y0, L.sw - L.pad, L.item_h, (int)(4 * u), ach_unlocked(i) ? (ach_rarity(i) == 0 ? 0x5A3A1E : ach_rarity(i) == 1 ? 0x23503A : ach_rarity(i) == 2 ? 0x45296B : 0x6B5414) : 0x262830, 235);
         if (sel) {
             mr_round_rect(d, pw, ph, L.pad / 2, y0, L.sw - L.pad, L.item_h, (int)(4 * u), 0x2C6FE0, ach_row ? 95 : 215);
         } else if (hov) {
@@ -1589,7 +1589,7 @@ static const uint32_t *menu_present(void *ctx, int *w, int *h) {
             bool got = ach_unlocked(i);
             uint32_t rc_body, rc_shine, rc_edge;
             rarity_colors(ach_rarity(i), &rc_body, &rc_shine, &rc_edge);
-            {   /* trophy: rarity colour when earned (bronze / silver / gold), grey when not */
+            {   /* trophy: rarity colour when earned (bronze / green / purple / gold), grey when not */
                 int ps = (int)(u * 0.7f) > 1 ? (int)(u * 0.7f) : 1;
                 int tx = L.pad + (int)(4 * u), ty0 = y0 + (L.item_h - 19 * ps) / 2;
                 for (int ty = 0; ty < 19; ty++)
