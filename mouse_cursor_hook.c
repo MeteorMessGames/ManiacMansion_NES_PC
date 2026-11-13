@@ -2452,9 +2452,11 @@ static bool ctx_is_artwork(uint16_t obj) {
 }
 
 static uint8_t ctx_choose_verb(int slot, const uint8_t *v, int n) {
+    uint16_t obj = (uint16_t)((wram((uint16_t)(0x64CF + slot)) << 8) | wram((uint16_t)(0x64F2 + slot)));
+    /* The front hall gargoyles: no default verb, a right click is just GO TO. */
+    if (obj == 0x015F || obj == 0x0161) return V_GOTO;
     /* User rule: anything that can actually be picked up defaults to GET. */
     if (has_verb(v, n, V_GET) && ctx_get_picks_up(slot)) return V_GET;
-    uint16_t obj = (uint16_t)((wram((uint16_t)(0x64CF + slot)) << 8) | wram((uint16_t)(0x64F2 + slot)));
     /* mailbox flag (front yard, left edge): user rule, PULL it up when it is
      * down, PUSH it down when it is up (state bit $80 = up) */
     if (obj == 0x0231 && has_verb(v, n, V_PULL) && has_verb(v, n, V_PUSH))
@@ -2466,9 +2468,12 @@ static uint8_t ctx_choose_verb(int slot, const uint8_t *v, int n) {
     bool art = ctx_is_artwork(obj);
     if (!art && has_verb(v, n, V_OPEN) && has_verb(v, n, V_CLOSE)) return on ? V_CLOSE : V_OPEN;
     if (!art && has_verb(v, n, V_OPEN)) return V_OPEN;
+    /* switchable things (lamps, radios, machines): while ON the default is TURN OFF, while OFF it is TURN ON,
+     * ahead of PUSH / PULL */
+    if (has_verb(v, n, V_TURN_ON) && has_verb(v, n, V_TURN_OFF)) return on ? V_TURN_OFF : V_TURN_ON;
+    if (on && has_verb(v, n, V_TURN_OFF)) return V_TURN_OFF;
     if (has_verb(v, n, V_PUSH)) return V_PUSH;
     if (has_verb(v, n, V_PULL)) return V_PULL;
-    if (has_verb(v, n, V_TURN_ON) && has_verb(v, n, V_TURN_OFF)) return on ? V_TURN_OFF : V_TURN_ON;
     if (has_verb(v, n, V_TURN_ON)) return V_TURN_ON;
     if (has_verb(v, n, V_READ)) return V_READ;
     if (has_verb(v, n, V_USE)) return V_USE;
@@ -2789,7 +2794,10 @@ static uint8_t real_mouse_buttons(void) {
         bool ppu_idle = rd && wram(0x6EBC) == wram(0x6EBD) && !(wram(0x6EFF) & 3) && !(*rd & 0xE0) &&
                         ram_byte(0xA8) && *ram_byte(0xA8) == 0;
         bool wheel_ok = w && game_started && sc && rd && ego && ovl && ovh && !(*ovl | *ovh) && (wram(0x6B0A) & 0x80) && !ctx_script_running(4);
-        if (wheel_ok && ppu_idle) {
+        static int wheel_cool = 0;   /* frames to wait after a scroll: the hover script redraws the sentence line for the new item under the cursor */
+        if (wheel_cool > 0) wheel_cool--;
+        if (wheel_ok && ppu_idle && wheel_cool == 0) {
+            wheel_cool = 24;
             int dir = w > 0 ? 1 : -1;
             w -= dir;
             int count = 0;

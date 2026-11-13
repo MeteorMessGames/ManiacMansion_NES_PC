@@ -33,7 +33,7 @@ static const AchDef k_ach[] = {
   { "end_famous_alerted", "Too Late, Officer", "Go famous after the police were called.", 10, 2, { {0x6165, 0xFF, ACH_EQ, 0x04}, {0x614B, 0xFF, ACH_NE, 0x00} }, 0 },
   { "ed_best_friend", "Well Done", "Claim the remains of Ed's pet.", 10, 5, { {0x6B0A, 0x80, ACH_EQ, 0x80}, {0x6100, 0xFF, ACH_GE, 0x01}, {0x6100, 0xFF, ACH_LE, 0x07}, {0x6661, 0x0F, ACH_GE, 0x01}, {0x6661, 0x0F, ACH_LE, 0x07} }, 1 },
   { "kid_contract", "Band Gets Signed", "Land a recording contract for one of the kids.", 10, 1, { {0x6165, 0xFF, ACH_EQ, 0x02} }, 0 },
-  { "cassette_destruction", "Key Change", "Shatter the chandelier and drop the old rusty key.", 10, 1, { {0x0000, 0xFF, ACH_SCRIPT, 0x15} }, 0 },
+  { "cassette_destruction", "Key Change", "Shatter the chandelier and drop the old rusty key.", 10, 4, { {0x6100, 0xFF, ACH_GE, 0x01}, {0x6100, 0xFF, ACH_LE, 0x07}, {0x6654, 0x80, ACH_LEQ, 0x00}, {0x6654, 0x80, ACH_EQ, 0x80} }, 0 },
   { "publisher_glass", "Glass Scream", "Send the publisher a tape he will not forget.", 10, 6, { {0x63C5, 0xFF, ACH_EQ, 0x29}, {0x619D, 0xFF, ACH_EQ, 0x19}, {0x6F0B, 0xFF, ACH_EQ, 0x4F}, {0x6F0C, 0xFF, ACH_EQ, 0x68}, {0x6F0F, 0xFF, ACH_EQ, 0x47}, {0x6F10, 0xFF, ACH_EQ, 0x72} }, 0 },
   { "return_package", "Safe And Sound", "Give Ed's pet back unharmed.", 5, 2, { {0x0000, 0xFF, ACH_SCRIPT, 0x5E}, {0x610A, 0xFF, ACH_EQ, 0x0B} }, 0 },
   { "escape_dungeon", "Brick By Brick", "Get out of the dungeon with the loose brick.", 5, 2, { {0x0000, 0xFF, ACH_SCRIPT, 0x89}, {0x63C5, 0xFF, ACH_EQ, 0x08} }, 0 },
