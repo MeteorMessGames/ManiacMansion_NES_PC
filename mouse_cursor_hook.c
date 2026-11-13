@@ -604,7 +604,7 @@ static const char *const k_menu_rows[MI_COUNT] = { "Resume Game", "Save State", 
 enum { MODE_MAIN, MODE_SAVE, MODE_LOAD, MODE_DISPLAY, MODE_QUIT, MODE_ACH, MODE_DBG };
 static void display_toast(const char *what, const char *value);
 static uint32_t s_ach_reset_until = 0;   /* tick until which "Reset all achievements" is armed (second press confirms) */
-#define NUM_SLOTS 10
+#define MAX_SLOTS 999       /* save slots are unlimited in practice: the list shows the saves that exist plus one new slot */
 #define ACH_ROWS_VISIBLE 5    /* achievement list rows on screen (two lines each) */
 #define SLOT_ROWS_VISIBLE 7   /* slot list rows on screen; the rest scroll (wheel, Up/Down) */
 #define THUMB_W 128
@@ -613,9 +613,11 @@ typedef struct {
     bool     used;
     time_t   mtime;
     bool     thumb_ok;
-    uint32_t thumb[THUMB_W * THUMB_H];
+    bool     thumb_tried;
+    uint32_t *thumb;          /* loaded on demand (only the highlighted slot is previewed) */
 } SlotInfo;
-static SlotInfo s_slots[NUM_SLOTS + 1];
+static SlotInfo s_slots[MAX_SLOTS + 1];
+static int      s_slot_high = 0;   /* highest slot number that has a save */
 
 static int      s_game_saved_frames = -1;  /* -1 idle, else frames since the game's own save */
 static int      s_toast_frames = 0;        /* "SAVED TO SLOT N" banner countdown */
@@ -842,7 +844,8 @@ static void write_thumb(int slot, const uint32_t *frame) {
 }
 
 static void refresh_slots(void) {
-    for (int s = 0; s <= NUM_SLOTS; s++) {
+    s_slot_high = 0;
+    for (int s = 0; s <= MAX_SLOTS; s++) {
         SlotInfo *si = &s_slots[s];
         char path[1100];
         struct stat st;
@@ -850,15 +853,33 @@ static void refresh_slots(void) {
         si->used = stat(path, &st) == 0;
         si->mtime = si->used ? st.st_mtime : 0;
         si->thumb_ok = false;
-        if (!si->used) continue;
-        slot_file(s, "thumb", path, sizeof path);
-        FILE *f = fopen(path, "rb");
-        if (!f) continue;
-        char magic[4];
-        si->thumb_ok = fread(magic, 1, 4, f) == 4 && !memcmp(magic, "MMT1", 4) &&
-                       fread(si->thumb, sizeof si->thumb, 1, f) == 1;
-        fclose(f);
+        si->thumb_tried = false;
+        if (si->used && s > s_slot_high) s_slot_high = s;
     }
+}
+
+/* Thumbnail of a slot, read from disk the first time it is shown. */
+static bool slot_thumb(int slot) {
+    SlotInfo *si = &s_slots[slot];
+    if (!si->used) return false;
+    if (si->thumb_tried) return si->thumb_ok;
+    si->thumb_tried = true;
+    char path[1100];
+    slot_file(slot, "thumb", path, sizeof path);
+    FILE *f = fopen(path, "rb");
+    if (!f) return false;
+    if (!si->thumb) si->thumb = (uint32_t *)malloc(sizeof(uint32_t) * THUMB_W * THUMB_H);
+    char magic[4];
+    si->thumb_ok = si->thumb && fread(magic, 1, 4, f) == 4 && !memcmp(magic, "MMT1", 4) &&
+                   fread(si->thumb, sizeof(uint32_t) * THUMB_W * THUMB_H, 1, f) == 1;
+    fclose(f);
+    return si->thumb_ok;
+}
+
+/* Slot rows in a list: every save that exists, plus one empty slot to save into. */
+static int slot_rows(void) {
+    int n = s_slot_high + (s_menu_mode == MODE_SAVE ? 1 : 0);
+    return n > MAX_SLOTS ? MAX_SLOTS : n;
 }
 
 static void slot_time_text(int slot, char *out, size_t n) {
@@ -868,12 +889,12 @@ static void slot_time_text(int slot, char *out, size_t n) {
     strftime(out, n, "%b %d, %H:%M", tm);
 }
 
-/* Rows per mode: slots 1..NUM_SLOTS + Back. */
+/* Rows per mode: the slots + Back. */
 static int menu_row_count(void) {
     if (s_menu_mode == MODE_DISPLAY) return DI_COUNT;
     if (s_menu_mode == MODE_QUIT) return 3;
     if (s_menu_mode == MODE_ACH) return ach_count() + 2;   /* the list, "Reset all achievements", Back */
-    if (s_menu_mode != MODE_MAIN) return NUM_SLOTS + 1;
+    if (s_menu_mode != MODE_MAIN) return slot_rows() + 1;
     return MI_COUNT;
 }
 /* Rows drawn at once: the slot lists scroll, the other menus fit. */
@@ -897,7 +918,7 @@ static void menu_keep_visible(void) {
 /* slot for a row in the slot lists, -1 = Back */
 static int row_slot(int row) {
     int slot = 1 + row;
-    return slot <= NUM_SLOTS ? slot : -1;
+    return slot <= slot_rows() ? slot : -1;
 }
 
 /* Sidebar geometry for a presented size (all derived from the height). */
@@ -993,10 +1014,10 @@ static void menu_set_mode(int mode) {
         s_menu_sel = 0;
         refresh_slots();
         int slot = 0;
-        for (int i = 1; i <= NUM_SLOTS && !slot; i++) if (!s_slots[i].used) slot = i;
+        for (int i = 1; i <= MAX_SLOTS && !slot; i++) if (!s_slots[i].used) slot = i;
         if (!slot) {
             slot = 1;
-            for (int i = 2; i <= NUM_SLOTS; i++) if (s_slots[i].mtime < s_slots[slot].mtime) slot = i;
+            for (int i = 2; i <= MAX_SLOTS; i++) if (s_slots[i].mtime < s_slots[slot].mtime) slot = i;
         }
         s_quit_slot = slot;
         return;
@@ -1004,11 +1025,12 @@ static void menu_set_mode(int mode) {
     refresh_slots();
     /* start on the newest save (load) / first empty slot (save) */
     int best = -1;
-    for (int s = 1; s <= NUM_SLOTS; s++) {
+    for (int s = 1; s <= MAX_SLOTS; s++) {
         if (mode == MODE_SAVE && !s_slots[s].used) { best = s; break; }
         if (mode == MODE_LOAD && s_slots[s].used && (best < 0 || s_slots[s].mtime > s_slots[best].mtime)) best = s;
     }
     if (best < 0) best = 1;
+    if (best > slot_rows()) best = slot_rows() + 1;   /* nothing to pick: the Back row */
     s_menu_sel = best - 1;
     menu_keep_visible();
 }
@@ -1178,7 +1200,7 @@ static void menu_back(void) {
 /* "Last saved" line: the newest slot. */
 static void last_saved_text(char *out, size_t n) {
     int best = -1;
-    for (int s = 0; s <= NUM_SLOTS; s++)
+    for (int s = 0; s <= MAX_SLOTS; s++)
         if (s_slots[s].used && (best < 0 || s_slots[s].mtime > s_slots[best].mtime)) best = s;
     if (best < 0) { snprintf(out, n, "No saves yet"); return; }
     char when[48], name[32];
@@ -1244,7 +1266,7 @@ static void draw_slot_preview(uint32_t *d, int pw, int ph, const MenuLayout *L) 
     char name[32], when[48], cap[96];
     slot_name(slot, name, sizeof name);
     slot_time_text(slot, when, sizeof when);
-    if (s_slots[slot].used && s_slots[slot].thumb_ok) {
+    if (s_slots[slot].used && slot_thumb(slot)) {
         mr_blit_scaled(d, pw, ph, bx, by, bw, bh, s_slots[slot].thumb, THUMB_W, THUMB_H);
     } else {
         mr_rect(d, pw, ph, bx, by, bw, bh, 0x0C0D12, 255);
@@ -1865,10 +1887,10 @@ static void follow_game_save(void) {
      * session; the first save of a session takes an empty slot (else the oldest). */
     int slot = s_session_slot;
     if (!slot) {
-        for (int s = 1; s <= NUM_SLOTS && !slot; s++) if (!s_slots[s].used) slot = s;
+        for (int s = 1; s <= MAX_SLOTS && !slot; s++) if (!s_slots[s].used) slot = s;
         if (!slot) {
             slot = 1;
-            for (int s = 2; s <= NUM_SLOTS; s++) if (s_slots[s].mtime < s_slots[slot].mtime) slot = s;
+            for (int s = 2; s <= MAX_SLOTS; s++) if (s_slots[s].mtime < s_slots[slot].mtime) slot = s;
         }
     }
     slot_file(slot, "state", path, sizeof path);
@@ -2496,6 +2518,26 @@ static uint8_t ctx_choose_verb(int slot, const uint8_t *v, int n) {
     bool on = (wram((uint16_t)(0x65E7 + slot)) & 0x80) != 0;
     /* some machines keep their on/off state in a SCUMM variable instead of the object's state bit */
     if (obj == 0x016E) on = wram(0x61A7) == 1;   /* Victrola: Var[167] = 1 while a record is playing */
+    /* Lamps and lights keep their state in script variables (measured by toggling each one in the real game):
+     * the two room-5 lamps and the wall lamps have their own var; every other light flips a bit of the
+     * room-darkness bit array at $60B0/$61B1 (bit SET = dark = off). */
+    static const struct { uint16_t obj, addr; uint8_t mask; bool on_when_set; } k_lamps[] = {
+        { 0x0147, 0x6185, 0x01, true  },   /* room 5 lamp: Var[133] = 1 while on */
+        { 0x0148, 0x6186, 0x01, true  },   /* room 5 lamp: Var[134] = 1 while on */
+        { 0x016A, 0x6188, 0x01, false },   /* wall lamp: Var[136] = 0 while on */
+        { 0x016B, 0x6187, 0x01, false },   /* wall lamp: Var[135] = 0 while on */
+        { 0x017B, 0x61B1, 0x40, false },   /* desk lamp, room 22 */
+        { 0x01A4, 0x61B1, 0x80, false },   /* red light, room 23 */
+        { 0x0135, 0x61B1, 0x08, false },   /* light, room 19 */
+        { 0x0198, 0x60B0, 0x80, false },   /* light, room 15 */
+        { 0x0131, 0x60B0, 0x02, false },   /* light, room 9 */
+        { 0x014F, 0x60B0, 0x01, false },   /* light switch, room 8 */
+    };
+    for (size_t i = 0; i < sizeof k_lamps / sizeof k_lamps[0]; i++)
+        if (k_lamps[i].obj == obj) { on = ((wram(k_lamps[i].addr) & k_lamps[i].mask) != 0) == k_lamps[i].on_when_set; break; }
+    /* The kitchen faucet's TURN ON clears the state bit and TURN OFF sets it (opposite of the usual), so its bit is
+     * set while the water is OFF. */
+    if (obj == 0x0058) on = !on;
     /* The pool-house water faucet has OPEN/CLOSE as aliases of TURN ON/OFF: use the TURN verbs; the flowing water (object 233)
      * holds the on state. */
     if (obj == 0x0076 && has_verb(v, n, V_TURN_ON) && has_verb(v, n, V_TURN_OFF))
@@ -2692,6 +2734,16 @@ static uint8_t real_mouse_buttons(void) {
      * failing to see the press on some setups, the focused call picks up
      * the slack instead of leaving LMB/RMB dead there. */
     bool have_focus = (SDL_GetMouseFocus() == win);
+    /* Clicks only count while the pointer is over this window and the window is active: the global button state
+     * also sees clicks made in other programs (a browser, a second monitor), which would walk the kid around. */
+    if (win) {
+        int wx = 0, wy = 0, ww = 0, wh = 0;
+        SDL_GetWindowPosition(win, &wx, &wy);
+        SDL_GetWindowSize(win, &ww, &wh);
+        bool over = gx >= wx && gx < wx + ww && gy >= wy && gy < wy + wh;
+        bool active = have_focus || (SDL_GetWindowFlags(win) & SDL_WINDOW_INPUT_FOCUS);
+        if (!over || !active) { buttons = 0; focused_buttons = 0; }
+    }
     uint8_t out = 0;
     bool lmb = (buttons & SDL_BUTTON(SDL_BUTTON_LEFT)) ||
                (have_focus && (focused_buttons & SDL_BUTTON(SDL_BUTTON_LEFT)));
@@ -2834,6 +2886,13 @@ static uint8_t real_mouse_buttons(void) {
          * jobs on top of each other and left the screen scrambled, the palette wrong and the game frozen. */
         bool ppu_idle = rd && wram(0x6EBC) == wram(0x6EBD) && !(wram(0x6EFF) & 3) && !(*rd & 0xE0) &&
                         ram_byte(0xA8) && *ram_byte(0xA8) == 0;
+        /* A room change (door, cutscene end, ending) keeps the verb bar flag up while the new room is still being
+         * built: a scroll forced then froze the game and changed the palette. Ignore the wheel for 2 s after every
+         * room change, and drop any notches that were queued meanwhile. */
+        static int room_seen = -1, room_settle = 0;
+        int room_now = wram(0x63C5);
+        if (room_now != room_seen) { room_seen = room_now; room_settle = 120; w = 0; }
+        else if (room_settle > 0) { room_settle--; w = 0; }
         bool wheel_ok = w && game_started && sc && rd && ego && ovl && ovh && !(*ovl | *ovh) && (wram(0x6B0A) & 0x80) && !ctx_script_running(4);
         static int wheel_cool = 0;   /* frames to wait after a scroll: the hover script redraws the sentence line for the new item under the cursor */
         if (wheel_cool > 0) wheel_cool--;
@@ -2855,7 +2914,11 @@ static uint8_t real_mouse_buttons(void) {
             else if (v < m) { v += 2; if (v > m) v = (m + 1) & 0xFE; }
             if (v != *sc) { *sc = (uint8_t)v; *rd |= 0xE0; }
         }
-        if (wheel_ok && w) { s_inv_wheel += w; if (s_inv_wheel > 6) s_inv_wheel = 6; else if (s_inv_wheel < -6) s_inv_wheel = -6; }   /* keep the rest for later frames */
+        /* keep the rest for later frames, but only briefly: notches that could not be applied for half a second (a room that
+         * never lets the PPU queue go idle) are stale, and firing them later landed in the middle of a room change */
+        static int wheel_wait = 0;
+        if (wheel_ok && w && ++wheel_wait <= 30) { s_inv_wheel += w; if (s_inv_wheel > 6) s_inv_wheel = 6; else if (s_inv_wheel < -6) s_inv_wheel = -6; }
+        else if (!w || !wheel_ok) wheel_wait = 0;
     }
 
     /* 2026-11-09: context RMB. On a fresh RMB press in gameplay that is still
@@ -2866,9 +2929,19 @@ static uint8_t real_mouse_buttons(void) {
         static int ctx_state = 0, ctx_wait = 0;
         static uint8_t ctx_verb = 0;
         static int ctx_slot = 0;
+        static uint8_t ctx_pre = 0;      /* first object of a two-object USE (inventory item), 0 = none */
+        static int ctx_stage = 0;        /* 1 = first object clicked, waiting to click the second */
         static bool prev_rmb = false;
         if (ctx_state == 0 && rmb && !prev_rmb && game_started && (out & BTN_A)) {
             uint8_t v = ctx_rmb_pick(log, &ctx_slot);
+            ctx_pre = 0; ctx_stage = 0;
+            /* Shower faucet without its handle (object $76 state bit $80 set) while the handle (obj $99) is in the player's
+             * inventory: right click = USE HANDLE on the faucet (two clicks), the next right click turns it on/off. */
+            if (v && ctx_slot && wram((uint16_t)(0x64F2 + ctx_slot)) == 0x76 && wram((uint16_t)(0x64CF + ctx_slot)) == 0 &&
+                (wram(0x660A + 0x76) & 0x80) && (wram(0x660A + 0x99) & 0x0F) == (wram(0x6100) & 0x0F) &&
+                (wram(0x660A + 0x99) & 0x0F) != 0) {
+                v = V_USE; ctx_pre = 0x99;
+            }
             if (v) {
                 ctx_select_verb(v);
                 ctx_verb = v;
@@ -2876,7 +2949,17 @@ static uint8_t real_mouse_buttons(void) {
                 ctx_wait = 0;
             }
         }
-        if (ctx_state == 1) {
+        if (ctx_state == 1 && ctx_stage == 1) {
+            out &= (uint8_t)~BTN_A;
+            if (++ctx_wait > 45) {            /* second object: the room object under the cursor */
+                uint8_t *olo = cart_ram_byte(0x611C), *ohi = cart_ram_byte(0x601C);
+                if (olo) *olo = wram((uint16_t)(0x64F2 + ctx_slot));
+                if (ohi) *ohi = wram((uint16_t)(0x64CF + ctx_slot));
+                out |= BTN_A;
+                ctx_state = 2; ctx_stage = 0; ctx_pre = 0;
+                if (log) fprintf(log, "[ctx] second object clicked\n");
+            }
+        } else if (ctx_state == 1) {
             uint8_t *run = cart_ram_byte(0x6CAC);
             /* Wait for script 4 to FINISH the verb selection: clicking the
              * object while it still runs restarts it and the selection is
@@ -2895,10 +2978,13 @@ static uint8_t real_mouse_buttons(void) {
                  * land with no object and do nothing (tested). Put the
                  * object back the way hovering would. */
                 uint8_t *olo = cart_ram_byte(0x611B), *ohi = cart_ram_byte(0x601B);
-                if (olo) *olo = wram((uint16_t)(0x64F2 + ctx_slot));
-                if (ohi) *ohi = wram((uint16_t)(0x64CF + ctx_slot));
+                if (ctx_pre) { if (olo) *olo = ctx_pre; if (ohi) *ohi = 0; }
+                else {
+                    if (olo) *olo = wram((uint16_t)(0x64F2 + ctx_slot));
+                    if (ohi) *ohi = wram((uint16_t)(0x64CF + ctx_slot));
+                }
                 out |= BTN_A;                 /* the object click */
-                ctx_state = 2;
+                if (ctx_pre) { ctx_stage = 1; ctx_wait = 0; } else ctx_state = 2;
                 if (log) fprintf(log, "[ctx] verb $%02X %s after %d polls, clicking object\n",
                                  ctx_verb, ready ? "selected" : "TIMEOUT", ctx_wait);
             } else {
