@@ -1,9 +1,9 @@
-#include "arcade_sfx.h"
+#include "splash_sfx.h"
 #include <math.h>
 #include <string.h>
 
-#define SECONDS 5.4
-#define LEN 259200   /* SECONDS * ARCADE_SFX_RATE */
+#define SECONDS 4.5
+#define LEN 216000   /* SECONDS * SPLASH_SFX_RATE: the startup splash is 270 frames = 4.5 s */
 
 static int16_t s_buf[LEN];
 static int s_built = 0;
@@ -19,9 +19,9 @@ static double tri(double p) { return p < 0.5 ? 4.0 * p - 1.0 : 3.0 - 4.0 * p; }
 static void add_note(double t0, double dur, int midi, double amp, int kind)
 {
     double hz = note_hz(midi);
-    int i0 = (int)(t0 * ARCADE_SFX_RATE), n = (int)(dur * ARCADE_SFX_RATE);
+    int i0 = (int)(t0 * SPLASH_SFX_RATE), n = (int)(dur * SPLASH_SFX_RATE);
     for (int i = 0; i < n && i0 + i < LEN; i++) {
-        double t = (double)i / ARCADE_SFX_RATE;
+        double t = (double)i / SPLASH_SFX_RATE;
         double p = fmod(t * hz, 1.0);
         double env = (t < 0.004 ? t / 0.004 : 1.0) * exp(-t / (kind == 3 ? 0.22 : kind == 2 ? 0.16 : dur * 0.55));
         double v = kind == 0 ? pulse(p, 0.25) : kind == 1 ? tri(p) : kind == 3
@@ -40,12 +40,12 @@ static void build(void)
      * pseudo-random times and pitches, so it always sounds the same), now and then in pairs or a quick falling run. */
     static const int penta[] = { 88, 91, 93, 96, 98, 100, 103, 105, 108 };   /* high A minor pentatonic bell notes */
     unsigned seed = 0x2F6E2B1u;
-    double t = 0.08;
-    while (t < 5.0) {
+    double t = 0.05;
+    while (t < 4.1) {
         seed = seed * 1664525u + 1013904223u;
         int idx = (int)((seed >> 16) % 9);
         double amp = 0.22 + 0.12 * ((seed >> 8 & 15) / 15.0);
-        double fade = t > 4.3 ? (5.0 - t) / 0.7 : 1.0;                 /* let the last ones die away */
+        double fade = t > 3.5 ? (4.1 - t) / 0.6 : 1.0;                 /* let the last ones die away with the splash fade */
         add_note(t, 1.1, penta[idx], amp * fade, 3);
         switch ((seed >> 4) & 7) {
         case 0: add_note(t + 0.07, 1.0, penta[(idx + 3) % 9], amp * 0.7 * fade, 3); break;               /* a quick second sparkle */
@@ -60,7 +60,7 @@ static void build(void)
     for (int i = 0; i < LEN; i++) s_buf[i] = (int16_t)((int)s_buf[i] * 27800 / peak);
 }
 
-const int16_t *arcade_sfx(int *len)
+const int16_t *splash_sfx(int *len)
 {
     if (!s_built) { build(); s_built = 1; }
     if (len) *len = LEN;

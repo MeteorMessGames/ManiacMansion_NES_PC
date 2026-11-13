@@ -80,7 +80,7 @@
  * press.
  */
 #include "update_check.h"
-#include "arcade_sfx.h"
+#include "splash_sfx.h"
 #include "mod_function_hooks.h"
 #include "mod_runtime.h"
 #include "cpu6502.h"
@@ -2047,25 +2047,10 @@ static void display_save_settings(void *ctx, FILE *f) {
             s_filter == FILTER_CRT_STRONG ? 4 : s_filter == FILTER_CRT ? 2 : 0, s_music_vol, s_sfx_vol, s_scale, s_aspect, s_splash_enabled ? 1 : 0, s_update_check ? 1 : 0, s_mouse_speed, s_pad_speed);
 }
 
-/* Meteor Mess screen (room 39, shown for a few seconds when the arcade game is switched on): play a short
- * chiptune jingle over it. Starts on entering the room, stops when the room changes; follows Sound FX volume. */
-static volatile int s_arcade_pos = -1;   /* samples played of the jingle, -1 = idle */
-static volatile int s_arcade_mixed = 0;  /* samples actually mixed into the output this visit (logged when the screen ends) */
-static void arcade_step(void) {
-    static int prev_room = -1;
-    if (s_splash_state == 1 || !s_game_started) return;
-    int room = wram(0x63C5);
-    if (room == 39 && prev_room != 39) { s_arcade_pos = 0; s_arcade_mixed = 0; menu_log("arcade jingle", "Meteor Mess"); }
-    else if (room != 39) {
-        if (prev_room == 39) {
-            char v[96];
-            snprintf(v, sizeof v, "%d samples mixed, Sound FX %d%%", s_arcade_mixed, s_sfx_vol);
-            menu_log("arcade jingle done", v);
-        }
-        s_arcade_pos = -1;
-    }
-    prev_room = room;
-}
+/* Startup splash (the Meteor Mess Games logo with the twinkling stars): twinkling bell sparkles play over it. They run only
+ * while the splash is up (it can be skipped), over the otherwise silenced game, and follow the Sound FX volume. */
+static volatile int s_splash_sfx_pos = -1;   /* samples played, -1 = idle */
+static volatile int s_splash_sfx_mixed = 0;  /* samples actually mixed into the output (logged when the splash ends) */
 
 /* Update check: start once the game is on screen, then toast if GitHub has a newer release. */
 static void update_step(void) {
@@ -2092,6 +2077,8 @@ static void splash_step(void) {
         s_splash_frame = 0;
         s_splash_skip = false;
         s_splash_state = 1;
+        s_splash_sfx_pos = 0;
+        s_splash_sfx_mixed = 0;
         menu_log("splash start", NULL);
         return;
     }
@@ -2106,7 +2093,12 @@ static void splash_step(void) {
         s_splash_snap = NULL;
         s_splash_state = 2;
         s_menu_guard = true;   /* the skipping key/click must not reach the game */
-        menu_log("splash end", NULL);
+        s_splash_sfx_pos = -1;
+        {
+            char v[96];
+            snprintf(v, sizeof v, "twinkles: %d samples mixed, Sound FX %d%%", s_splash_sfx_mixed, s_sfx_vol);
+            menu_log("splash end", v);
+        }
     }
 }
 
@@ -2147,7 +2139,6 @@ static void menu_frame_end(void *ctx) {
     display_frame_end();
     follow_game_save();
     update_step();
-    arcade_step();
     achievements_step();
     if (s_menu_req_back) {
         s_menu_req_back = false;
@@ -3257,19 +3248,19 @@ static volatile int s_chime_pos = -1;   /* samples played of the unlock chime, -
 static void menu_audio_mix(void *ctx, int16_t *samples, size_t count) {
     (void)ctx;
     if (s_menu_open || s_splash_state == 1) memset(samples, 0, count * sizeof samples[0]);
-    /* Achievement unlock sound (achievement_sfx.h, 48 kHz mono), follows the Sound FX volume. */
-    int apos = s_arcade_pos;   /* Meteor Mess jingle: holds while the pause menu is up */
-    if (apos >= 0 && !s_menu_open) {
-        int alen;
-        const int16_t *aj = arcade_sfx(&alen);
-        int gain = s_sfx_vol <= 0 ? 0 : s_sfx_vol < 60 ? 60 : s_sfx_vol;   /* quiet Sound FX settings would bury the sparkles: floor of 60% (0 stays silent) */
-        for (size_t i = 0; i < count && apos < alen; i++, apos++) {
-            int m = samples[i] + aj[apos] * gain / 100;
+    int spos = s_splash_sfx_pos;   /* splash twinkles */
+    if (spos >= 0 && s_splash_state == 1) {
+        int slen;
+        const int16_t *sj = splash_sfx(&slen);
+        int gain = s_sfx_vol <= 0 ? 0 : s_sfx_vol < 60 ? 60 : s_sfx_vol;   /* a quiet Sound FX setting would bury the sparkles: floor of 60% (0 stays silent) */
+        for (size_t i = 0; i < count && spos < slen; i++, spos++) {
+            int m = samples[i] + sj[spos] * gain / 100;
             samples[i] = (int16_t)(m > 32767 ? 32767 : m < -32768 ? -32768 : m);
-            s_arcade_mixed++;
+            s_splash_sfx_mixed++;
         }
-        s_arcade_pos = apos >= alen ? -1 : apos;
+        s_splash_sfx_pos = spos >= slen ? -1 : spos;
     }
+    /* Achievement unlock sound (achievement_sfx.h, 48 kHz mono), follows the Sound FX volume. */
     int pos = s_chime_pos;
     if (pos < 0) return;
     for (size_t i = 0; i < count && pos < ACH_SFX_LEN; i++, pos++) {
