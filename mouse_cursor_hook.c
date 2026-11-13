@@ -1531,8 +1531,15 @@ static const uint32_t *menu_present(void *ctx, int *w, int *h) {
         bool sel = i == s_menu_sel;
         bool hov = i == s_menu_hover;
         bool ach_row = s_menu_mode == MODE_ACH && i < ach_count();
-        if (ach_row)   /* earned = warm gold card, not yet earned = grey card */
-            mr_round_rect(d, pw, ph, L.pad / 2, y0, L.sw - L.pad, L.item_h, (int)(4 * u), ach_unlocked(i) ? (ach_rarity(i) == 0 ? 0x5A3A1E : ach_rarity(i) == 1 ? 0x23503A : ach_rarity(i) == 2 ? 0x45296B : 0x6B5414) : 0x262830, 235);
+        if (ach_row) {   /* a rarity-coloured outline on every card (bright when earned, muted when not), then the card: earned = tinted, not yet earned = grey */
+            uint32_t ob, osh, oed;
+            rarity_colors(ach_rarity(i), &ob, &osh, &oed);
+            int ot = (int)(0.8f * u) > 1 ? (int)(0.8f * u) : 1;
+            int rx = L.pad / 2, rw = L.sw - L.pad;
+            mr_round_rect(d, pw, ph, rx, y0, rw, L.item_h, (int)(4 * u), ob, ach_unlocked(i) ? 255 : 120);
+            mr_round_rect(d, pw, ph, rx + ot, y0 + ot, rw - 2 * ot, L.item_h - 2 * ot, (int)(4 * u) - ot > 1 ? (int)(4 * u) - ot : 1,
+                          ach_unlocked(i) ? (ach_rarity(i) == 0 ? 0x5A3A1E : ach_rarity(i) == 1 ? 0x23503A : ach_rarity(i) == 2 ? 0x45296B : 0x6B5414) : 0x262830, 255);
+        }
         if (sel) {
             mr_round_rect(d, pw, ph, L.pad / 2, y0, L.sw - L.pad, L.item_h, (int)(4 * u), 0x2C6FE0, ach_row ? 95 : 215);
         } else if (hov) {
