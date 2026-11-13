@@ -87,8 +87,9 @@ Enter. Esc or right click goes back.
   Options       Music volume, Sound FX volume, Fullscreen, Filter, Scale,
                 Shape, Mouse Speed and Key Speed.
                 Volumes: drag or click the bar, or Left / Right in 5% steps.
-  Exit Game     Asks first: Save to a slot and exit, Exit without saving, or
-                Cancel. Closing the window asks the same thing.
+  Exit Game     Asks first if you have unsaved progress: Save to a slot and
+                exit, Exit without saving, or Cancel. Closing the window does
+                the same. With nothing unsaved it just exits.
 
 
 ACHIEVEMENTS
