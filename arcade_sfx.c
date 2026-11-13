@@ -23,7 +23,7 @@ static void add_note(double t0, double dur, int midi, double amp, int kind)
     for (int i = 0; i < n && i0 + i < LEN; i++) {
         double t = (double)i / ARCADE_SFX_RATE;
         double p = fmod(t * hz, 1.0);
-        double env = (t < 0.004 ? t / 0.004 : 1.0) * exp(-t / (kind == 3 ? 0.07 : kind == 2 ? 0.16 : dur * 0.55));
+        double env = (t < 0.004 ? t / 0.004 : 1.0) * exp(-t / (kind == 3 ? 0.22 : kind == 2 ? 0.16 : dur * 0.55));
         double v = kind == 0 ? pulse(p, 0.25) : kind == 1 ? tri(p) : kind == 3
             ? sin(6.283185307 * t * hz) + 0.35 * sin(6.283185307 * t * hz * 2.76) * exp(-t / 0.03)   /* inharmonic partial: the glassy attack */
             : pulse(p, 0.5) * 0.6 + tri(fmod(t * hz * 2.0, 1.0)) * 0.4;
@@ -36,41 +36,24 @@ static void add_note(double t0, double dur, int midi, double amp, int kind)
 static void build(void)
 {
     memset(s_buf, 0, sizeof s_buf);
-    /* 0.00 - 1.20: "game start" run, C major arpeggio climbing, with a final ping */
-    static const int run[] = { 72, 76, 79, 84, 88, 91, 96 };
-    for (int i = 0; i < 7; i++) add_note(0.07 * i, 0.16, run[i], 0.20, 0);
-    add_note(0.55, 0.60, 96, 0.22, 2);
-    add_note(0.58, 0.55, 84, 0.16, 2);
-    add_note(0.0, 0.9, 36, 0.28, 1);
-    /* 1.20 - 5.00: attract-mode loop, A minor feel: 16 eighth notes at 150 bpm (0.2 s), twice through */
-    static const int lead[16] = { 69, 72, 76, 81, 79, 76, 72, 76, 77, 81, 84, 81, 76, 79, 83, 88 };
-    static const int bass[4] = { 33, 36, 29, 28 };
-    const double step = 0.2;
-    for (int bar = 0; bar < 2; bar++)
-        for (int i = 0; i < 16; i++) {
-            double t = 1.2 + (bar * 16 + i) * step * 0.5;     /* 0.1 s per note */
-            if (t > 4.9) break;
-            double fade = t > 4.4 ? (4.9 - t) / 0.5 : 1.0;
-            add_note(t, 0.14, lead[i], 0.12 * fade, 0);
-            if (i % 4 == 0) add_note(t, 0.38, bass[i / 4], 0.20 * fade, 1);
+    /* Twinkles only, no tune: bell-like sparkles that ring out and overlap, scattered over the whole screen (fixed
+     * pseudo-random times and pitches, so it always sounds the same), now and then in pairs or a quick falling run. */
+    static const int penta[] = { 88, 91, 93, 96, 98, 100, 103, 105, 108 };   /* high A minor pentatonic bell notes */
+    unsigned seed = 0x2F6E2B1u;
+    double t = 0.08;
+    while (t < 5.0) {
+        seed = seed * 1664525u + 1013904223u;
+        int idx = (int)((seed >> 16) % 9);
+        double amp = 0.22 + 0.12 * ((seed >> 8 & 15) / 15.0);
+        double fade = t > 4.3 ? (5.0 - t) / 0.7 : 1.0;                 /* let the last ones die away */
+        add_note(t, 1.1, penta[idx], amp * fade, 3);
+        switch ((seed >> 4) & 7) {
+        case 0: add_note(t + 0.07, 1.0, penta[(idx + 3) % 9], amp * 0.7 * fade, 3); break;               /* a quick second sparkle */
+        case 1: for (int k = 1; k <= 3; k++) add_note(t + 0.09 * k, 0.9, penta[idx > k ? idx - k : 0], amp * (0.8 - 0.15 * k) * fade, 3); break;   /* falling run */
+        default: break;
         }
-    /* twinkles: sparkles scattered over the whole screen (fixed pseudo-random times and pitches, so it always sounds the same),
-     * in pairs now and then so they read as a glitter rather than a metronome */
-    {
-        static const int penta[] = { 93, 96, 98, 100, 103, 105, 108 };   /* high A minor pentatonic-ish bell notes */
-        unsigned seed = 0x2F6E2B1u;
-        double t = 0.45;
-        while (t < 5.1) {
-            seed = seed * 1664525u + 1013904223u;
-            int note = penta[(seed >> 16) % 7];
-            double amp = 0.07 + 0.05 * ((seed >> 8 & 15) / 15.0);
-            add_note(t, 0.35, note, amp, 3);
-            if ((seed >> 4 & 3) == 0) add_note(t + 0.06, 0.35, penta[(seed >> 20) % 7], amp * 0.8, 3);   /* a quick second sparkle */
-            t += 0.16 + 0.34 * ((seed >> 12 & 255) / 255.0);
-        }
+        t += 0.18 + 0.42 * ((seed >> 12 & 255) / 255.0);
     }
-    /* tail: a soft closing ping */
-    add_note(4.95, 0.45, 81, 0.10, 2);
 }
 
 const int16_t *arcade_sfx(int *len)
