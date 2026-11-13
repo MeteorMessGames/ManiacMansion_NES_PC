@@ -36,7 +36,7 @@ The full player guide (controls, saving, tips) is in [README.txt](README.txt), w
 
 ## Achievements
 
-![Achievement unlocked](docs/screenshots/achievement.png)
+![Achievement unlocked](docs/screenshots/achievement-toast.png)
 
 40 achievements in four rarities (Common, Rare, Epic, Legendary). A banner and a sound announce each one, and Esc > Achievements lists them all. Some are secret until earned.
 
