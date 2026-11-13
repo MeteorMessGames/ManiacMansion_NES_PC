@@ -1,8 +1,16 @@
 # Maniac Mansion NES PC
 
-Mouse-driven play for the **Maniac Mansion NES prototype** on PC, plus a pause menu, save slots, volume controls and picture filters. Built with [NESRecomp](https://github.com/mstan/nesrecomp).
+Play the **Maniac Mansion NES prototype** on PC with a mouse, as a real point-and-click adventure. The port does not replace the game's logic: it hooks a few spots in the ROM and lets the game run its own verb scripts, so a right click does exactly what the game itself would do. It also adds a pause menu, save slots, volume controls and picture filters. Built with [NESRecomp](https://github.com/mstan/nesrecomp).
 
 **No game data is included.** You need your own dump of `Maniac Mansion (Prototype).nes`.
+
+![Gameplay with the mouse cursor](docs/screenshots/gameplay.png)
+
+| Right click previews the action | Pause menu | CRT filter |
+|---|---|---|
+| ![Right-click preview](docs/screenshots/preview.png) | ![Pause menu](docs/screenshots/menu.png) | ![CRT filter](docs/screenshots/crt.png) |
+
+*Screenshots show the original game, © Lucasfilm Games / LucasArts.*
 
 ## Download
 
@@ -10,21 +18,17 @@ Get `ManiacMansion_NES_PC_win64.zip` from the [latest release](https://github.co
 
 ## Features
 
-- **Point and click.** The mouse drives the game cursor over the whole screen (in play it stops at the top of the room, out of the text lines).
-  - **Left click** walks, picks verbs and items (an object with no verb picked = GO TO).
-  - **Right click** does the obvious thing with the object under the cursor (GET, OPEN/CLOSE, READ, PUSH/PULL, TURN ON/OFF, USE). The sentence line previews it while you hover. Right click also skips cutscenes.
-    - Switchable things flip between TURN ON and TURN OFF by their state.
-    - Some things stay plain GO TO, and decorations never default to OPEN/CLOSE.
-  - **Middle click** opens the **in-game save menu**: the game's own Save / Restore / New game screen (Start on the NES pad).
-  - Two-step commands still work the classic way: pick a verb, then the object(s).
-- **Mouse wheel** scrolls the inventory, one notch at a time and only while the verb bar is up.
-- **Click to skip text** above the room and during cutscenes.
-- **Pause menu (Esc):** save and load states, options, and exit (it asks first if you have unsaved progress).
-- **Achievements** (on the [`achievements` branch](https://github.com/MeteorMessGames/ManiacMansion_NES_PC/tree/achievements)): rated Common, Rare, Epic and Legendary, with a banner when you earn one.
-- **Options:** volume, fullscreen, filter, scale, shape, mouse and key speed.
-- **Update check** at launch (turn off with `UpdateCheck = 0` in `config.ini`).
-- **Filters:** Sharp, CRT and CRT Strong.
-- **Shape:** square pixels or TV (4:3).
+- Full mouse-driven point and click, over the whole screen.
+- Context-sensitive right click that uses the game's own object and verb logic.
+- Inventory scrolling with the mouse wheel, and the classic two-step commands.
+- The game's own save and restore, from the middle mouse button.
+- Pause menu with 10 save-state slots, each with a screenshot.
+- Music and sound effect volume, mouse and key speed.
+- Three picture filters (Sharp, CRT, CRT Strong), including a GPU CRT.
+- Fullscreen, fixed or automatic scaling, square pixels or 4:3 TV shape.
+- Controller support.
+- Achievements (on the [`achievements` branch](https://github.com/MeteorMessGames/ManiacMansion_NES_PC/tree/achievements)): rated Common, Rare, Epic and Legendary, with a trophy page in the pause menu.
+- A launch-time update check (turn off with `UpdateCheck = 0` in `config.ini`).
 
 The full player guide (controls, saving, tips) is in [README.txt](README.txt), which ships next to the exe.
 
@@ -64,27 +68,11 @@ The full player guide (controls, saving, tips) is in [README.txt](README.txt), w
 
 ## How it works
 
-The port hooks the game at a few ROM sites (listed in `game.toml`, each checked by CRC32):
+The port hooks the game at a few ROM sites (listed in `game.toml`, each checked by CRC32): the joypad reads (mouse buttons become A / B / Start), the cursor clamp (so the mouse reaches the screen edges), the game's save, and the audio mix.
 
-- **Joypad reads**: mouse buttons become A / B / Start, written the way the ROM latches them (on the rising edge only).
-- **Cursor clamp** (`$9539`): restores the mouse position after the game clamps its cursor, so it reaches the screen edges (and, in play, stops at the room's first line).
-- **Game save** (`$9659`): mirrors the battery save into this session's save-state slot (first save: an empty slot).
-- **Audio mix**: the Esc menu silences the game's sound.
-- **Controller**: read through SDL's game controller API (the runner's own pad mapping is bypassed by the joypad hook).
+The context verb comes from reading the room's object tables and each object's SCUMM v2 verb scripts, for example whether its GET script really picks it up. The click is then replayed through the game's own verb and sentence variables, so the game runs the command itself.
 
-The context verb comes from reading the room's object tables and each object's SCUMM v2 verb scripts (for example, whether its GET script really picks it up). The click is then replayed through the game's own verb/sentence variables, so the game runs the command itself.
-
-Main files:
-
-| File | What |
-|---|---|
-| `mouse_cursor_hook.c` | Input, context verbs, pause menu, options, save slots, audio routing |
-| `menu_render.c` | Menu drawing (stb_truetype + embedded DejaVu Sans Bold) |
-| `update_check.c` | The launch-time update check (background thread) |
-| `runner-patches/`, `BUILDING.md` | The NESRecomp patch and the build-from-source guide |
-| `crt_gpu.c`, `crt_filter.c` | CRT filters and the TV-shape sharp scaler, GPU and CPU versions |
-| `romless_native.c.in` | Stand-in for the generated code in the release build (ROM hashes and hook sites only; finds the ROM next to the exe) |
-| `game.toml` | Hook sites and their CRCs |
+Source file responsibilities, hook sites and the context verb details are in **[ARCHITECTURE.md](ARCHITECTURE.md)**.
 
 ## Building
 
@@ -95,17 +83,11 @@ cmake -S . -B build -DMM_ROM="/path/to/Maniac Mansion (Prototype).nes"
 cmake --build build
 ```
 
-Windows builds are cross-compiled with MinGW (`-DCMAKE_TOOLCHAIN_FILE=mingw-toolchain.cmake`).
-
-Add `-DMM_ROMLESS=ON` for the release build: it leaves the recompiled game code out of the exe, and the player's own ROM (found next to the exe) runs on the runner's interpreter at full speed. The exe then contains none of the game. It is named `ManiacMansion.exe` and opens no console window (`-DMM_CONSOLE=ON` brings the console back for testing). Without it you get `nes_game`, built on the recompiled code, with the console.
-
-The runner patch (display controls, a GPU texture present hook, an APU write hook, per-channel volume) is a small derivative of [NESRecomp](https://github.com/mstan/nesrecomp) and keeps its PolyForm Noncommercial license; see [BUILDING.md](BUILDING.md).
-
 ## License
 
 This project's code is licensed under the **MIT License**; see [LICENSE](LICENSE).
 
-Bundled third-party files keep their own licenses: `third_party/stb_truetype.h` (public domain / MIT) and the DejaVu Sans Bold font embedded in `menu_font.h` (DejaVu fonts license). The Windows release also contains the NESRecomp runner (PolyForm Noncommercial 1.0.0) and SDL2 (zlib); their license texts ship in the release's `licenses` folder.
+Bundled third-party files keep their own licenses: `third_party/stb_truetype.h` (public domain / MIT) and the DejaVu Sans Bold font embedded in `menu_font.h` (DejaVu fonts license). The Windows release also contains the NESRecomp runner (PolyForm Noncommercial 1.0.0) and SDL2 (zlib); their license texts ship in the release's `licenses` folder. The runner patch is a small derivative of NESRecomp and keeps its license; see [BUILDING.md](BUILDING.md).
 
 ## Credits
 

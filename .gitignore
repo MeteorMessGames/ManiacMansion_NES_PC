@@ -9,6 +9,7 @@
 # Debug/test artifacts from interactive sessions
 *.log
 *.png
+!/docs/screenshots/*.png
 
 # Never commit the ROM -- copyrighted, not ours to distribute
 *.nes
