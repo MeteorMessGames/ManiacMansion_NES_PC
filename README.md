@@ -34,6 +34,12 @@ Get `ManiacMansion_NES_PC_win64.zip` from the [latest release](https://github.co
 
 The full player guide (controls, saving, tips) is in [README.txt](README.txt), which ships next to the exe.
 
+## Achievements
+
+![Achievement unlocked](docs/screenshots/achievement.png)
+
+Achievements live on the [`achievements` branch](https://github.com/MeteorMessGames/ManiacMansion_NES_PC/tree/achievements): rated Common, Rare, Epic and Legendary, with a banner and sound on each unlock and a trophy page in the pause menu.
+
 ## Mouse
 
 | Button | Action |
