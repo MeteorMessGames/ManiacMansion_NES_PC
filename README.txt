@@ -35,12 +35,17 @@ Right click    Do the obvious thing with the object under the cursor:
 
 Middle click   In-game save menu: opens the game's own menu (Back to the
                Mansion / Save game / Restore saved game / New game), same as
-               Start on the NES pad.
+               Start on the NES pad. Middle click again inside that menu goes
+               back to the game.
 
 Mouse wheel    Scroll the inventory.
 
 Two-step commands still work the classic way: left click a verb
 (for example USE), then left click the object(s).
+
+Skipping text: left click above the room (the text lines) or during a
+cutscene to skip the current message. On the logo and title screens a left
+click skips too.
 
 
 CONTROLLER
@@ -84,6 +89,26 @@ Enter. Esc or right click goes back.
                 Volumes: drag or click the bar, or Left / Right in 5% steps.
   Exit Game     Asks first: Save to a slot and exit, Exit without saving, or
                 Cancel. Closing the window asks the same thing.
+
+
+ACHIEVEMENTS
+------------
+There are 38. Esc -> Achievements lists them; each is rated by how
+complicated it is to earn:
+  Common     bronze   5 points
+  Rare       silver   10 points
+  Epic       purple   20 points
+  Legendary  gold     40 points
+A few are secret and show as ??? until you earn them. A banner and a sound
+announce each unlock. Your unlocks are kept inside the game's own exe (there
+is no file to edit), so putting a newer exe in the folder starts you fresh.
+"Reset all achievements" at the bottom of the list erases everything (press
+it twice to confirm).
+
+METEOR MESS
+-----------
+Switching on the Meteor Mess arcade machine plays a short chiptune jingle over
+its high-score screen.
 
 
 SAVING
