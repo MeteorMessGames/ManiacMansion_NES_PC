@@ -10,6 +10,8 @@ Play the **Maniac Mansion NES prototype** on PC with a mouse, as a real point-an
 |---|---|---|
 | ![Right-click preview](docs/screenshots/preview.png) | ![Pause menu](docs/screenshots/menu.png) | ![CRT filter](docs/screenshots/crt.png) |
 
+![Razor and the hamster](docs/screenshots/hamster.png)
+
 *Screenshots show the original game, © Lucasfilm Games / LucasArts.*
 
 ## Download
