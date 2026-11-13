@@ -105,10 +105,11 @@ is no file to edit), so putting a newer exe in the folder starts you fresh.
 "Reset all achievements" at the bottom of the list erases everything (press
 it twice to confirm).
 
-METEOR MESS
------------
-Switching on the Meteor Mess arcade machine plays a short chiptune jingle over
-its high-score screen.
+STARTUP SPLASH
+--------------
+The game opens with the Meteor Mess Games logo and twinkling stars, with
+bell-like twinkles to match. Any key or click skips it. To turn it off set
+Splash = 0 in config.ini.
 
 
 SAVING
