@@ -11,6 +11,8 @@ typedef uint8_t (*AchRead)(uint16_t addr);
 
 void        ach_init(const char *dir);          /* load the unlocks (from the executable itself; test builds: the unlock file in dir) */
 void        ach_reset_all(void);                /* forget every unlock and save */
+bool        ach_enabled(void);                  /* menu switch: false = nothing is checked, shown or saved */
+void        ach_set_enabled(bool on);
 void        ach_state_loaded(void);             /* a saved state was just loaded: what is true now is not new (test builds use this) */
 int         ach_count(void);
 const char *ach_name(int i);

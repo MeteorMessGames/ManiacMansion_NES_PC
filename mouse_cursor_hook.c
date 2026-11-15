@@ -274,7 +274,7 @@ static void sync_grab(SDL_Window *win) {
     s_grabbed = focused;
 }
 
-enum { DI_MUSIC, DI_SFX, DI_FULLSCREEN, DI_FILTER, DI_SCALE, DI_SHAPE, DI_MOUSE, DI_PAD, DI_BACK, DI_COUNT };
+enum { DI_MUSIC, DI_SFX, DI_FULLSCREEN, DI_FILTER, DI_SCALE, DI_SHAPE, DI_MOUSE, DI_PAD, DI_ACH, DI_BACK, DI_COUNT };
 /* 2026-11-10 (user): only Sharp and CRT. Sharp is pixel-perfect: the largest
  * whole-number scale that fits (6x on 1440p, 4x on 1080p). Smooth and CRT
  * Curved were removed; config values 1 (Smooth) / 3 (CRT Curved) load as
@@ -301,6 +301,7 @@ static int  s_scale_req_dir = 0;                  /* queued from events */
 static int  s_aspect = 0;
 static bool s_game_started = false;               /* cursor sprite seen once: past the title screens */
 static volatile int s_inv_wheel = 0;              /* wheel notches queued from events (+ = up) */
+static bool s_ach_req = false;                    /* achievements switch queued from events */
 static bool s_shape_req = false;                  /* toggle queued from events */
 static int s_speed_req_row = -1, s_speed_req_dir = 0;   /* Options: step a cursor speed row, handled in frame_end */
 static bool host_draws_sharp(void);
@@ -1407,7 +1408,7 @@ static const uint32_t *display_present(int *w, int *h) {
     return s_crt_pic;
 }
 
-static const char *const k_display_rows[DI_COUNT] = { "Music", "Sound FX", "Fullscreen", "Filter", "Scale", "Shape", "Mouse Speed", "Key Speed", "Back" };
+static const char *const k_display_rows[DI_COUNT] = { "Music", "Sound FX", "Fullscreen", "Filter", "Scale", "Shape", "Mouse Speed", "Key Speed", "Achievements", "Back" };
 
 /* The slider of a volume row in the Options list (false: not a volume row). */
 static bool volume_bar(const MenuLayout *L, int row, int *bx, int *by, int *bw, int *bh) {
@@ -1472,6 +1473,7 @@ static const char *display_row_value(int item, char *buf, size_t n) {
     case DI_SHAPE:      return s_aspect ? "TV (4:3)" : "Square";
     case DI_MOUSE:      snprintf(buf, n, "%d%%", s_mouse_speed); return buf;
     case DI_PAD:        snprintf(buf, n, "%d%%", s_pad_speed); return buf;
+    case DI_ACH:        return ach_enabled() ? "On" : "Off";
     }
     (void)buf; (void)n;
     return "";
@@ -1774,6 +1776,11 @@ static void menu_event(void *ctx, const void *event, int player) {
             s_shape_req = true;
             return;
         }
+        if ((sc == SDL_SCANCODE_LEFT || sc == SDL_SCANCODE_RIGHT) && s_menu_mode == MODE_DISPLAY &&
+            s_menu_sel == DI_ACH) {
+            s_ach_req = true;
+            return;
+        }
         if (sc == SDL_SCANCODE_RETURN || sc == SDL_SCANCODE_SPACE || sc == SDL_SCANCODE_KP_ENTER)
             s_menu_req_activate = s_menu_sel;
         return;
@@ -2025,6 +2032,12 @@ static void set_volume(int row, int v) {
     cyc_host_save_settings();
 }
 
+static void set_achievements(bool on) {
+    ach_set_enabled(on);
+    cyc_host_save_settings();
+    display_toast("Achievements", on ? "On" : "Off");
+}
+
 static void display_activate(int item) {
     int fs = 0;
     switch (item) {
@@ -2033,6 +2046,7 @@ static void display_activate(int item) {
     case DI_FILTER:     set_filter(s_filter + 1); break;
     case DI_SCALE:      step_scale(+1); break;
     case DI_SHAPE:      set_shape(!s_aspect); break;
+    case DI_ACH:        set_achievements(!ach_enabled()); break;
     case DI_MOUSE:
     case DI_PAD:        step_speed(item, +1); break;
     case DI_FULLSCREEN:
@@ -2052,6 +2066,7 @@ static void display_frame_end(void) {
     if (s_req_filter_cycle) { s_req_filter_cycle = false; set_filter(s_filter + 1); }
     if (s_scale_req_dir) { step_scale(s_scale_req_dir); s_scale_req_dir = 0; }
     if (s_shape_req) { s_shape_req = false; set_shape(!s_aspect); }
+    if (s_ach_req) { s_ach_req = false; set_achievements(!ach_enabled()); }
     if (s_speed_req_row >= 0) { int row = s_speed_req_row; s_speed_req_row = -1; step_speed(row, s_speed_req_dir); }
     if (s_vol_req_row >= 0) {
         set_volume(s_vol_req_row, s_vol_req_value);
@@ -2067,6 +2082,7 @@ static void display_load_setting(void *ctx, const char *key, const char *value) 
     else if (!strcmp(key, "SfxVolume")) s_sfx_vol = atoi(value);
     else if (!strcmp(key, "Scale")) { int v = atoi(value); s_scale = v >= 2 && v <= 6 ? v : 0; }
     else if (!strcmp(key, "Aspect")) s_aspect = atoi(value) == 1 ? 1 : 0;
+    else if (!strcmp(key, "Achievements")) ach_set_enabled(atoi(value) != 0);
     else if (!strcmp(key, "Splash")) s_splash_enabled = atoi(value) != 0;
     else if (!strcmp(key, "UpdateCheck")) s_update_check = atoi(value) != 0;
     else if (!strcmp(key, "MouseSpeed")) s_mouse_speed = atoi(value);
@@ -2080,8 +2096,8 @@ static void display_load_setting(void *ctx, const char *key, const char *value) 
 
 static void display_save_settings(void *ctx, FILE *f) {
     (void)ctx;
-    fprintf(f, "Filter = %d\nMusicVolume = %d\nSfxVolume = %d\nScale = %d\nAspect = %d\nSplash = %d\nUpdateCheck = %d\nMouseSpeed = %d\nPadSpeed = %d\n",
-            s_filter == FILTER_CRT_STRONG ? 4 : s_filter == FILTER_CRT ? 2 : 0, s_music_vol, s_sfx_vol, s_scale, s_aspect, s_splash_enabled ? 1 : 0, s_update_check ? 1 : 0, s_mouse_speed, s_pad_speed);
+    fprintf(f, "Filter = %d\nMusicVolume = %d\nSfxVolume = %d\nScale = %d\nAspect = %d\nSplash = %d\nUpdateCheck = %d\nMouseSpeed = %d\nPadSpeed = %d\nAchievements = %d\n",
+            s_filter == FILTER_CRT_STRONG ? 4 : s_filter == FILTER_CRT ? 2 : 0, s_music_vol, s_sfx_vol, s_scale, s_aspect, s_splash_enabled ? 1 : 0, s_update_check ? 1 : 0, s_mouse_speed, s_pad_speed, ach_enabled() ? 1 : 0);
 }
 
 /* Startup splash (the Meteor Mess Games logo with the twinkling stars): twinkling bell sparkles play over it. They run only

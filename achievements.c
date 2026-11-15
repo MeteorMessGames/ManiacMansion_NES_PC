@@ -211,6 +211,22 @@ static bool     s_resync = false;     /* set when a state was loaded; consumed b
 static unsigned s_reset_gen = 0;      /* bumped by every reset, so test builds can re-arm their once-per-session pops */
 void ach_state_loaded(void) { s_resync = true; }
 
+/* Menu switch (Options > Achievements). While off nothing is checked, banners and chimes do not play and nothing is saved.
+ * Turning it back on does not hand out what became true in the meantime: every achievement whose conditions are already
+ * all true at that moment is held back (s_supp) until it has been false once. */
+static bool s_enabled = true;
+static bool s_rearm = false;
+static bool s_supp[ACH_COUNT > 0 ? ACH_COUNT : 1];
+bool ach_enabled(void) { return s_enabled; }
+void ach_set_enabled(bool on)
+{
+    if (on == s_enabled) return;
+    s_enabled = on;
+    memset(s_hold, 0, sizeof s_hold);
+    if (on) s_rearm = true;
+    else s_qhead = s_qtail = 0;   /* drop any banner still queued */
+}
+
 /* Forget every unlock (the menu's "Reset all achievements"). */
 void ach_reset_all(void)
 {
@@ -252,6 +268,12 @@ int ach_points_total(void)
 
 static bool cond_ok(AchRead rd, const AchCond *c, bool *latch)
 {
+    if (c->op == ACH_SCRIPT_SEEN) {                  /* a script that ends right as it starts the one we want (script 12 -> 62) is never seen
+                                                      * running together with it, so remember that it ran */
+        for (int i = 1; i < 0x14; i++)
+            if (rd((uint16_t)(0x633D + i)) && rd((uint16_t)(0x63A1 + i)) == c->val) *latch = true;
+        return *latch;
+    }
     if (c->op == ACH_SCRIPT) {                       /* "global script <val> is running": slots 1..19 ($633D state, $63A1 id) */
         for (int i = 1; i < 0x14; i++)
             if (rd((uint16_t)(0x633D + i)) && rd((uint16_t)(0x63A1 + i)) == c->val) return true;
@@ -281,9 +303,27 @@ static bool in_play(AchRead rd)
 void ach_poll(AchRead rd)
 {
     bool changed = false;
+    if (!s_enabled) { memset(s_hold, 0, sizeof s_hold); return; }
     if (!in_play(rd)) { memset(s_hold, 0, sizeof s_hold); return; }
+    if (s_rearm) {   /* just switched back on: whatever is already true is not new */
+        s_rearm = false;
+        for (int i = 0; i < ACH_COUNT; i++) {
+            if (s_got[i] || !k_ach[i].nconds) continue;
+            bool all = true;
+            for (int c = 0; c < k_ach[i].nconds && all; c++)
+                if (!cond_ok(rd, &k_ach[i].c[c], &s_latch[i][c])) all = false;
+            s_supp[i] = all;
+        }
+    }
     for (int i = 0; i < ACH_COUNT; i++) {
         if (s_got[i] || !k_ach[i].nconds) continue;
+        if (s_supp[i]) {   /* held back until its conditions have been false once */
+            bool all = true;
+            for (int c = 0; c < k_ach[i].nconds && all; c++)
+                if (!cond_ok(rd, &k_ach[i].c[c], &s_latch[i][c])) all = false;
+            if (!all) { s_supp[i] = false; s_hold[i] = 0; }
+            continue;
+        }
         bool all = true;
         /* conditions are evaluated in order and stop at the first false one, so a first "game is in play"
          * condition keeps later latch conditions from latching on title-screen / boot RAM */

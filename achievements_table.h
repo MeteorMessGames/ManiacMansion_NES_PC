@@ -4,7 +4,7 @@
 #include <stdint.h>
 
 #define ACH_MAX_CONDS 8
-typedef enum { ACH_EQ, ACH_NE, ACH_GE, ACH_LE, ACH_GT, ACH_LT, ACH_LEQ, ACH_SCRIPT } AchOp; /* ACH_LEQ: == seen at any earlier time this session */
+typedef enum { ACH_EQ, ACH_NE, ACH_GE, ACH_LE, ACH_GT, ACH_LT, ACH_LEQ, ACH_SCRIPT, ACH_SCRIPT_SEEN } AchOp; /* ACH_LEQ: == seen at any earlier time this session; ACH_SCRIPT_SEEN: that script has been running at any earlier time this session */
 typedef struct { uint16_t addr; uint8_t mask; uint8_t op; uint8_t val; } AchCond;
 typedef struct { const char *id, *name, *desc; uint8_t points, nconds; AchCond c[ACH_MAX_CONDS]; uint8_t hidden; uint8_t rarity; } AchDef; /* rarity: 0 Common, 1 Rare, 2 Epic, 3 Legendary */
 
@@ -21,7 +21,7 @@ static const AchDef k_ach[] = {
   { "meteor_mess", "Quarter Muncher", "Play Meteor Mess.", 5, 1, { {0x63C5, 0xFF, ACH_EQ, 0x27} }, 0, 0 },
   { "start_car", "Ignition", "Launch the Weird Edsel into space.", 5, 1, { {0x63C5, 0xFF, ACH_EQ, 0x2E} }, 0, 0 },
   { "green_fav_food", "Picky Eater", "Give Green Tentacle the one thing he loves.", 5, 6, { {0x6F0B, 0xFF, ACH_EQ, 0x57}, {0x6F0C, 0xFF, ACH_EQ, 0x4F}, {0x6F0D, 0xFF, ACH_EQ, 0x57}, {0x6F10, 0xFF, ACH_EQ, 0x4D}, {0x6F13, 0xFF, ACH_EQ, 0x66}, {0x6F1B, 0xFF, ACH_EQ, 0x21} }, 0, 0 },
-  { "green_other_food", "Not Picky Enough", "Keep Green Tentacle fed without his favorite dish.", 5, 3, { {0x6162, 0xFF, ACH_LEQ, 0x06}, {0x6162, 0xFF, ACH_GE, 0x07}, {0x6163, 0xFF, ACH_EQ, 0x01} }, 0, 0 },
+  { "green_other_food", "Not Picky Enough", "Feed Green Tentacle without his favorite food.", 5, 3, { {0x6162, 0xFF, ACH_LEQ, 0x06}, {0x6162, 0xFF, ACH_GE, 0x07}, {0x6163, 0xFF, ACH_EQ, 0x01} }, 0, 0 },
   { "green_contract", "Rock Star Tentacle", "Get Green Tentacle signed.", 40, 1, { {0x6165, 0xFF, ACH_EQ, 0x03} }, 0, 3 },
   { "ed_plans", "Ed's Big Plan", "Get Weird Ed's plans in order.", 20, 2, { {0x615D, 0xFF, ACH_EQ, 0x01}, {0x619B, 0xFF, ACH_NE, 0x02} }, 0, 2 },
   { "purple_deal", "Closing The Deal", "Make Purple Tentacle an offer he cannot refuse.", 20, 3, { {0x6197, 0xFF, ACH_EQ, 0x01}, {0x611A, 0xFF, ACH_EQ, 0x03}, {0x611B, 0xFF, ACH_EQ, 0x3C} }, 0, 2 },
@@ -31,18 +31,19 @@ static const AchDef k_ach[] = {
   { "end_space", "Off The Planet", "Launch the meteor into space.", 20, 1, { {0x63C5, 0xFF, ACH_EQ, 0x30} }, 0, 2 },
   { "end_plant", "Plant Based", "Finish with the plant ending.", 20, 3, { {0x0000, 0xFF, ACH_SCRIPT, 0x3F}, {0x6109, 0xFF, ACH_EQ, 0x2D}, {0x610A, 0xFF, ACH_EQ, 0x13} }, 0, 2 },
   { "end_famous", "Fame Changes Everything", "Make the meteor a star.", 40, 2, { {0x6165, 0xFF, ACH_EQ, 0x04}, {0x614B, 0xFF, ACH_EQ, 0x00} }, 0, 3 },
-  { "end_famous_alerted", "Too Late, Officer", "Go famous after the police were called.", 40, 2, { {0x6165, 0xFF, ACH_EQ, 0x04}, {0x614B, 0xFF, ACH_NE, 0x00} }, 0, 3 },
+  { "end_famous_alerted", "Too Late, Officer", "Make the meteor famous after calling the police.", 40, 2, { {0x6165, 0xFF, ACH_EQ, 0x04}, {0x614B, 0xFF, ACH_NE, 0x00} }, 0, 3 },
   { "ed_best_friend", "Well Done", "Claim the remains of Ed's pet.", 10, 5, { {0x6B0A, 0x80, ACH_EQ, 0x80}, {0x6100, 0xFF, ACH_GE, 0x01}, {0x6100, 0xFF, ACH_LE, 0x07}, {0x6661, 0x0F, ACH_GE, 0x01}, {0x6661, 0x0F, ACH_LE, 0x07} }, 1, 1 },
   { "kid_contract", "Band Gets Signed", "Land a recording contract for one of the kids.", 20, 1, { {0x6165, 0xFF, ACH_EQ, 0x02} }, 0, 2 },
   { "cassette_destruction", "Key Change", "Shatter the chandelier and drop the old rusty key.", 5, 4, { {0x6100, 0xFF, ACH_GE, 0x01}, {0x6100, 0xFF, ACH_LE, 0x07}, {0x6654, 0x80, ACH_LEQ, 0x00}, {0x6654, 0x80, ACH_EQ, 0x80} }, 0, 0 },
   { "publisher_glass", "Glass Scream", "Send the publisher a tape he will not forget.", 40, 6, { {0x63C5, 0xFF, ACH_EQ, 0x29}, {0x619D, 0xFF, ACH_EQ, 0x19}, {0x6F0B, 0xFF, ACH_EQ, 0x4F}, {0x6F0C, 0xFF, ACH_EQ, 0x68}, {0x6F0F, 0xFF, ACH_EQ, 0x47}, {0x6F10, 0xFF, ACH_EQ, 0x72} }, 0, 3 },
   { "return_package", "Safe And Sound", "Give Ed's pet back unharmed.", 5, 2, { {0x0000, 0xFF, ACH_SCRIPT, 0x5E}, {0x610A, 0xFF, ACH_EQ, 0x0B} }, 0, 0 },
+  { "special_delivery", "Special Delivery", "Safely handle Ed's package.", 5, 3, { {0x0000, 0xFF, ACH_SCRIPT, 0x5C}, {0x615C, 0xFF, ACH_EQ, 0x01}, {0x6100, 0xFF, ACH_LE, 0x07} }, 0, 0 },
   { "escape_dungeon", "Brick By Brick", "Get out of the dungeon with the loose brick.", 10, 2, { {0x0000, 0xFF, ACH_SCRIPT, 0x89}, {0x63C5, 0xFF, ACH_EQ, 0x08} }, 1, 1 },
   { "pepsi", "Sponsored Content", "Grab a cold soda from the machine.", 5, 5, { {0x6B0A, 0x80, ACH_EQ, 0x80}, {0x6100, 0xFF, ACH_GE, 0x01}, {0x6100, 0xFF, ACH_LE, 0x07}, {0x66BC, 0x0F, ACH_GE, 0x01}, {0x66BC, 0x0F, ACH_LE, 0x07} }, 0, 0 },
   { "die_steam", "Steamed", "Breathe in the wrong cloud.", 5, 2, { {0x0000, 0xFF, ACH_SCRIPT, 0x3D}, {0x615F, 0xFF, ACH_EQ, 0x01} }, 1, 0 },
-  { "meltdown_power", "Blackout", "Cause a meltdown by shutting off the power.", 5, 4, { {0x0000, 0xFF, ACH_SCRIPT, 0x3E}, {0x0000, 0xFF, ACH_SCRIPT, 0x0C}, {0x6161, 0xFF, ACH_NE, 0x03}, {0x6179, 0x01, ACH_EQ, 0x01} }, 1, 0 },
-  { "meltdown_pool", "Curiosity killed the kid", "You just couldn't help yourself, could ya?", 5, 4, { {0x0000, 0xFF, ACH_SCRIPT, 0x3E}, {0x0000, 0xFF, ACH_SCRIPT, 0x0C}, {0x6161, 0xFF, ACH_NE, 0x03}, {0x6179, 0x02, ACH_EQ, 0x02} }, 1, 0 },
-  { "meltdown_self_destruct", "Countdown To Zero", "Let the self-destruct run out.", 20, 2, { {0x0000, 0xFF, ACH_SCRIPT, 0x3E}, {0x0000, 0xFF, ACH_SCRIPT, 0x7B} }, 1, 2 },
+  { "meltdown_power", "Blackout", "Cause a meltdown by shutting off the power.", 5, 5, { {0x0000, 0xFF, ACH_SCRIPT_SEEN, 0x0C}, {0x0000, 0xFF, ACH_SCRIPT, 0x3E}, {0x63C5, 0xFF, ACH_EQ, 0x2F}, {0x6161, 0xFF, ACH_NE, 0x03}, {0x6179, 0x01, ACH_EQ, 0x01} }, 1, 0 },
+  { "meltdown_pool", "Curiosity killed the kid", "You just couldn't help yourself, could ya?", 5, 5, { {0x0000, 0xFF, ACH_SCRIPT_SEEN, 0x0C}, {0x0000, 0xFF, ACH_SCRIPT, 0x3E}, {0x63C5, 0xFF, ACH_EQ, 0x2F}, {0x6161, 0xFF, ACH_NE, 0x03}, {0x6179, 0x02, ACH_EQ, 0x02} }, 1, 0 },
+  { "meltdown_self_destruct", "Countdown To Zero", "Let the self-destruct run out.", 20, 3, { {0x0000, 0xFF, ACH_SCRIPT_SEEN, 0x7B}, {0x0000, 0xFF, ACH_SCRIPT, 0x3E}, {0x63C5, 0xFF, ACH_EQ, 0x2F} }, 1, 2 },
   { "killed_by_ed", "Ed Gets Even", "Pay for what happened to the hamster.", 10, 2, { {0x0000, 0xFF, ACH_SCRIPT, 0x3D}, {0x615F, 0xFF, ACH_EQ, 0x03} }, 1, 1 },
   { "killed_by_green", "Green With Envy", "Make Green Tentacle lose his temper.", 10, 2, { {0x0000, 0xFF, ACH_SCRIPT, 0x3D}, {0x615F, 0xFF, ACH_EQ, 0x04} }, 1, 1 },
   { "short_circuit", "Short Circuit", "Fry the nerd.", 10, 8, { {0x63C5, 0xFF, ACH_EQ, 0x0F}, {0x6100, 0xFF, ACH_EQ, 0x05}, {0x66A2, 0x0F, ACH_EQ, 0x05}, {0x6F0B, 0xFF, ACH_EQ, 0x59}, {0x6F0C, 0xFF, ACH_EQ, 0x4F}, {0x6F0D, 0xFF, ACH_EQ, 0x57}, {0x6F0E, 0xFF, ACH_EQ, 0x4C}, {0x6F0F, 0xFF, ACH_EQ, 0x21} }, 1, 1 },
@@ -50,6 +51,6 @@ static const AchDef k_ach[] = {
   { "deprive_ed", "Sorry, Ed!", "Deprive Ed of his tasty snack.", 5, 6, { {0x0000, 0xFF, ACH_SCRIPT, 0x97}, {0x6F0B, 0xFF, ACH_EQ, 0x57}, {0x6F10, 0xFF, ACH_EQ, 0x27}, {0x6F17, 0xFF, ACH_EQ, 0x63}, {0x6F1D, 0xFF, ACH_EQ, 0x21}, {0x6F1E, 0xFF, ACH_EQ, 0x3F} }, 1, 0 },
   { "interesting_development", "An Interesting Development", "Don't cry over spilled fluid.", 5, 1, { {0x61A8, 0xFF, ACH_EQ, 0x03} }, 0, 0 },
 };
-#define ACH_COUNT 40
+#define ACH_COUNT 41
 
 #endif
