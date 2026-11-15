@@ -28,7 +28,7 @@ static const AchDef k_ach[] = {
   { "purple_authority", "Move Along", "Let the law clear the way.", 20, 2, { {0x0000, 0xFF, ACH_SCRIPT, 0x2B}, {0x66B2, 0x80, ACH_EQ, 0x80} }, 0, 2 },
   { "end_dave_dead", "Dave's Gone", "Win the day after Dave has died.", 40, 3, { {0x0000, 0xFF, ACH_SCRIPT, 0x3F}, {0x6173, 0xFF, ACH_EQ, 0x01}, {0x6165, 0xFF, ACH_NE, 0x04} }, 0, 3 },
   { "end_police", "Under Arrest", "End the madness after calling in the space cavalry.", 20, 3, { {0x0000, 0xFF, ACH_SCRIPT, 0x3F}, {0x61A2, 0xFF, ACH_EQ, 0x03}, {0x6165, 0xFF, ACH_NE, 0x04} }, 0, 2 },
-  { "end_space", "Off The Planet", "Launch the meteor into space.", 20, 1, { {0x63C5, 0xFF, ACH_EQ, 0x30} }, 0, 2 },
+  { "end_space", "Out of this World", "Launch the meteor into space.", 20, 1, { {0x63C5, 0xFF, ACH_EQ, 0x30} }, 0, 2 },
   { "end_plant", "Plant Based", "Finish with the plant ending.", 20, 3, { {0x0000, 0xFF, ACH_SCRIPT, 0x3F}, {0x6109, 0xFF, ACH_EQ, 0x2D}, {0x610A, 0xFF, ACH_EQ, 0x13} }, 0, 2 },
   { "end_famous", "Fame Changes Everything", "Make the meteor a star.", 40, 2, { {0x6165, 0xFF, ACH_EQ, 0x04}, {0x614B, 0xFF, ACH_EQ, 0x00} }, 0, 3 },
   { "end_famous_alerted", "Too Late, Officer", "Make the meteor famous after calling the police.", 40, 2, { {0x6165, 0xFF, ACH_EQ, 0x04}, {0x614B, 0xFF, ACH_NE, 0x00} }, 0, 3 },
