@@ -283,7 +283,7 @@ enum { DI_MUSIC, DI_SFX, DI_FULLSCREEN, DI_FILTER, DI_SCALE, DI_SHAPE, DI_MOUSE,
 enum { FILTER_SHARP, FILTER_CRT, FILTER_CRT_STRONG, FILTER_COUNT };
 static const char *const k_filter_names[FILTER_COUNT] = { "Sharp", "CRT", "CRT Strong" };
 static int  s_filter = FILTER_SHARP;
-static int  s_music_vol = 100, s_sfx_vol = 100;   /* percent, steps of 5 */
+static int  s_music_vol = 100, s_sfx_vol = 100;   /* percent, steps of 1 (Enter: 5) */
 static int  s_vol_drag = -1;                      /* volume row being dragged */
 static int  s_vol_req_row = -1, s_vol_req_value = 0;   /* queued from events */
 static bool s_display_inited = false;
@@ -1755,7 +1755,7 @@ static void menu_event(void *ctx, const void *event, int player) {
         if ((sc == SDL_SCANCODE_LEFT || sc == SDL_SCANCODE_RIGHT) && s_menu_mode == MODE_DISPLAY &&
             (s_menu_sel == DI_MUSIC || s_menu_sel == DI_SFX)) {
             s_vol_req_row = s_menu_sel;
-            s_vol_req_value = (s_menu_sel == DI_MUSIC ? s_music_vol : s_sfx_vol) + (sc == SDL_SCANCODE_LEFT ? -5 : 5);
+            s_vol_req_value = (s_menu_sel == DI_MUSIC ? s_music_vol : s_sfx_vol) + (sc == SDL_SCANCODE_LEFT ? -1 : 1);
             return;
         }
         if ((sc == SDL_SCANCODE_LEFT || sc == SDL_SCANCODE_RIGHT) && s_menu_mode == MODE_DISPLAY &&
@@ -1813,7 +1813,7 @@ static void menu_event(void *ctx, const void *event, int player) {
         int bx, by, bw, bh;
         if (row >= 0 && volume_bar(&L, row, &bx, &by, &bw, &bh) &&
             (s_vol_drag >= 0 || y >= by - (int)(5 * L.u))) {
-            int v = (int)((float)(x - bx) * 100.0f / bw + 2.5f) / 5 * 5;
+            int v = (int)((float)(x - bx) * 100.0f / bw + 0.5f);
             s_vol_drag = row;
             s_menu_sel = row;
             s_vol_req_row = row;
@@ -2395,8 +2395,34 @@ static int ctx_find_object_slot(uint8_t x, uint8_t vy) {
         if (!visible) continue;
         uint8_t ox = wram(0x63DA + i), oy = wram(0x63FD + i);
         uint8_t ow = wram(0x6420 + i), oh = wram(0x6443 + i);
-        if (ox <= x && (uint8_t)(ox + ow) > x && oy <= y && (uint8_t)(oy + oh) > y)
+        if (ox <= x && (uint8_t)(ox + ow) > x && oy <= y && (uint8_t)(oy + oh) > y) {
+            /* A cassette sitting in a player/recorder/stereo overlaps it: the player is listed first, so a right
+             * click used to land on the player (TURN ON). User rule: the tape wins, so it defaults to GET. */
+            uint16_t id = (uint16_t)((wram((uint16_t)(0x64CF + i)) << 8) | wram((uint16_t)(0x64F2 + i)));
+            /* A glass jar sitting in the (open) microwave overlaps it the same way: the microwave is listed first, so a
+             * right click used to land on the oven. User rule: the jar wins, so it defaults to GET. */
+            bool in_microwave = id == 0x0055;
+            if (id == 0x00E4 || id == 0x00BF || id == 0x00A4 || in_microwave) {
+                for (int j = 1; j <= n; j++) {
+                    if (j == i || (wram(0x65E7 + j) & 0x20)) continue;
+                    uint16_t tid = (uint16_t)((wram((uint16_t)(0x64CF + j)) << 8) | wram((uint16_t)(0x64F2 + j)));
+                    if (in_microwave ? tid != 0x0084 : (tid != 0x0050 && tid != 0x00BD && tid != 0x00C0 && tid != 0x00D8)) continue;
+                    int b2 = j, g2 = 0;
+                    bool vis = false;
+                    for (;;) {
+                        uint8_t need = wram(0x6538 + b2);
+                        int pp = wram(0x6515 + b2);
+                        if (pp == 0) { vis = true; break; }
+                        if ((wram(0x65E7 + pp) & 0x80) != need || ++g2 > 34) break;
+                        b2 = pp;
+                    }
+                    if (!vis) continue;
+                    uint8_t tx = wram(0x63DA + j), ty = wram(0x63FD + j), tw = wram(0x6420 + j), th = wram(0x6443 + j);
+                    if (tx <= x && (uint8_t)(tx + tw) > x && ty <= y && (uint8_t)(ty + th) > y) return j;
+                }
+            }
             return i;
+        }
     }
     return 0;
 }
@@ -2504,8 +2530,14 @@ static bool ctx_is_artwork(uint16_t obj) {
 
 static uint8_t ctx_choose_verb(int slot, const uint8_t *v, int n) {
     uint16_t obj = (uint16_t)((wram((uint16_t)(0x64CF + slot)) << 8) | wram((uint16_t)(0x64F2 + slot)));
-    /* The front hall gargoyles and the front yard bushes: no default verb, a right click is just GO TO. */
-    if (obj == 0x015F || obj == 0x0161 || obj == 0x0232 || obj == 0x0115) return V_GOTO;
+    /* The front hall gargoyles, the front yard bushes and the grandfather clock: no default verb, a right click is just GO TO. */
+    if (obj == 0x015F || obj == 0x0161 || obj == 0x0232 || obj == 0x0115 ||
+        obj == 0x011A /* grandfather clock */ || obj == 0x01C5 /* loose brick */ ||
+        obj == 0x00FE /* loose panel (library) */) return V_GOTO;
+    /* Basement fuse box ($009C) and the circuit breakers inside it ($009D, same rectangle, listed first while it is open):
+     * user rule, right click opens the box when closed and closes it when open. Checked live: with the box open the
+     * breakers were under the cursor and picked verb $04. */
+    if (obj == 0x009D && has_verb(v, n, V_CLOSE)) return V_CLOSE;
     /* User rule: anything that can actually be picked up defaults to GET. */
     if (has_verb(v, n, V_GET) && ctx_get_picks_up(slot)) return V_GET;
     /* mailbox flag (front yard, left edge): user rule, PULL it up when it is
@@ -2516,6 +2548,13 @@ static uint8_t ctx_choose_verb(int slot, const uint8_t *v, int n) {
         if (k_ctx_overrides[i].obj == obj && has_verb(v, n, k_ctx_overrides[i].verb))
             return k_ctx_overrides[i].verb;
     bool on = (wram((uint16_t)(0x65E7 + slot)) & 0x80) != 0;
+    /* Front yard mailbox: two overlapping objects. The right strip is $0114, whose own state never changes; the
+     * open/closed state lives in $0230 (checked live: OPEN toggled only $0230's bit $80). */
+    if (obj == 0x0114) {
+        int n2 = wram(0x63D9);
+        for (int i = 1; i <= n2 && i <= 34; i++)
+            if (wram((uint16_t)(0x64CF + i)) == 0x02 && wram((uint16_t)(0x64F2 + i)) == 0x30) { on = (wram((uint16_t)(0x65E7 + i)) & 0x80) != 0; break; }
+    }
     /* some machines keep their on/off state in a SCUMM variable instead of the object's state bit */
     if (obj == 0x016E) on = wram(0x61A7) == 1;   /* Victrola: Var[167] = 1 while a record is playing */
     /* Lamps and lights keep their state in script variables (measured by toggling each one in the real game):
@@ -2660,7 +2699,7 @@ static bool walk_pause_active(void) {
         if (v != s_walk_pos[i]) { moved = true; s_walk_pos[i] = v; }
     }
     s_walk_still = moved ? 0 : s_walk_still + 1;
-    if (++s_walk_pause > 600 || (s_walk_pause > 10 && s_walk_still >= 20)) {
+    if (++s_walk_pause > 600 || (s_walk_pause > 45 && s_walk_still >= 60)) {
         s_walk_pause = 0;
         FILE *log = dbg_log();
         if (log) fprintf(log, "[lmb] walk over, preview back on\n");
@@ -3009,6 +3048,9 @@ static uint8_t real_mouse_buttons(void) {
         static bool prev_lmb = false;
         uint8_t *sv = cart_ram_byte(0x611A);
         uint8_t *h8 = cart_ram_byte(0x61D8), *h9 = cart_ram_byte(0x61D9);
+        if (lmb && !prev_lmb && game_started && log && sv)
+            fprintf(log, "[lmbdbg] click sv=$%02X preview=$%02X click_area=%u hover=$%02X%02X walkpause=%d state=%d\n",
+                    *sv, preview_verb, wram(0x6120), wram(0x601B), wram(0x611B), s_walk_pause, lmb_state);
         if (lmb_state == 0 && lmb && !prev_lmb && game_started && !ctx_busy && (out & BTN_A) &&
             sv && h8 && h9 && preview_verb != V_GOTO && *sv == preview_verb) {
             *sv = V_GOTO;
