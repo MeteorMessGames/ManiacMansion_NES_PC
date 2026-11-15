@@ -2174,6 +2174,7 @@ static void achievements_step(void) {
             s_toast_frames = 240;
             s_ach_tier = RARITY_GOLD;   /* the unlock banner is always gold, whatever the rarity */
             { int ry0, ry1, rx0, rx1; s_ach_cx = room_extent(&ry0, &ry1, &rx0, &rx1) ? (rx0 + rx1 + 1) / 2 : 0; }
+            if (!strcmp(ach_id(a), "meltdown_self_destruct")) s_ach_cx = 0;   /* Countdown To Zero: centred on the whole screen, not the room */
             s_chime_pos = 0;
             menu_log("achievement", ach_name(a));
         }

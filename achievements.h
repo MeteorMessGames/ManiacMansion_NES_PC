@@ -15,6 +15,7 @@ bool        ach_enabled(void);                  /* menu switch: false = nothing 
 void        ach_set_enabled(bool on);
 void        ach_state_loaded(void);             /* a saved state was just loaded: what is true now is not new (test builds use this) */
 int         ach_count(void);
+const char *ach_id(int i);
 const char *ach_name(int i);
 const char *ach_desc(int i);
 int         ach_rarity(int i);                  /* 0 Common, 1 Rare, 2 Epic, 3 Legendary (rated by how hard each is) */
