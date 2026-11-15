@@ -274,7 +274,7 @@ static void sync_grab(SDL_Window *win) {
     s_grabbed = focused;
 }
 
-enum { DI_MUSIC, DI_SFX, DI_FULLSCREEN, DI_FILTER, DI_SCALE, DI_SHAPE, DI_MOUSE, DI_PAD, DI_ACH, DI_BACK, DI_COUNT };
+enum { DI_MUSIC, DI_SFX, DI_FULLSCREEN, DI_FILTER, DI_SCALE, DI_SHAPE, DI_MOUSE, DI_PAD, DI_BACK, DI_COUNT };
 /* 2026-11-10 (user): only Sharp and CRT. Sharp is pixel-perfect: the largest
  * whole-number scale that fits (6x on 1440p, 4x on 1080p). Smooth and CRT
  * Curved were removed; config values 1 (Smooth) / 3 (CRT Curved) load as
@@ -604,6 +604,7 @@ static const char *const k_menu_rows[MI_COUNT] = { "Resume Game", "Save State", 
  * loads in the exe that wrote it anyway). */
 enum { MODE_MAIN, MODE_SAVE, MODE_LOAD, MODE_DISPLAY, MODE_QUIT, MODE_ACH, MODE_DBG };
 static void display_toast(const char *what, const char *value);
+static void set_achievements(bool on);
 static uint32_t s_ach_reset_until = 0;   /* tick until which "Reset all achievements" is armed (second press confirms) */
 #define MAX_SLOTS 999       /* save slots are unlimited in practice: the list shows the saves that exist plus one new slot */
 #define ACH_ROWS_VISIBLE 5    /* achievement list rows on screen (two lines each) */
@@ -894,7 +895,7 @@ static void slot_time_text(int slot, char *out, size_t n) {
 static int menu_row_count(void) {
     if (s_menu_mode == MODE_DISPLAY) return DI_COUNT;
     if (s_menu_mode == MODE_QUIT) return 3;
-    if (s_menu_mode == MODE_ACH) return ach_count() + 2;   /* the list, "Reset all achievements", Back */
+    if (s_menu_mode == MODE_ACH) return ach_count() + 3;   /* the list, the On/Off switch, "Reset all achievements", Back */
     if (s_menu_mode != MODE_MAIN) return slot_rows() + 1;
     return MI_COUNT;
 }
@@ -1154,7 +1155,9 @@ static void menu_activate(int item) {
         return;
     }
     if (s_menu_mode == MODE_ACH) {
-        if (item == ach_count()) {   /* Reset all achievements: press twice within 4 seconds */
+        if (item == ach_count()) {   /* the On/Off switch */
+            set_achievements(!ach_enabled());
+        } else if (item == ach_count() + 1) {   /* Reset all achievements: press twice within 4 seconds */
             if (SDL_GetTicks() < s_ach_reset_until) {
                 s_ach_reset_until = 0;
                 ach_reset_all();
@@ -1162,7 +1165,7 @@ static void menu_activate(int item) {
             } else {
                 s_ach_reset_until = SDL_GetTicks() + 4000;
             }
-        } else if (item > ach_count()) menu_back();
+        } else if (item > ach_count() + 1) menu_back();
         return;
     }
     if (s_menu_mode != MODE_MAIN) {
@@ -1408,7 +1411,7 @@ static const uint32_t *display_present(int *w, int *h) {
     return s_crt_pic;
 }
 
-static const char *const k_display_rows[DI_COUNT] = { "Music", "Sound FX", "Fullscreen", "Filter", "Scale", "Shape", "Mouse Speed", "Key Speed", "Achievements", "Back" };
+static const char *const k_display_rows[DI_COUNT] = { "Music", "Sound FX", "Fullscreen", "Filter", "Scale", "Shape", "Mouse Speed", "Key Speed", "Back" };
 
 /* The slider of a volume row in the Options list (false: not a volume row). */
 static bool volume_bar(const MenuLayout *L, int row, int *bx, int *by, int *bw, int *bh) {
@@ -1473,7 +1476,6 @@ static const char *display_row_value(int item, char *buf, size_t n) {
     case DI_SHAPE:      return s_aspect ? "TV (4:3)" : "Square";
     case DI_MOUSE:      snprintf(buf, n, "%d%%", s_mouse_speed); return buf;
     case DI_PAD:        snprintf(buf, n, "%d%%", s_pad_speed); return buf;
-    case DI_ACH:        return ach_enabled() ? "On" : "Off";
     }
     (void)buf; (void)n;
     return "";
@@ -1618,9 +1620,11 @@ static const uint32_t *menu_present(void *ctx, int *w, int *h) {
         if (s_menu_mode == MODE_ACH) {
             if (i >= ach_count()) {
                 float bpx = 7.5f * u;
-                bool reset_row = i == ach_count();
+                bool switch_row = i == ach_count();
+                bool reset_row = i == ach_count() + 1;
                 bool armed = reset_row && SDL_GetTicks() < s_ach_reset_until;
-                const char *label = !reset_row ? "Back" : armed ? "Press again to erase ALL achievements" : "Reset all achievements";
+                const char *label = switch_row ? (ach_enabled() ? "Achievements: On" : "Achievements: Off")
+                                  : !reset_row ? "Back" : armed ? "Press again to erase ALL achievements" : "Reset all achievements";
                 mr_text(d, pw, ph, L.pad + (int)(6 * u), y0 + (int)((L.item_h - bpx) / 2), fit_px(bpx, L.sw - 2 * L.pad - (int)(12 * u), label),
                         armed ? 0xFF7070 : fg, 255, label);
                 continue;
@@ -1776,8 +1780,8 @@ static void menu_event(void *ctx, const void *event, int player) {
             s_shape_req = true;
             return;
         }
-        if ((sc == SDL_SCANCODE_LEFT || sc == SDL_SCANCODE_RIGHT) && s_menu_mode == MODE_DISPLAY &&
-            s_menu_sel == DI_ACH) {
+        if ((sc == SDL_SCANCODE_LEFT || sc == SDL_SCANCODE_RIGHT) && s_menu_mode == MODE_ACH &&
+            s_menu_sel == ach_count()) {
             s_ach_req = true;
             return;
         }
@@ -2046,7 +2050,6 @@ static void display_activate(int item) {
     case DI_FILTER:     set_filter(s_filter + 1); break;
     case DI_SCALE:      step_scale(+1); break;
     case DI_SHAPE:      set_shape(!s_aspect); break;
-    case DI_ACH:        set_achievements(!ach_enabled()); break;
     case DI_MOUSE:
     case DI_PAD:        step_speed(item, +1); break;
     case DI_FULLSCREEN:
