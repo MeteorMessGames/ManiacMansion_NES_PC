@@ -28,6 +28,15 @@ cmake --build build -j
 ./build/nes_game "/path/to/Maniac Mansion (Prototype).nes"
 ```
 
+## Linux release build
+
+Same as above with `-DMM_ROMLESS=ON`: the binary (`ManiacMansion`) contains none of the game and runs the player's own ROM, which must sit next to it. It links SDL2 dynamically, so the player needs SDL2 installed (for example `libsdl2-2.0-0`).
+
+```
+cmake -S . -B build-linux-romless -DCMAKE_BUILD_TYPE=Release -DMM_ROM="/path/to/Maniac Mansion (Prototype).nes" -DMM_ROMLESS=ON -DMM_NO_SIM=ON
+cmake --build build-linux-romless -j
+```
+
 ## Windows exe (cross-compiled with MinGW)
 
 Same checkout and patch as above, then:

@@ -50,7 +50,7 @@ click skips too.
 
 CONTROLLER
 ----------
-D-pad / stick  Move the cursor (speed: pause menu -> Options -> Key Speed)
+D-pad / stick  Move the cursor (speed: pause menu -> Options -> Controller Speed)
 A              Left click
 B              Right click (context verb; skips cutscenes)
 X              Cycle the verb (Select)
@@ -77,18 +77,20 @@ PAUSE MENU (Esc)
 The game is paused and silent while it is open. Use the mouse, or Up/Down and
 Enter. Esc or right click goes back. Resume, Save State and Load State
 (unlimited slots, each with a screenshot), Options, Exit Game (asks first if
-you have unsaved progress).
+you have unsaved progress). Back is the last row on every screen, and Left /
+Right changes any value row.
 
 
 ACHIEVEMENTS
 ------------
-There are 40. Esc -> Achievements lists them; each is rated by how
-complicated it is to earn:
+There are 47. Esc -> Achievements lists them; each is rated by how
+obscure and involved its trigger is:
   Common     bronze   5 points
   Rare       silver   10 points
   Epic       purple   20 points
   Legendary  gold     40 points
-A few are secret and show as ??? until you earn them. A banner and a sound
+Many are secret and show as ??? until you earn them. The On / Off switch
+is the first row of the list. A banner and a sound
 announce each unlock. Your unlocks are kept inside the game's own exe (there
 is no file to edit), so putting a newer exe in the folder starts you fresh.
 "Reset all achievements" at the bottom of the list erases everything (press
@@ -151,8 +153,9 @@ Shape (pause menu -> Options)
 Fullscreen (F11)
   Uses your monitor's own resolution (1080p, 1440p, 4K ...).
 
-Mouse Speed / Key Speed (pause menu -> Options)
-  How fast the cursor moves with the mouse and with the arrow keys:
+Mouse Speed / Controller Speed (pause menu -> Options)
+  How fast the cursor moves with the mouse and with the keyboard or
+  controller:
   50% to 300%, 100% is normal.
 
 Skipping text

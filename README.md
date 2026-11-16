@@ -25,7 +25,7 @@ Get `ManiacMansion_NES_PC_win64.zip` from the [latest release](https://github.co
 - Inventory scrolling with the mouse wheel, and the classic two-step commands.
 - The game's own save and restore, from the middle mouse button.
 - Pause menu with unlimited save-state slots, each with a screenshot.
-- Music and sound effect volume, mouse and key speed.
+- Music and sound effect volume, mouse and controller speed.
 - Three picture filters (Sharp, CRT, CRT Strong), including a GPU CRT.
 - Fullscreen, fixed or automatic scaling, square pixels or 4:3 TV shape.
 - Controller support.
