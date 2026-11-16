@@ -91,6 +91,8 @@
 #include "cyc_session.h"
 #include "cyc_overlay.h"
 #include "menu_render.h"
+#include "achievement_sfx.h"
+#include "achievements.h"
 #include "update_check.h"
 #include "crt_filter.h"
 #include "crt_gpu.h"
@@ -299,6 +301,7 @@ static int  s_scale_req_dir = 0;                  /* queued from events */
 static int  s_aspect = 0;
 static bool s_game_started = false;               /* cursor sprite seen once: past the title screens */
 static volatile int s_inv_wheel = 0;              /* wheel notches queued from events (+ = up) */
+static bool s_ach_req = false;                    /* achievements switch queued from events */
 static int  s_filter_req_dir = 0;                 /* Left / Right on the Filter row: -1 / +1 */
 static bool s_fs_req = false;                     /* Left / Right on the Fullscreen row */
 static bool s_shape_req = false;                  /* toggle queued from events */
@@ -584,8 +587,10 @@ static uint8_t wram(uint16_t addr);   /* defined with the context-RMB code */
 /* PCSX2-style pause sidebar (user choice): translucent panel down the left,
  * game lightly dimmed on the right, anti-aliased TrueType text rendered at
  * the window's real resolution (menu_render.c). */
-enum { MI_RESUME, MI_SAVE, MI_LOAD, MI_DISPLAY, MI_EXIT, MI_COUNT };
-static const char *const k_menu_rows[MI_COUNT] = { "Resume Game", "Save State", "Load State", "Options", "Exit Game" };
+enum { MI_RESUME, MI_SAVE, MI_LOAD, MI_ACH,
+       MI_DISPLAY, MI_EXIT, MI_COUNT };
+static const char *const k_menu_rows[MI_COUNT] = { "Resume Game", "Save State", "Load State", "Achievements",
+    "Options", "Exit Game" };
 
 /* 2026-11-10: display options (Display sub-menu, F9 filter, F10 widescreen,
  * F11 fullscreen via the host). Filters: Sharp = nearest + integer scale,
@@ -599,14 +604,19 @@ static const char *const k_menu_rows[MI_COUNT] = { "Resume Game", "Save State", 
  * plus a .thumb sidecar (screenshot shown in the slot list). The old
  * single-file ManiacMansion.state is no longer used (any snapshot only
  * loads in the exe that wrote it anyway). */
-enum { MODE_MAIN, MODE_SAVE, MODE_LOAD, MODE_DISPLAY, MODE_QUIT };
+enum { MODE_MAIN, MODE_SAVE, MODE_LOAD, MODE_DISPLAY, MODE_QUIT, MODE_ACH, MODE_DBG };
+static void display_toast(const char *what, const char *value);
+static void set_achievements(bool on);
+static uint32_t s_ach_reset_until = 0;   /* tick until which "Reset all achievements" is armed (second press confirms) */
 #define MAX_SLOTS 999       /* save slots are unlimited in practice: the list shows the saves that exist plus one new slot */
+#define ACH_ROWS_VISIBLE 5    /* achievement list rows on screen (two lines each) */
 /* Menu geometry, all in units of u (= window height / 240) so every screen shares it: rows start at ML_ITEM_Y0, plain rows are
- * ML_ROW_H tall (Music / Sound FX sliders ML_SLIDER_H), the Back row of the long-list screens is pinned at ML_BACK_Y,
- * one info / status line sits at ML_INFO_Y, and the footer (separator + two hint lines) is at the bottom. */
+ * ML_ROW_H tall (Music / Sound FX sliders ML_SLIDER_H, achievement cards ML_CARD_H), the Back row of the long-list screens is pinned
+ * at ML_BACK_Y, one info / status line sits at ML_INFO_Y, and the footer (separator + two hint lines) is at the bottom. */
 #define ML_ITEM_Y0   54
 #define ML_ROW_H     14
 #define ML_GAP        2
+#define ML_CARD_H    23
 #define ML_SLIDER_H  21
 #define ML_BACK_Y   184
 #define ML_INFO_Y   203
@@ -669,16 +679,151 @@ static bool     s_menu_req_toggle = false;
 static bool     s_menu_req_back = false;
 static int      s_menu_req_activate = -1;
 
+/* 14x19 trophy (silhouette of the trophy icon): D outline, G body, H highlight. */
+static const char *const k_trophy_art[19] = {
+    "..DDDDDDDDDD..",
+    "DDDHGGGGGGGDDD",
+    "DHDGGGGGGGGDGD",
+    "DHDGGGGGGGGDGD",
+    "DHDGGGGGGGGDGD",
+    "DHDGGGGGGGGDGD",
+    ".DDHGGGGGGGDD.",
+    "..DDHGGGGGDD..",
+    "....DHGGGG....",
+    "....DDHGDD....",
+    "......DD......",
+    "......DD......",
+    "......DD......",
+    "....DDDDDD....",
+    "...DHGGGGGD...",
+    "...DHGGGGGD...",
+    "...DHGGGGGD...",
+    "..DDDDDDDDDD..",
+    "..DDDDDDDDDD.."
+};
+
+/* Trophy colours by rarity: Common = bronze, Rare = silver, Epic = purple, Legendary = gold. Each card also gets a coloured outline
+ * (see rarity_outline) so a silver trophy can't be mistaken for a locked grey one. */
+#define RARITY_GOLD 3
+static uint32_t rarity_outline(int tier) {   /* card outline: bronze, blue, purple, gold */
+    static const uint32_t k[4] = { 0xD08A4E, 0x4FA3FF, 0xB57AFF, 0xFFD25A };
+    return k[tier < 0 ? 0 : tier > 3 ? 3 : tier];
+}
+static void rarity_colors(int tier, uint32_t *body, uint32_t *shine, uint32_t *edge) {
+    static const uint32_t k[4][3] = {
+        { 0xD08A4E, 0xF0BE8A, 0x8A4F1F },   /* bronze */
+        { 0xC4CAD6, 0xF2F5FA, 0x7C8494 },   /* silver */
+        { 0xB57AFF, 0xE2CCFF, 0x6A3FB5 },   /* purple */
+        { 0xFFD25A, 0xFFF0A8, 0xB5771C },   /* gold */
+    };
+    if (tier < 0) tier = 0; else if (tier > 3) tier = 3;
+    *body = k[tier][0]; *shine = k[tier][1]; *edge = k[tier][2];
+}
+
+/* Achievement unlock banner: big chunky name on a solid card with a trophy (native-pixel overlay, so it
+ * scales with the picture). Layout is in units of k = frame width / 256. */
+/* Squashed 3x4 text for the description: the 3x5 overlay glyph minus its fourth row (descenders and the
+ * lower bowls survive well enough at this size). Same 4 px advance, 1 px shorter. */
+static void small_text(uint32_t *buf, int cw, int ch, int x, int y, int k, uint32_t color, const char *s)
+{
+    static const int src_row[4] = {0, 1, 2, 4};
+    for (; *s; ++s, x += 4 * k) {
+        const uint8_t *g = cyc_overlay_glyph(*s);
+        if (!g) continue;
+        for (int r = 0; r < 4; r++)
+            for (int c = 0; c < 3; c++)
+                if (g[src_row[r]] & (4 >> c))
+                    for (int dy = 0; dy < k; dy++)
+                        for (int dx = 0; dx < k; dx++) {
+                            int px = x + c * k + dx, py = y + r * k + dy;
+                            if (px >= 0 && py >= 0 && px < cw && py < ch) buf[py * cw + px] = 0xFF000000u | color;
+                        }
+    }
+}
+static int s_ach_tier = RARITY_GOLD;   /* colour tier of the banner being shown */
+static int s_ach_cx = 0;   /* banner center in native px, latched when the unlock fires (0 = frame center) */
+static void ach_toast_draw(uint32_t *buf, int cw, int ch, const char *text)
+{
+    int k = cw / 256 > 1 ? cw / 256 : 1, ns = k;
+    uint32_t col_body, col_shine, col_edge;
+    rarity_colors(s_ach_tier, &col_body, &col_shine, &col_edge);
+    const char *title = "ACHIEVEMENT UNLOCKED";
+    /* text = "NAME" or "NAME\nDESCRIPTION"; the description is word-wrapped (max 34 chars a line, 2 lines) */
+    char name[64], desc[128];
+    const char *nl = strchr(text, '\n');
+    snprintf(name, sizeof name, "%.*s", nl ? (int)(nl - text) : (int)strlen(text), text);
+    snprintf(desc, sizeof desc, "%s", nl ? nl + 1 : "");
+    char lines[2][40] = {"", ""};
+    int nlines = 0;
+    for (const char *w = desc; *w && nlines < 2; ) {
+        while (*w == ' ') w++;
+        const char *e = w; while (*e && *e != ' ') e++;
+        int wl = (int)(e - w), cl = (int)strlen(lines[nlines]);
+        if (cl && cl + 1 + wl > 34) { if (++nlines >= 2) break; cl = 0; }
+        if (cl) lines[nlines][cl++] = ' ';
+        snprintf(lines[nlines] + cl, sizeof lines[0] - cl, "%.*s", wl, w);
+        w = e;
+    }
+    nlines = lines[1][0] ? 2 : (lines[0][0] ? 1 : 0);
+    int pad = 4 * k, tro = 14 * k + 4 * k;
+    int tw = (int)strlen(title) * 4 * k - k, nw = (int)strlen(name) * 4 * ns - ns;
+    int dw = 0;
+    for (int i = 0; i < nlines; i++) { int w = (int)strlen(lines[i]) * 4 * k - k; if (w > dw) dw = w; }
+    if (dw > nw) nw = dw;
+    int bw = (tw > nw ? tw : nw) + 2 * pad + tro;
+    int bh = (22 + (nlines ? 3 + 7 * nlines - 2 : 0)) * k;
+    if (bw > cw - 4 * k) bw = cw - 4 * k;
+    int x0 = (s_ach_cx > 0 ? s_ach_cx * k : cw / 2) - bw / 2, y0 = 38 * k;
+    if (x0 > cw - bw) x0 = cw - bw;
+    if (x0 < 0) x0 = 0;   /* centered, just under the two lines of game text at the top */
+    for (int y = 0; y < bh; y++)
+        for (int x = 0; x < bw; x++) {
+            int px = x0 + x, py = y0 + y;
+            if (px < 0 || py < 0 || px >= cw || py >= ch) continue;
+            bool edge = x < k || y < k || x >= bw - k || y >= bh - k;
+            buf[py * cw + px] = 0xFF000000u | (edge ? col_body : 0x15151F);
+        }
+    /* trophy, scaled by k */
+    int ty0 = y0 + (bh - 19 * k) / 2, tx0 = x0 + pad;
+    for (int y = 0; y < 19; y++)
+        for (int x = 0; x < 14; x++) {
+            uint32_t c;
+            switch (k_trophy_art[y][x]) {
+                case 'G': c = col_body; break;
+                case 'H': c = col_shine; break;
+                case 'D': c = col_edge; break;
+                default: continue;
+            }
+            for (int dy = 0; dy < k; dy++)
+                for (int dx = 0; dx < k; dx++) {
+                    int px = tx0 + x * k + dx, py = ty0 + y * k + dy;
+                    if (px >= 0 && py >= 0 && px < cw && py < ch) buf[py * cw + px] = 0xFF000000u | c;
+                }
+        }
+    int tx = x0 + pad + tro, tbw = (tw > nw ? tw : nw);   /* text column: lines are centered in it */
+    cyc_overlay_text(buf, cw, ch, tx + (tbw - tw) / 2, y0 + 5 * k, k, col_body, title);
+    cyc_overlay_text(buf, cw, ch, tx + (tbw - ((int)strlen(name) * 4 * ns - ns)) / 2, y0 + (5 + 5 + 3) * k, k, 0xFFFFFF, name);
+    for (int i = 0; i < nlines; i++)
+        cyc_overlay_text(buf, cw, ch, tx + (tbw - ((int)strlen(lines[i]) * 4 * k - k)) / 2,
+                         y0 + (5 + 5 + 3 + 5 + 3 + 7 * i) * k, k, 0xB4B4C8, lines[i]);
+}
+
 /* Draw the toast: text up to a newline is the title, the rest is the body. */
 static void toast_draw(uint32_t *buf, int cw, int ch) {
     char t[sizeof s_toast_text];
     snprintf(t, sizeof t, "%s", s_toast_text);
     char *nl = strchr(t, '\n');
+    if (nl && !strncmp(t, "ACHIEVEMENT UNLOCKED", 20)) { ach_toast_draw(buf, cw, ch, nl + 1); return; }
     if (nl) { *nl = 0; cyc_overlay_toast(buf, cw, ch, t, nl + 1); }
     else cyc_overlay_toast(buf, cw, ch, t, "");
 }
 
 static uint8_t wram(uint16_t addr);
+static uint8_t ach_rd(uint16_t addr) {
+    if (addr >= 0x800) return wram(addr);
+    uint8_t *p = ram_byte(addr);
+    return p ? *p : 0;
+}
 
 static void slot_file(int slot, const char *ext, char *out, size_t n) {
     char *base = SDL_GetBasePath();
@@ -765,16 +910,18 @@ static void slot_time_text(int slot, char *out, size_t n) {
 static int menu_row_count(void) {
     if (s_menu_mode == MODE_DISPLAY) return DI_COUNT;
     if (s_menu_mode == MODE_QUIT) return 3;
+    if (s_menu_mode == MODE_ACH) return ach_count() + 3;   /* the On/Off switch, the list, "Reset all achievements", Back */
     if (s_menu_mode != MODE_MAIN) return slot_rows() + 1;
     return MI_COUNT;
 }
-/* The long-list screens (Save, Load) keep their Back row pinned below the scrolling list. */
-static bool menu_pinned_back(void) { return s_menu_mode == MODE_SAVE || s_menu_mode == MODE_LOAD; }
+/* The long-list screens (Save, Load, Achievements) keep their Back row pinned below the scrolling list. */
+static bool menu_pinned_back(void) { return s_menu_mode == MODE_SAVE || s_menu_mode == MODE_LOAD || s_menu_mode == MODE_ACH; }
 /* Rows that scroll: every row except a pinned Back. */
 static int menu_list_rows(void) { return menu_row_count() - (menu_pinned_back() ? 1 : 0); }
-/* Rows drawn at once in the scrolling part: the slot lists scroll, the other menus fit. */
+/* Rows drawn at once in the scrolling part: the long lists scroll, the other menus fit. */
 static int menu_visible_rows(void) {
     int n = menu_list_rows();
+    if (s_menu_mode == MODE_ACH) return n > ACH_ROWS_VISIBLE ? ACH_ROWS_VISIBLE : n;
     return (s_menu_mode == MODE_SAVE || s_menu_mode == MODE_LOAD) && n > SLOT_ROWS_VISIBLE ? SLOT_ROWS_VISIBLE : n;
 }
 static void menu_scroll_clamp(void) {
@@ -796,7 +943,8 @@ static int row_slot(int row) {
     return slot <= slot_rows() ? slot : -1;
 }
 
-/* Sidebar geometry for a presented size (all derived from the height). Every screen uses the same row start, gap and footer. */
+/* Sidebar geometry for a presented size (all derived from the height). Every screen uses the same row start, gap and footer;
+ * only the achievement cards are taller, and only that screen's panel is wider (the card text needs the room). */
 typedef struct { int sw, pad, item_y0, item_h, item_gap, title_y, sub_y, sep_y, back_y, info_y, foot_sep, hint1_y, hint2_y; float u; } MenuLayout;
 static MenuLayout menu_layout(int w, int h) {
     MenuLayout L;
@@ -806,12 +954,16 @@ static MenuLayout menu_layout(int w, int h) {
         int cap = (int)(h * 256.0f / 240.0f * 0.40f);
         if (L.sw > cap) L.sw = cap;
     }
+    if (s_menu_mode == MODE_ACH) {   /* the achievement cards need room for full names: a wider panel */
+        int wide = (int)(w * 0.64f), cap = (int)(h * 256.0f / 240.0f * 0.64f);
+        L.sw = wide < cap ? wide : cap;
+    }
     L.pad = (int)(10 * L.u);
     L.title_y = (int)(16 * L.u);
     L.sub_y = (int)(33 * L.u);
     L.sep_y = (int)(46 * L.u);
     L.item_y0 = (int)(ML_ITEM_Y0 * L.u);
-    L.item_h = (int)(ML_ROW_H * L.u);
+    L.item_h = (int)((s_menu_mode == MODE_ACH ? ML_CARD_H : ML_ROW_H) * L.u);
     L.item_gap = (int)(ML_GAP * L.u);
     L.back_y = (int)(ML_BACK_Y * L.u);
     L.info_y = (int)(ML_INFO_Y * L.u);
@@ -821,9 +973,11 @@ static MenuLayout menu_layout(int w, int h) {
     return L;
 }
 
-/* Height of a row in the current screen: Music / Sound FX are two-line sliders, everything else is a plain row. */
+/* Height of a row in the current screen: Music / Sound FX are two-line sliders, the pinned Back row is a plain row,
+ * everything else follows the screen's list row height. */
 static int menu_row_height(const MenuLayout *L, int row) {
     if (s_menu_mode == MODE_DISPLAY && (row == DI_MUSIC || row == DI_SFX)) return (int)(ML_SLIDER_H * L->u);
+    if (menu_pinned_back() && row == menu_row_count() - 1) return (int)(ML_ROW_H * L->u);
     return L->item_h;
 }
 /* Where a row is on screen (false: scrolled out of view). The ONE place that knows row positions, used by drawing,
@@ -892,12 +1046,13 @@ static void menu_status(const char *msg, uint32_t rgb) {
 
 static void menu_set_mode(int mode) {
     s_menu_mode = mode;
+    s_ach_reset_until = 0;
     s_menu_hover = -1;
     s_menu_scroll = 0;
     s_confirm_slot = -1;
     s_menu_status[0] = 0;
     if (mode == MODE_MAIN) return;
-    if (mode == MODE_DISPLAY) { s_menu_sel = 0; return; }
+    if (mode == MODE_DISPLAY || mode == MODE_ACH) { s_menu_sel = 0; return; }
     if (mode == MODE_QUIT) {
         s_menu_sel = 2;   /* start on Back, the safe choice */
         refresh_slots();
@@ -1040,6 +1195,20 @@ static void menu_activate(int item) {
         SDL_PushEvent(&q);
         return;
     }
+    if (s_menu_mode == MODE_ACH) {
+        if (item == 0) {   /* the On/Off switch (top row) */
+            set_achievements(!ach_enabled());
+        } else if (item == ach_count() + 1) {   /* Reset all achievements: press twice within 4 seconds */
+            if (SDL_GetTicks() < s_ach_reset_until) {
+                s_ach_reset_until = 0;
+                ach_reset_all();
+                display_toast("Achievements", "all reset");
+            } else {
+                s_ach_reset_until = SDL_GetTicks() + 4000;
+            }
+        } else if (item > ach_count() + 1) menu_back();
+        return;
+    }
     if (s_menu_mode != MODE_MAIN) {
         int slot = row_slot(item);
         if (slot < 0) { menu_back(); return; }
@@ -1050,6 +1219,8 @@ static void menu_activate(int item) {
         menu_set_mode(MODE_SAVE);
     } else if (item == MI_LOAD) {
         menu_set_mode(MODE_LOAD);
+    } else if (item == MI_ACH) {
+        menu_set_mode(MODE_ACH);
     } else if (item == MI_DISPLAY) {
         menu_set_mode(MODE_DISPLAY);
     } else if (item == MI_EXIT) {
@@ -1068,7 +1239,7 @@ static void menu_back(void) {
     int from = s_menu_mode;
     if (from == MODE_QUIT && s_quit_from_window) { s_quit_from_window = false; menu_activate(MI_RESUME); return; }
     menu_set_mode(MODE_MAIN);
-    s_menu_sel = from == MODE_SAVE ? MI_SAVE : from == MODE_LOAD ? MI_LOAD : from == MODE_QUIT ? MI_EXIT : MI_DISPLAY;
+    s_menu_sel = from == MODE_SAVE ? MI_SAVE : from == MODE_LOAD ? MI_LOAD : from == MODE_ACH ? MI_ACH : from == MODE_QUIT ? MI_EXIT : MI_DISPLAY;
 }
 
 /* Size to present the menu at: the window's real drawable, letterboxed to
@@ -1340,10 +1511,15 @@ static const char *display_row_value(int item, char *buf, size_t n) {
     return "";
 }
 
-/* First footer line: only shown where Left / Right changes the selected row (the Options value rows). */
+/* First footer line: only shown where Left / Right changes the selected row (Options value rows, the Achievements switch). */
 static void menu_hint(char *out, size_t n) {
     const char *t = "";
-    if (s_menu_mode == MODE_DISPLAY && s_menu_sel != DI_BACK) t = "Left / Right Change";
+    int sel = s_menu_sel;
+    switch (s_menu_mode) {
+    case MODE_DISPLAY: t = sel == DI_BACK ? "" : "Left / Right Change"; break;
+    case MODE_ACH:     t = sel == 0 ? "Left / Right Change" : ""; break;
+    default: break;
+    }
     snprintf(out, n, "%s", t);
 }
 
@@ -1407,6 +1583,7 @@ static const uint32_t *menu_present(void *ctx, int *w, int *h) {
     const char *sub = s_menu_mode == MODE_SAVE ? "Save State" :
                       s_menu_mode == MODE_LOAD ? "Load State" :
                       s_menu_mode == MODE_DISPLAY ? "Options" :
+                      s_menu_mode == MODE_ACH ? "Achievements" :
                       s_menu_mode == MODE_QUIT ? "Exit Game" : "Paused";
     mr_text(d, pw, ph, L.pad, L.sub_y, 7.5f * u, 0x9AA0B4, 255, sub);
     mr_rect(d, pw, ph, L.pad, L.sep_y, L.sw - 2 * L.pad, (int)u > 1 ? (int)u : 1, 0x3A3D4C, 255);
@@ -1430,8 +1607,22 @@ static const uint32_t *menu_present(void *ctx, int *w, int *h) {
         if (!menu_row_rect(&L, i, &y0, &rowh)) continue;
         bool sel = i == s_menu_sel;
         bool hov = i == s_menu_hover;
+        int ai = i - 1;   /* Achievements page: row 0 is the On/Off switch, the achievements start at row 1 */
+        bool ach_row = s_menu_mode == MODE_ACH && i >= 1 && i <= ach_count();
+        if (ach_row) {   /* earned = tinted card with a rarity-coloured outline; not yet earned = plain grey card, no outline */
+            int rx = L.pad / 2, rw = L.sw - L.pad;
+            if (ach_unlocked(ai)) {
+                uint32_t ob = rarity_outline(ach_rarity(ai));
+                int ot = (int)(0.8f * u) > 1 ? (int)(0.8f * u) : 1;
+                mr_round_rect(d, pw, ph, rx, y0, rw, rowh, (int)(4 * u), ob, 255);
+                mr_round_rect(d, pw, ph, rx + ot, y0 + ot, rw - 2 * ot, rowh - 2 * ot, (int)(4 * u) - ot > 1 ? (int)(4 * u) - ot : 1,
+                              ach_rarity(ai) == 0 ? 0x5A3A1E : ach_rarity(ai) == 1 ? 0x2A3F5F : ach_rarity(ai) == 2 ? 0x45296B : 0x6B5414, 255);
+            } else {
+                mr_round_rect(d, pw, ph, rx, y0, rw, rowh, (int)(4 * u), 0x262830, 235);
+            }
+        }
         if (sel) {
-            mr_round_rect(d, pw, ph, L.pad / 2, y0, L.sw - L.pad, rowh, (int)(4 * u), 0x2C6FE0, 215);
+            mr_round_rect(d, pw, ph, L.pad / 2, y0, L.sw - L.pad, rowh, (int)(4 * u), 0x2C6FE0, ach_row ? 95 : 215);
         } else if (hov) {
             mr_round_rect(d, pw, ph, L.pad / 2, y0, L.sw - L.pad, rowh, (int)(4 * u), 0xFFFFFF, 28);
         }
@@ -1480,6 +1671,57 @@ static const uint32_t *menu_present(void *ctx, int *w, int *h) {
             mr_text(d, pw, ph, L.pad + (int)(6 * u), y0 + (int)((rowh - qpx) / 2), fit_px(qpx, L.sw - 2 * L.pad - (int)(8 * u), qrows[i]), fg, 255, qrows[i]);
             continue;
         }
+        if (s_menu_mode == MODE_ACH) {
+            if (i == 0 || i > ach_count()) {
+                float bpx = 8.0f * u;
+                bool switch_row = i == 0;
+                bool reset_row = i == ach_count() + 1;
+                bool armed = reset_row && SDL_GetTicks() < s_ach_reset_until;
+                const char *label = switch_row ? (ach_enabled() ? "Achievements: On" : "Achievements: Off")
+                                  : !reset_row ? "Back" : armed ? "Press again to erase ALL achievements" : "Reset all achievements";
+                mr_text(d, pw, ph, L.pad + (int)(6 * u), y0 + (int)((rowh - bpx) / 2), fit_px(bpx, L.sw - 2 * L.pad - (int)(12 * u), label),
+                        armed ? 0xFF7070 : fg, 255, label);
+                continue;
+            }
+            bool got = ach_unlocked(ai);
+            uint32_t rc_body, rc_shine, rc_edge;
+            rarity_colors(ach_rarity(ai), &rc_body, &rc_shine, &rc_edge);
+            {   /* trophy: rarity colour when earned (bronze / silver / purple / gold), grey when not */
+                int ps = (int)(u * 0.7f) > 1 ? (int)(u * 0.7f) : 1;
+                int tx = L.pad + (int)(4 * u), ty0 = y0 + (rowh - 19 * ps) / 2;
+                for (int ty = 0; ty < 19; ty++)
+                    for (int tx_ = 0; tx_ < 14; tx_++) {
+                        uint32_t c;
+                        switch (k_trophy_art[ty][tx_]) {
+                            case 'G': c = got ? rc_body : 0x4C4F5D; break;
+                            case 'H': c = got ? rc_shine : 0x676B7C; break;
+                            case 'D': c = got ? rc_edge : 0x2E303A; break;
+                            default: continue;
+                        }
+                        mr_rect(d, pw, ph, tx + tx_ * ps, ty0 + ty * ps, ps, ps, c, 255);
+                    }
+            }
+            int tro = (int)(4 * u) + 14 * ((int)(u * 0.7f) > 1 ? (int)(u * 0.7f) : 1) + (int)(4 * u);   /* text starts after the trophy */
+            int avail = L.sw - 2 * L.pad - (int)(8 * u) - tro;
+            char pts[16];
+            snprintf(pts, sizeof pts, "%dp", ach_points(ai));
+            float ppx = 6.0f * u;
+            int pw_ = mr_text_width(ppx, pts);
+            mr_text(d, pw, ph, L.sw - L.pad / 2 - (int)(6 * u) - pw_, y0 + (int)(3 * u), ppx,
+                    got ? rc_body : 0x5E6274, 255, pts);
+            const char *rn = ach_rarity_name(ach_rarity(ai));   /* rarity word under the points */
+            float rpx = 4.8f * u;
+            int rw = mr_text_width(rpx, rn);
+            mr_text(d, pw, ph, L.sw - L.pad / 2 - (int)(6 * u) - rw, y0 + (int)(13 * u), rpx,
+                    got ? rc_body : 0x5E6274, 255, rn);
+            char nb[96], db[160];
+            bool veil = ach_hidden(ai) && !got;   /* hidden until unlocked */
+            float npx = fit_trunc(nb, sizeof nb, 7.2f * u, 0.72f, avail - pw_ - (int)(3 * u), veil ? "???" : ach_name(ai));
+            mr_text(d, pw, ph, L.pad + tro, y0 + (int)(2.5f * u), npx, got ? 0xFFFFFF : 0x7D8296, 255, nb);
+            float dpx = fit_trunc(db, sizeof db, 5.6f * u, 0.72f, avail - rw - (int)(4 * u), veil ? "Hidden achievement." : ach_desc(ai));
+            mr_text(d, pw, ph, L.pad + tro, y0 + (int)(13 * u), dpx, got ? 0xF3E3B0 : 0x6A6F82, 255, db);
+            continue;
+        }
         float tpx = 8.0f * u;
         int ty = y0 + (int)((rowh - tpx) / 2);
         int slot = row_slot(i);
@@ -1502,6 +1744,7 @@ static const uint32_t *menu_present(void *ctx, int *w, int *h) {
         char info[96];
         info[0] = 0;
         if (s_menu_mode == MODE_QUIT) snprintf(info, sizeof info, "%s", s_dirty ? "Unsaved progress will be lost." : "");
+        else if (s_menu_mode == MODE_ACH) snprintf(info, sizeof info, "%d / %d unlocked   %d / %d points", ach_unlocked_count(), ach_count(), ach_points_unlocked(), ach_points_total());
         int avail = L.sw - 2 * L.pad;
         if (s_menu_status[0]) mr_text(d, pw, ph, L.pad, L.info_y, fit_px(6.5f * u, avail, s_menu_status), s_menu_status_rgb, 255, s_menu_status);
         else if (info[0]) mr_text(d, pw, ph, L.pad, L.info_y, fit_px(6.5f * u, avail, info), 0x9AA0B4, 255, info);
@@ -1597,6 +1840,11 @@ static void menu_event(void *ctx, const void *event, int player) {
         if ((sc == SDL_SCANCODE_LEFT || sc == SDL_SCANCODE_RIGHT) && s_menu_mode == MODE_DISPLAY &&
             s_menu_sel == DI_FULLSCREEN) {
             s_fs_req = true;
+            return;
+        }
+        if ((sc == SDL_SCANCODE_LEFT || sc == SDL_SCANCODE_RIGHT) && s_menu_mode == MODE_ACH &&
+            s_menu_sel == 0) {
+            s_ach_req = true;
             return;
         }
         if (sc == SDL_SCANCODE_RETURN || sc == SDL_SCANCODE_SPACE || sc == SDL_SCANCODE_KP_ENTER)
@@ -1850,6 +2098,12 @@ static void set_volume(int row, int v) {
     cyc_host_save_settings();
 }
 
+static void set_achievements(bool on) {
+    ach_set_enabled(on);
+    cyc_host_save_settings();
+    display_toast("Achievements", on ? "On" : "Off");
+}
+
 static void display_activate(int item) {
     int fs = 0;
     switch (item) {
@@ -1877,6 +2131,7 @@ static void display_frame_end(void) {
     if (s_req_filter_cycle) { s_req_filter_cycle = false; set_filter(s_filter + 1); }
     if (s_scale_req_dir) { step_scale(s_scale_req_dir); s_scale_req_dir = 0; }
     if (s_shape_req) { s_shape_req = false; set_shape(!s_aspect); }
+    if (s_ach_req) { s_ach_req = false; set_achievements(!ach_enabled()); }
     if (s_filter_req_dir) { int dir = s_filter_req_dir; s_filter_req_dir = 0; set_filter(s_filter + dir); }
     if (s_fs_req) { s_fs_req = false; display_activate(DI_FULLSCREEN); }
     if (s_speed_req_row >= 0) { int row = s_speed_req_row; s_speed_req_row = -1; step_speed(row, s_speed_req_dir); }
@@ -1894,6 +2149,7 @@ static void display_load_setting(void *ctx, const char *key, const char *value) 
     else if (!strcmp(key, "SfxVolume")) s_sfx_vol = atoi(value);
     else if (!strcmp(key, "Scale")) { int v = atoi(value); s_scale = v >= 2 && v <= 6 ? v : 0; }
     else if (!strcmp(key, "Aspect")) s_aspect = atoi(value) == 1 ? 1 : 0;
+    else if (!strcmp(key, "Achievements")) ach_set_enabled(atoi(value) != 0);
     else if (!strcmp(key, "Splash")) s_splash_enabled = atoi(value) != 0;
     else if (!strcmp(key, "UpdateCheck")) s_update_check = atoi(value) != 0;
     else if (!strcmp(key, "MouseSpeed")) s_mouse_speed = atoi(value);
@@ -1907,8 +2163,8 @@ static void display_load_setting(void *ctx, const char *key, const char *value) 
 
 static void display_save_settings(void *ctx, FILE *f) {
     (void)ctx;
-    fprintf(f, "Filter = %d\nMusicVolume = %d\nSfxVolume = %d\nScale = %d\nAspect = %d\nSplash = %d\nUpdateCheck = %d\nMouseSpeed = %d\nPadSpeed = %d\n",
-            s_filter == FILTER_CRT_STRONG ? 4 : s_filter == FILTER_CRT ? 2 : 0, s_music_vol, s_sfx_vol, s_scale, s_aspect, s_splash_enabled ? 1 : 0, s_update_check ? 1 : 0, s_mouse_speed, s_pad_speed);
+    fprintf(f, "Filter = %d\nMusicVolume = %d\nSfxVolume = %d\nScale = %d\nAspect = %d\nSplash = %d\nUpdateCheck = %d\nMouseSpeed = %d\nPadSpeed = %d\nAchievements = %d\n",
+            s_filter == FILTER_CRT_STRONG ? 4 : s_filter == FILTER_CRT ? 2 : 0, s_music_vol, s_sfx_vol, s_scale, s_aspect, s_splash_enabled ? 1 : 0, s_update_check ? 1 : 0, s_mouse_speed, s_pad_speed, ach_enabled() ? 1 : 0);
 }
 
 /* Startup splash (the Meteor Mess Games logo with the twinkling stars): twinkling bell sparkles play over it. They run only
@@ -1966,6 +2222,32 @@ static void splash_step(void) {
     }
 }
 
+static volatile int s_chime_pos;   /* unlock chime playback position, defined with the audio hook */
+/* Evaluate achievements while the game runs (not under the menu or splash) and show unlock banners. */
+static void achievements_step(void) {
+    static bool inited = false;
+    if (!inited) {
+        char *base = SDL_GetBasePath();
+        ach_init(base ? base : "");
+        inited = true;
+    }
+    if (s_menu_open || s_splash_state == 1) return;
+    ach_poll(ach_rd);
+    if (s_toast_frames <= 0) {
+        int a = ach_next_toast();
+        if (a >= 0) {
+            snprintf(s_toast_text, sizeof s_toast_text, "ACHIEVEMENT UNLOCKED\n%s\n%s", ach_name(a), ach_desc(a));
+            for (char *c = s_toast_text; *c; c++) if (*c >= 'a' && *c <= 'z') *c = (char)(*c - 32);
+            s_toast_frames = 240;
+            s_ach_tier = RARITY_GOLD;   /* the unlock banner is always gold, whatever the rarity */
+            { int ry0, ry1, rx0, rx1; s_ach_cx = room_extent(&ry0, &ry1, &rx0, &rx1) ? (rx0 + rx1 + 1) / 2 : 0; }
+            if (!strcmp(ach_id(a), "meltdown_self_destruct")) s_ach_cx = 0;   /* Countdown To Zero: centred on the whole screen, not the room */
+            s_chime_pos = 0;
+            menu_log("achievement", ach_name(a));
+        }
+    }
+}
+
 static void menu_frame_end(void *ctx) {
     (void)ctx;
     splash_step();
@@ -1978,6 +2260,7 @@ static void menu_frame_end(void *ctx) {
     display_frame_end();
     follow_game_save();
     update_step();
+    achievements_step();
     if (s_menu_req_back) {
         s_menu_req_back = false;
         if (s_menu_open && s_menu_mode != MODE_MAIN) menu_back();
@@ -2470,6 +2753,7 @@ static bool lmb_busy = false;
 static bool menu_input_busy(void) { return ctx_busy || lmb_busy; }
 
 static void after_state_load(void) {
+    ach_state_loaded();   /* achievements: whatever is true in the loaded state is not new */
     if (s_session_bat_valid) {
         uint8_t *bat = cart_ram_byte(BAT_ADDR);
         if (bat && cart_ram_byte(BAT_ADDR + BAT_LEN - 1)) memcpy(bat, s_session_bat, BAT_LEN);
@@ -3211,6 +3495,7 @@ static bool quit_request(void *ctx) {
 /* 2026-11-10: the game keeps stepping behind the Esc menu (and is rewound to
  * the paused moment on close), so silence its audio while the menu is up:
  * Esc now pauses the sound as well as freezing the picture. */
+static volatile int s_chime_pos = -1;   /* samples played of the unlock chime, -1 = idle */
 static void menu_audio_mix(void *ctx, int16_t *samples, size_t count) {
     (void)ctx;
     if (s_menu_open || s_splash_state == 1) memset(samples, 0, count * sizeof samples[0]);
@@ -3229,6 +3514,14 @@ static void menu_audio_mix(void *ctx, int16_t *samples, size_t count) {
         }
         s_splash_sfx_pos = spos >= slen ? -1 : spos;
     }
+    /* Achievement unlock sound (achievement_sfx.h, 48 kHz mono), follows the Sound FX volume. */
+    int pos = s_chime_pos;
+    if (pos < 0) return;
+    for (size_t i = 0; i < count && pos < ACH_SFX_LEN; i++, pos++) {
+        int m = samples[i] + k_ach_sfx[pos] * s_sfx_vol / 100;
+        samples[i] = (int16_t)(m > 32767 ? 32767 : m < -32768 ? -32768 : m);
+    }
+    s_chime_pos = pos >= ACH_SFX_LEN ? -1 : pos;
 }
 static const CycHostExtras s_extras = {
     .audio_mix = menu_audio_mix,

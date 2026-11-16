@@ -27,21 +27,20 @@ Left click     Walk to a spot, pick a verb, or pick an item.
                Clicking an object with no verb picked walks to it (GO TO).
 
 Right click    Do the obvious thing with the object under the cursor:
-               GET things you can take, OPEN or CLOSE doors, READ signs,
-               PUSH or PULL things, TURN ON or OFF, USE, and so on.
-               While you hover an object, the sentence line shows what a
-               right click will do (for example "READ SIGN").
+               GET, OPEN or CLOSE, READ, PUSH or PULL, TURN ON or OFF, USE,
+               and so on. While you hover an object, the sentence line shows
+               what a right click will do.
                Right click also skips cutscenes.
 
-Middle click   In-game save menu: opens the game's own menu (Back to the
-               Mansion / Save game / Restore saved game / New game), same as
+Middle click   In-game save menu: opens the game's own menu (Save / Restore /
+               New game), same as
                Start on the NES pad. Middle click again inside that menu goes
                back to the game.
 
 Mouse wheel    Scroll the inventory.
 
-Two-step commands still work the classic way: left click a verb
-(for example USE), then left click the object(s).
+Two-step commands still work the classic way: left click a verb,
+then left click the object(s).
 
 Skipping text: left click above the room (the text lines) or during a
 cutscene to skip the current message. On the logo and title screens a left
@@ -50,7 +49,7 @@ click skips too.
 
 CONTROLLER
 ----------
-D-pad / stick  Move the cursor (speed: pause menu -> Options -> Controller Speed)
+D-pad / stick  Move the cursor (speed: pause menu -> Options -> Key Speed)
 A              Left click
 B              Right click (context verb; skips cutscenes)
 X              Cycle the verb (Select)
@@ -74,31 +73,25 @@ Arrow keys     NES d-pad
 
 PAUSE MENU (Esc)
 ----------------
-The game is paused (and silent) while the menu is open. Use the mouse, or Up/Down and
-Enter. Esc or right click goes back.
-
-  Resume Game   Back to the game.
-  Save State    Pick a slot (the list grows with your saves, plus one empty
-                slot; scroll it with the mouse wheel or Up/Down). Each slot
-                shows a screenshot and the time it was saved. Saving over a
-                used slot asks you to click a second time first.
-  Load State    Pick a slot to load. The screenshot on the right shows what
-                you will get.
-  Options       Music volume, Sound FX volume, Fullscreen, Filter, Scale,
-                Shape, Mouse Speed and Controller Speed.
-                Volumes: drag or click the bar, or Left / Right in 1% steps.
-                Left / Right changes any value row; Esc or right click goes back.
-  Exit Game     Asks first if you have unsaved progress: Save to a slot and
-                exit, Exit without saving, or Back. Closing the window does
-                the same. With nothing unsaved it just exits.
+The game is paused and silent while it is open. Use the mouse, or Up/Down and
+Enter. Esc or right click goes back. Resume, Save State and Load State
+(unlimited slots, each with a screenshot), Options, Exit Game (asks first if
+you have unsaved progress).
 
 
-STARTUP SPLASH
---------------
-The game opens with the Meteor Mess Games logo and twinkling stars, with
-bell-like twinkles to match. Any key or click skips it. To turn it off set
-Splash = 0 in config.ini.
-
+ACHIEVEMENTS
+------------
+There are 40. Esc -> Achievements lists them; each is rated by how
+complicated it is to earn:
+  Common     bronze   5 points
+  Rare       silver   10 points
+  Epic       purple   20 points
+  Legendary  gold     40 points
+A few are secret and show as ??? until you earn them. A banner and a sound
+announce each unlock. Your unlocks are kept inside the game's own exe (there
+is no file to edit), so putting a newer exe in the folder starts you fresh.
+"Reset all achievements" at the bottom of the list erases everything (press
+it twice to confirm).
 
 SAVING
 ------
@@ -157,7 +150,7 @@ Shape (pause menu -> Options)
 Fullscreen (F11)
   Uses your monitor's own resolution (1080p, 1440p, 4K ...).
 
-Mouse Speed / Controller Speed (pause menu -> Options)
+Mouse Speed / Key Speed (pause menu -> Options)
   How fast the cursor moves with the mouse and with the arrow keys:
   50% to 300%, 100% is normal.
 

@@ -1,6 +1,6 @@
 # Maniac Mansion NES PC
 
-Play the **Maniac Mansion NES prototype** on PC with a mouse, as a real point-and-click adventure. The port does not replace the game's logic: it hooks a few spots in the ROM and lets the game run its own verb scripts, so a right click does exactly what the game itself would do. It also adds a pause menu, save slots, volume controls and picture filters. Built with [NESRecomp](https://github.com/mstan/nesrecomp).
+Play the **Maniac Mansion NES prototype** on PC with a mouse, as a real point-and-click adventure. The port does not replace the game's logic: it hooks a few spots in the ROM and lets the game run its own verb scripts, so a right click does exactly what the game itself would do. It also adds a pause menu, save slots, volume controls, picture filters and achievements. Built with [NESRecomp](https://github.com/mstan/nesrecomp).
 
 **No game data is included.** You need your own dump of `Maniac Mansion (Prototype).nes`.
 
@@ -29,7 +29,7 @@ Get `ManiacMansion_NES_PC_win64.zip` from the [latest release](https://github.co
 - Three picture filters (Sharp, CRT, CRT Strong), including a GPU CRT.
 - Fullscreen, fixed or automatic scaling, square pixels or 4:3 TV shape.
 - Controller support.
-- Achievements (on the [`achievements` branch](https://github.com/MeteorMessGames/ManiacMansion_NES_PC/tree/achievements)): rated Common, Rare, Epic and Legendary, with a trophy page in the pause menu.
+- 47 achievements in four rarities, with a trophy page in the pause menu.
 - A launch-time update check (turn off with `UpdateCheck = 0` in `config.ini`).
 
 The full player guide (controls, saving, tips) is in [README.txt](README.txt), which ships next to the exe.
@@ -38,7 +38,7 @@ The full player guide (controls, saving, tips) is in [README.txt](README.txt), w
 
 ![Achievement unlocked](docs/screenshots/achievement-toast.png)
 
-Achievements live on the [`achievements` branch](https://github.com/MeteorMessGames/ManiacMansion_NES_PC/tree/achievements): rated Common, Rare, Epic and Legendary, with a banner and sound on each unlock and a trophy page in the pause menu.
+47 achievements in four rarities (Common, Rare, Epic, Legendary). A banner and a sound announce each one, and Esc > Achievements lists them all. Some are secret until earned.
 
 ## Mouse
 
@@ -76,7 +76,7 @@ Achievements live on the [`achievements` branch](https://github.com/MeteorMessGa
 
 ## How it works
 
-The port hooks the game at a few ROM sites (listed in `game.toml`, each checked by CRC32): the joypad reads (mouse buttons become A / B / Start), the cursor clamp (so the mouse reaches the screen edges), the game's save, and the audio mix.
+The port hooks the game at a few ROM sites (listed in `game.toml`, each checked by CRC32): the joypad reads (mouse buttons become A / B / Start), the cursor clamp (so the mouse reaches the screen edges), the game's save, and the audio mix. Achievements are a table of RAM conditions checked every frame, and unlocks are stored inside the exe.
 
 The context verb comes from reading the room's object tables and each object's SCUMM v2 verb scripts, for example whether its GET script really picks it up. The click is then replayed through the game's own verb and sentence variables, so the game runs the command itself.
 

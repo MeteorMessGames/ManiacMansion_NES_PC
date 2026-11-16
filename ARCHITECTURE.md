@@ -2,7 +2,7 @@
 
 How the port is put together. For using the game see [README.md](README.md); for building it see [BUILDING.md](BUILDING.md).
 
-The port is a mod on top of [NESRecomp](https://github.com/mstan/nesrecomp). NESRecomp runs the NES game (recompiled to C, or interpreted in the release build) and gives the mod a few hook points. Everything here sits on the host side: input, menus, saves, audio mixing, and picture filters. The adventure logic is always the game's own.
+The port is a mod on top of [NESRecomp](https://github.com/mstan/nesrecomp). NESRecomp runs the NES game (recompiled to C, or interpreted in the release build) and gives the mod a few hook points. Everything here sits on the host side: input, menus, saves, audio mixing, picture filters and achievements. The adventure logic is always the game's own.
 
 ## Source files
 
@@ -10,6 +10,8 @@ The port is a mod on top of [NESRecomp](https://github.com/mstan/nesrecomp). NES
 |---|---|
 | `mouse_cursor_hook.c` | Input (mouse, keyboard, controller), context verbs, the pause menu, options, save-state slots, audio routing |
 | `menu_render.c` | Menu drawing (stb_truetype with an embedded DejaVu Sans Bold) |
+| `achievements.c`, `achievements_table.h` | Achievement engine, and the generated table of conditions, rarities and points |
+| `achievement_sfx.h` | The unlock chime |
 | `update_check.c` | The launch-time update check (background thread) |
 | `crt_gpu.c`, `crt_filter.c` | The CRT filters and the TV-shape sharp scaler, GPU and CPU versions |
 | `romless_native.c.in` | Stand-in for the generated game code in the release build (ROM hashes and hook sites only; finds the ROM next to the exe) |
@@ -26,7 +28,7 @@ Each site in `game.toml` is matched by address and checked by the CRC32 of the b
 | Cursor clamp (`$9539`) | Undoes the game's clamp of its cursor position, so the mouse reaches the screen edges. In play the cursor is held to the room area. |
 | Game save (`$9659`) | Mirrors the cartridge battery save into the save-state slot used this session. |
 
-Audio is mixed on the host side: the pause menu silences the game. Controllers are read through SDL's game controller API; the runner's own pad mapping is bypassed by the joypad hook.
+Audio is mixed on the host side: the pause menu silences the game, and the achievement chime is added to the output. Controllers are read through SDL's game controller API; the runner's own pad mapping is bypassed by the joypad hook.
 
 ## Context verbs (right click)
 
@@ -48,6 +50,10 @@ The game's own save is separate: it is the cartridge battery save, and survives 
 ## Rendering
 
 The runner presents a 256x240 frame. The mod chooses the scale (automatic whole-number scale or a fixed one) and the shape (square pixels or 4:3 TV, with NES pixels 8:7 wide). *Sharp* is integer scaling, kept crisp at TV shape with a sharp-bilinear blend. *CRT* and *CRT Strong* draw scanlines that widen on bright colours, an RGB stripe mask and a soft glow; they run on the GPU through OpenGL with a CPU fallback.
+
+## Achievements
+
+`achievements_table.h` is generated: each achievement is a list of conditions on the game's RAM (equality, comparison with a mask, a script being active, or "was true earlier this session"). The engine checks the table every frame while a game is in play and holds a condition for a few frames before it counts, so loading or starting the game cannot unlock anything by accident. Unlocks are stored in a signed block inside the exe, so there is no file to edit, and a new build starts with none.
 
 ## Update check
 
