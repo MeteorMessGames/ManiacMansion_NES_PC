@@ -4,7 +4,7 @@ This mod is built on [NESRecomp](https://github.com/mstan/nesrecomp) (PolyForm N
 
 The patch applies to NESRecomp commit **`e8091c8dd149f64ee3bd3489d00c011c50100f09`**. Newer upstream commits have moved the same files, so use that commit.
 
-You also need CMake 3.20+, a C/C++ toolchain, SDL2 development files, and **your own dump** of `Maniac Mansion (Prototype).nes` (no game data is included).
+You also need CMake 3.20+, a C/C++ toolchain, SDL2 development files, and **your own dump** of the NES ROM, the prototype (recommended) or the retail US release (no game data is included). The normal build compiles the ROM you pass in `MM_ROM`; the release build (`MM_ROMLESS`) runs either ROM.
 
 ## Linux
 
@@ -47,7 +47,7 @@ cmake -S . -B build-win -DCMAKE_TOOLCHAIN_FILE=mingw-toolchain.cmake -DCMAKE_BUI
 cmake --build build-win -j
 ```
 
-`-DMM_ROMLESS=ON` is the release build: the exe contains none of the game; the player's own ROM, next to the exe, runs on the runner's interpreter. It is named `ManiacMansion.exe` and opens no console (`-DMM_CONSOLE=ON` brings the console back). Without it you get `nes_game`, built on the recompiled game code, with the console.
+`-DMM_ROMLESS=ON` is the release build: the exe contains none of the game; the player's own ROM, next to the exe, runs on the runner's interpreter. It finds the ROM by the hash of its contents (any `.nes` file name), asks which one to play if both are there, and opens a file box if none is found. It is named `ManiacMansion.exe` and opens no console (`-DMM_CONSOLE=ON` brings the console back). Without it you get `nes_game`, built on the recompiled game code, with the console.
 
 ## Notes
 

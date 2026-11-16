@@ -14,13 +14,16 @@ The port is a mod on top of [NESRecomp](https://github.com/mstan/nesrecomp). NES
 | `achievement_sfx.h` | The unlock chime |
 | `update_check.c` | The launch-time update check (background thread) |
 | `crt_gpu.c`, `crt_filter.c` | The CRT filters and the TV-shape sharp scaler, GPU and CPU versions |
+| `rom_db.h`, `rom_picker.c` | The known ROMs (prototype and retail US) by hash of their PRG data, and the small window that asks which one to play |
 | `romless_native.c.in` | Stand-in for the generated game code in the release build (ROM hashes and hook sites only; finds the ROM next to the exe) |
 | `game.toml` | Hook sites and their CRC32 checks |
 | `runner-patches/` | The small NESRecomp patch (display controls, GPU present hook, APU write hook, per-channel volume) |
 
 ## Hook sites
 
-Each site in `game.toml` is matched by address and checked by the CRC32 of the bytes there, so a different ROM refuses to hook.
+Each site in `game.toml` is matched by address and checked by the CRC32 of the bytes there, so a different ROM refuses to hook. The prototype and the retail US ROM have byte-identical hook sites at the same addresses, the same script opcodes and the same object numbers; the release build accepts both (the runner patch adds a second accepted PRG hash).
+
+Each ROM keeps its own progress: save-state slots (`ManiacMansion.retail.slotN.*` for retail), the cartridge save (`saves/ManiacMansion_retail.sav`) and the achievement records (the retail ones are hashed with a `#retail` suffix, stored next to the prototype's in the same block).
 
 | Site | What the mod does there |
 |---|---|
