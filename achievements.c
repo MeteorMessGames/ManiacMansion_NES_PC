@@ -54,12 +54,16 @@ static uint64_t siphash8(const uint8_t *m)
 #undef SIPROUND
 }
 
-/* Each ROM has its own progress. The prototype's records are the plain id hash (so old unlocks keep working); the retail ROM's
- * are the id hash continued over "#retail". Records of the other ROM are kept untouched and written back, so both survive. */
+/* Each ROM has its own progress. The prototype's records are the plain id hash (so old unlocks keep working); every other ROM's
+ * are the id hash continued over "#" and its tag ("#retail", "#x<HASH of its PRG data>"). Records of the other ROM are kept untouched and written back, so both survive. */
 static const char *rom_salt(void)
 {
-    const MmRomInfo *r = mm_rom_by_hash(cyc_prg_hash());
-    return r && !strcmp(r->id, "retail") ? "#retail" : "";
+    static char salt[32];
+    char tag[24];
+    mm_rom_tag(cyc_prg_hash(), tag, sizeof tag);   /* "" prototype, "retail", else "x<HASH>": one list per ROM */
+    if (!tag[0]) return "";
+    snprintf(salt, sizeof salt, "#%s", tag);
+    return salt;
 }
 
 static uint32_t id_hash(const char *id)   /* FNV-1a */
@@ -70,7 +74,7 @@ static uint32_t id_hash(const char *id)   /* FNV-1a */
     return h;
 }
 
-#define FOREIGN_MAX 64
+#define FOREIGN_MAX 1024
 static uint8_t s_foreign[FOREIGN_MAX][16];   /* valid signed records that belong to the other ROM */
 static int     s_nforeign = 0;
 
@@ -116,7 +120,7 @@ static void load_payload(const uint8_t *p, size_t n)
  * out of the way and the copy takes its name (both Windows and Linux allow renaming a running program). If anything
  * fails the unlocks simply stay in memory for the session. Replacing the exe with a new release starts fresh. */
 #define BLOB_MARK 16
-#define BLOB_CAP  2048
+#define BLOB_CAP  16384
 static unsigned char s_blob[BLOB_MARK + 2 + BLOB_CAP] __attribute__((used)) = {
     'M', 'M', 'A', 'x', 'U', 'N', 'L', 'K', 0x6E, 0x21, 0xB4, 0x9D, 0x53, 0xF0, 0x08, 0xC7 };
 

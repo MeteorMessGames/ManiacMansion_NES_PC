@@ -27,10 +27,10 @@ const uint32_t cyc_native_ram_view_count = 0;
 @MM_HOOK_SITES@
 
 /* The second accepted ROM: the retail US cartridge (same board, a different PRG hash). See rom_db.h. */
-uint32_t cyc_native_alt_prg_hash_get(void) { return 0x94B7EEDFu; }
 /* The retail ROM keeps its own cartridge save (the game's own Save), whatever its file is called. The prototype keeps its old
  * name (the ROM file's stem), so existing saves still load. Set once the ROM is chosen, in find_rom() below. */
 static const char *s_save_stem = NULL;
+static char s_stem[64];
 const char *cyc_native_save_stem_get(void) { return s_save_stem; }
 
 /* Before main: look for the ROM next to the exe. Started without a ROM
@@ -41,6 +41,11 @@ const char *cyc_native_save_stem_get(void) { return s_save_stem; }
 #include <stdlib.h>   /* __argc on Windows */
 #include <string.h>
 #include "rom_db.h"
+
+/* Every ROM in rom_db.h besides the prototype (the one the program was built for) is an "other ROM" for the host: its PRG hash and board are accepted. */
+static int family_hash_ok(uint32_t h);
+int cyc_native_alt_rom_ok(uint32_t prg_hash) { return mm_rom_by_hash(prg_hash) != NULL || family_hash_ok(prg_hash); }
+int cyc_native_has_alt_roms(void) { return 1; }
 #ifdef _WIN32
 #include <windows.h>
 #else
@@ -51,7 +56,15 @@ int mm_rom_picker(const char *const *titles, int n, int *remember);   /* rom_pic
 #define MM_MAX_FOUND 8
 typedef struct { char path[4096]; const MmRomInfo *info; } FoundRom;
 
-/* Hash a file as an iNES ROM; the known ROM it is, or NULL. */
+/* ROMs that are not in rom_db.h but are recognizably Maniac Mansion (patched versions of the known ROMs): each gets an info record made from its
+ * hash, and the host is told to accept that hash (cyc_native_alt_rom_ok). */
+static MmRomInfo s_gen[MM_MAX_FOUND];
+static char      s_gen_id[MM_MAX_FOUND][16], s_gen_title[MM_MAX_FOUND][64];
+static int       s_ngen = 0;
+static uint32_t  s_family_hash[MM_MAX_FOUND];
+static int       s_nfamily = 0;
+
+/* Hash a file as an iNES ROM; the known ROM it is, a record for a patched Maniac Mansion, or NULL. */
 static const MmRomInfo *identify(const char *path) {
     SDL_RWops *f = SDL_RWFromFile(path, "rb");   /* UTF-8 path on Windows too */
     if (!f) return NULL;
@@ -59,12 +72,29 @@ static const MmRomInfo *identify(const char *path) {
     const MmRomInfo *r = NULL;
     if (n > 16 && n <= 4 * 1024 * 1024) {
         uint8_t *buf = (uint8_t *)malloc((size_t)n);
-        if (buf && SDL_RWread(f, buf, 1, (size_t)n) == (size_t)n) r = mm_rom_by_hash(mm_ines_prg_hash(buf, (size_t)n));
+        if (buf && SDL_RWread(f, buf, 1, (size_t)n) == (size_t)n) {
+            uint32_t h = mm_ines_prg_hash(buf, (size_t)n);
+            r = mm_rom_by_hash(h);
+            if (!r && h && mm_is_family(buf, (size_t)n)) {
+                for (int i = 0; i < s_ngen && !r; i++) if (s_gen[i].prg_hash == h) r = &s_gen[i];
+                if (!r && s_ngen < MM_MAX_FOUND) {
+                    MmRomInfo *g = &s_gen[s_ngen];
+                    snprintf(s_gen_id[s_ngen], sizeof s_gen_id[0], "x%08X", (unsigned)h);
+                    mm_rom_title(h, s_gen_title[s_ngen], sizeof s_gen_title[0]);
+                    g->prg_hash = h; g->id = s_gen_id[s_ngen]; g->title = s_gen_title[s_ngen];
+                    s_ngen++;
+                    r = g;
+                }
+                if (r && s_nfamily < MM_MAX_FOUND) s_family_hash[s_nfamily++] = h;
+            }
+        }
         free(buf);
     }
     SDL_RWclose(f);
     return r;
 }
+
+static int family_hash_ok(uint32_t h) { for (int i = 0; i < s_nfamily; i++) if (s_family_hash[i] == h) return 1; return 0; }
 
 static bool is_nes_name(const char *name) {
     size_t n = strlen(name);
@@ -202,11 +232,17 @@ __attribute__((constructor)) static void find_rom(void) {
     int argc = __argc;
 #else
 __attribute__((constructor)) static void find_rom(int argc, char **argv) {
-    (void)argv;
 #endif
     static char path[4096];
     static FoundRom found[MM_MAX_FOUND];
-    if (argc > 1) return;   /* a ROM given on the command line: the host loads that one */
+    if (argc > 1) {   /* a ROM given on the command line: the host loads that one; make sure a patched Maniac Mansion is accepted */
+#ifdef _WIN32
+        identify(__argv[argc - 1]);
+#else
+        identify(argv[argc - 1]);
+#endif
+        return;
+    }
     char *base = SDL_GetBasePath();
     int nf = scan_roms(base, found), pick = -1;
     char saved[4096];
@@ -255,7 +291,9 @@ __attribute__((constructor)) static void find_rom(int argc, char **argv) {
     if (pick >= 0) {
         snprintf(path, sizeof path, "%s", found[pick].path);
         cyc_native_fds_image_path = path;
-        if (!strcmp(found[pick].info->id, "retail")) s_save_stem = "ManiacMansion_retail";
+        char tag[24];
+        mm_rom_tag(found[pick].info->prg_hash, tag, sizeof tag);   /* "" = the prototype keeps the old name */
+        if (tag[0]) { snprintf(s_stem, sizeof s_stem, "ManiacMansion_%s", tag); s_save_stem = s_stem; }
     }
 }
 

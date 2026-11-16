@@ -59,9 +59,18 @@ if(MM_ROMLESS)
     string(FIND "${_tail}" ";" _semi)
     math(EXPR _len "${_b} - ${_a} + ${_semi} + 1")
     string(SUBSTRING "${_mm_gen}" ${_a} ${_len} MM_HOOK_SITES)
+    # One more hook site that exists only in the community hacks (their own mouse driver, see mouse_cursor_hook.c): the recompiler
+    # refuses a site its build ROM does not hold, so it cannot live in game.toml; the table of the release stub gets it here. The site only
+    # fires in a ROM whose bytes at $9810 match (runtime check), so the prototype and the retail ROM are unaffected.
+    string(REGEX MATCH "cyc_native_hook_sites\\[([0-9]+)\\]" _mm_ign "${MM_HOOK_SITES}")
+    set(_mm_n "${CMAKE_MATCH_1}")
+    math(EXPR _mm_m "${_mm_n} + 1")
+    string(REPLACE "cyc_native_hook_sites[${_mm_n}] = {" "cyc_native_hook_sites[${_mm_m}] = {\n    { \"maniac-mansion.mouse-cursor.joypad-read-hackdriver\", 0x9810, 16, 0xEB12C75Eu }," MM_HOOK_SITES "${MM_HOOK_SITES}")
+    string(REPLACE "cyc_native_hook_site_count = ${_mm_n}u" "cyc_native_hook_site_count = ${_mm_m}u" MM_HOOK_SITES "${MM_HOOK_SITES}")
     configure_file("${CMAKE_CURRENT_LIST_DIR}/romless_native.c.in" "${CMAKE_CURRENT_BINARY_DIR}/romless_native.c" @ONLY)
     list(APPEND _mm_keep "${CMAKE_CURRENT_BINARY_DIR}/romless_native.c")
     set_property(TARGET nes_game PROPERTY SOURCES ${_mm_keep})
+    target_compile_definitions(nes_game PRIVATE MM_HACKDRV_HOOK=1)
     message(STATUS "MM_ROMLESS: no game code in the exe (interpreter + ${_mm_main} hook sites)")
 endif()
 

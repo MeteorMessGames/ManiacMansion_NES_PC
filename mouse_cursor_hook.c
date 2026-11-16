@@ -123,6 +123,7 @@
 
 #define HOOK_ID "maniac-mansion.mouse-cursor.joypad-read"
 #define HOOK_ID_BANK0 "maniac-mansion.mouse-cursor.joypad-read-bank0"
+#define HOOK_ID_HACKDRV "maniac-mansion.mouse-cursor.joypad-read-hackdriver"   /* the hacks' own mouse driver at $9810 (see game.toml) */
 #define HOOK_ID_GAME_SAVE "maniac-mansion.game-save-observer"
 #define HOOK_ID_UNCLAMP "maniac-mansion.cursor-unclamp"
 
@@ -826,18 +827,21 @@ static uint8_t ach_rd(uint16_t addr) {
 }
 
 /* The retail US cartridge (PRG hash of the second ROM accepted by the release build); anything else is the prototype. */
-static bool rom_is_retail(void) { const MmRomInfo *r = mm_rom_by_hash(cyc_prg_hash()); return r && !strcmp(r->id, "retail"); }
-/* "(Prototype)" / "(USA)": the loaded ROM's title from its hash, without the game name. */
+/* The loaded ROM's file tag from its PRG hash: "" for the prototype (its files keep the old names), "retail", else "x<HASH>". Every ROM
+ * (and so every patch permutation) has its own save states, cartridge save and achievements. */
+static const char *rom_file_tag(void) { static char tag[24]; mm_rom_tag(cyc_prg_hash(), tag, sizeof tag); return tag; }
+/* "(Prototype)" / "(USA)" / "(custom ROM XXXXXXXX)": the loaded ROM's title from its hash, without the game name. */
 static const char *rom_edition(void) {
-    const MmRomInfo *r = mm_rom_by_hash(cyc_prg_hash());
-    const char *p = r ? strchr(r->title, '(') : NULL;
+    static char t[64];
+    mm_rom_title(cyc_prg_hash(), t, sizeof t);
+    const char *p = strchr(t, '(');
     return p ? p : "";
 }
 
 static void slot_file(int slot, const char *ext, char *out, size_t n) {
     char *base = SDL_GetBasePath();
     /* the retail ROM has its own slots: a state only loads in the ROM that wrote it */
-    snprintf(out, n, "%sManiacMansion.%sslot%d.%s", base ? base : "", rom_is_retail() ? "retail." : "", slot, ext);
+    snprintf(out, n, "%sManiacMansion.%s%sslot%d.%s", base ? base : "", rom_file_tag(), rom_file_tag()[0] ? "." : "", slot, ext);
     if (base) SDL_free(base);
 }
 
@@ -2178,7 +2182,7 @@ static void display_frame_end(void) {
 }
 
 static char s_rom_path[1024] = "";   /* config.ini "RomPath": the ROM picked with the file dialog (kept when the file is rewritten) */
-static char s_rom_pref[16] = "ask";   /* config.ini "Rom": which ROM to start when both are in the folder (read by the exe's ROM picker) */
+static char s_rom_pref[32] = "ask";   /* config.ini "Rom": which ROM to start when both are in the folder (read by the exe's ROM picker) */
 
 static void display_load_setting(void *ctx, const char *key, const char *value) {
     (void)ctx;
@@ -2188,7 +2192,12 @@ static void display_load_setting(void *ctx, const char *key, const char *value) 
     else if (!strcmp(key, "Scale")) { int v = atoi(value); s_scale = v >= 2 && v <= 6 ? v : 0; }
     else if (!strcmp(key, "Aspect")) s_aspect = atoi(value) == 1 ? 1 : 0;
     else if (!strcmp(key, "Achievements")) ach_set_enabled(atoi(value) != 0);
-    else if (!strcmp(key, "Rom")) snprintf(s_rom_pref, sizeof s_rom_pref, "%s", !strncmp(value, "proto", 5) ? "prototype" : !strncmp(value, "retail", 6) ? "retail" : "ask");
+    else if (!strcmp(key, "Rom")) {   /* ask, prototype, retail, uncensored, or the x<HASH> of a patched ROM */
+        int k = 0;
+        while (value[k] && value[k] != ' ' && value[k] != '\r' && value[k] != '\n' && k < (int)sizeof s_rom_pref - 1) { s_rom_pref[k] = value[k]; k++; }
+        s_rom_pref[k] = 0;
+        if (!k) snprintf(s_rom_pref, sizeof s_rom_pref, "ask");
+    }
     else if (!strcmp(key, "RomPath")) snprintf(s_rom_path, sizeof s_rom_path, "%s", value);
     else if (!strcmp(key, "Splash")) s_splash_enabled = atoi(value) != 0;
     else if (!strcmp(key, "UpdateCheck")) s_update_check = atoi(value) != 0;
@@ -3508,6 +3517,9 @@ NES_MOD_CONSTRUCTOR(register_mouse_cursor_hook) {
 #endif
     nes_mod_register_function_entry_plugin(HOOK_ID, 0xFB68, joypad_poll_hook);
     nes_mod_register_function_entry_plugin(HOOK_ID_BANK0, 0x9EAB, joypad_poll_hook);
+#ifdef MM_HACKDRV_HOOK   /* the release build lists this site itself (CMakeLists.txt); the recompiled build has no such site */
+    nes_mod_register_function_entry_plugin(HOOK_ID_HACKDRV, 0x9810, joypad_poll_hook);
+#endif
     nes_mod_register_function_entry_plugin(HOOK_ID_GAME_SAVE, 0x9659, game_save_observer);
     nes_mod_register_function_entry_plugin(HOOK_ID_UNCLAMP, 0x9539, cursor_unclamp_hook);
     /* RE experiments need stock $4016 polling so --input scripts drive the
@@ -3516,6 +3528,9 @@ NES_MOD_CONSTRUCTOR(register_mouse_cursor_hook) {
     int enabled = getenv("NESRECOMP_MOUSE_HOOK_DISABLE") ? 0 : 1;
     nes_mod_set_function_hook_enabled(HOOK_ID, enabled);
     nes_mod_set_function_hook_enabled(HOOK_ID_BANK0, enabled);
+#ifdef MM_HACKDRV_HOOK
+    nes_mod_set_function_hook_enabled(HOOK_ID_HACKDRV, enabled);
+#endif
     nes_mod_set_function_hook_enabled(HOOK_ID_GAME_SAVE, 1); /* observer only, always on */
     nes_mod_set_function_hook_enabled(HOOK_ID_UNCLAMP, enabled);
 }

@@ -12,26 +12,36 @@ index c2b1d97..453674f 100644
      int stem = (int)(dot ? (size_t)(dot - base) : strlen(base));
      char saves[1000];
 diff --git a/runner/cyc/cyc_host.c b/runner/cyc/cyc_host.c
-index 82df696..8b2c6f5 100644
+index 82df696..c81d2d5 100644
 --- a/runner/cyc/cyc_host.c
 +++ b/runner/cyc/cyc_host.c
-@@ -175,6 +175,9 @@
+@@ -175,6 +175,10 @@
  #include "cyc_mod.h"
  #include "cyc_ramview.h"
  #include "cyc_recomp.h"
 +
-+__attribute__((weak)) uint32_t cyc_native_alt_prg_hash_get(void) { return 0; }
++__attribute__((weak)) int cyc_native_alt_rom_ok(uint32_t prg_hash) { (void)prg_hash; return 0; }
++__attribute__((weak)) int cyc_native_has_alt_roms(void) { return 0; }
 +__attribute__((weak)) const char *cyc_native_save_stem_get(void) { return NULL; }
  #include "cyc_render.h"
  #include "cyc_run.h"
  #include "cyc_session.h"
-@@ -1388,7 +1391,8 @@ session_restart:
+@@ -1380,7 +1384,7 @@ session_restart:
+     if (identity_region < 0) identity_region = CYC_GAME_REGION;
+ #endif
+     if (identity_region < 0) identity_region = cyc_cart_region();
+-    if (cyc_native_program_name && !nes_cart_identity_compatible_region(&cart_info, cyc_native_cart_hash,
++    if (cyc_native_program_name && !cyc_native_alt_rom_ok(cyc_prg_hash()) && !nes_cart_identity_compatible_region(&cart_info, cyc_native_cart_hash,
+                                                                      identity_region == CYC_REGION_PAL)) {
+         cyc_diagnostics_error("Cartridge metadata differs from the compiled program; regenerate native code\n");
+ #if defined(CYC_WITH_SDL)
+@@ -1388,7 +1392,8 @@ session_restart:
  #endif
          return 2;
      }
 -    if (cyc_native_program_name && cyc_prg_hash() != cyc_native_prg_hash) {
 +    if (cyc_native_program_name && cyc_prg_hash() != cyc_native_prg_hash &&
-+        !(cyc_native_alt_prg_hash_get() && cyc_prg_hash() == cyc_native_alt_prg_hash_get())) {
++        !cyc_native_alt_rom_ok(cyc_prg_hash())) {
          cyc_diagnostics_error("PRG ROM does not match the ROM '%s' was recompiled from (hash %08X, expected %08X)\n",
                  cyc_native_program_name, cyc_prg_hash(), cyc_native_prg_hash);
  #if defined(CYC_WITH_SDL)
@@ -111,16 +121,17 @@ index ec92422..f5580f0 100644
  typedef struct {
      uint8_t  a, x, y, s, p;     /* p: N V - B D I Z C as pushed (B and bit 5 ignored on set) */
 diff --git a/runner/cyc/cyc_recomp.h b/runner/cyc/cyc_recomp.h
-index 0ccaf3d..8d9839a 100644
+index 0ccaf3d..c89a3a6 100644
 --- a/runner/cyc/cyc_recomp.h
 +++ b/runner/cyc/cyc_recomp.h
-@@ -25,6 +25,11 @@ extern const char    *cyc_native_program_name;
+@@ -25,6 +25,12 @@ extern const char    *cyc_native_program_name;
  extern const char    *cyc_native_display_name;
  extern const uint32_t cyc_native_prg_hash;
  extern const uint32_t cyc_native_cart_hash;
-+/* A second ROM revision with the same board that the host also accepts, 0 = none. The host has a weak default returning 0; a program
++/* Other ROM revisions the host also accepts. The host has weak defaults that accept none; a program
 + * that ships without its game code defines it (the interpreter runs whichever of the two ROMs the player has). */
-+uint32_t cyc_native_alt_prg_hash_get(void);
++int cyc_native_alt_rom_ok(uint32_t prg_hash);   /* 1 = this PRG hash is one of the other ROMs the program accepts (board identity too) */
++int cyc_native_has_alt_roms(void);
 +/* Optional (weak): a name for the cartridge save file (without extension) instead of the ROM file's stem, NULL = use the stem. */
 +const char *cyc_native_save_stem_get(void);
  /* FDS programs (mapper 20): the BIOS CRC32 the compiler verified against
@@ -283,7 +294,7 @@ index 91b2647..ea6fb15 100644
              /* the one point a new width applies: after this present, before the next picture */
              cyc_video_apply_pending();
 diff --git a/runner/cyc/cyc_session.c b/runner/cyc/cyc_session.c
-index d0444cb..fcdf0cf 100644
+index d0444cb..f2f8475 100644
 --- a/runner/cyc/cyc_session.c
 +++ b/runner/cyc/cyc_session.c
 @@ -1,5 +1,6 @@
@@ -298,7 +309,7 @@ index d0444cb..fcdf0cf 100644
  #if NESRECOMP_ENABLE_MODS
      if (!s_mods) return true;
 +    /* A program that accepts a second ROM revision has no mod target for it: the ROM identity is checked by the host. */
-+    if (cyc_native_alt_prg_hash_get()) image_path = NULL;
++    if (cyc_native_has_alt_roms()) image_path = NULL;
      int online=0;
  #ifdef NESRECOMP_NET
      NesNetplayConfig cfg;nes_netplay_config_defaults(&cfg);nes_netplay_config_apply_env(&cfg);
