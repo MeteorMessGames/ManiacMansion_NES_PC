@@ -2284,6 +2284,23 @@ static uint8_t ctx_choose_verb(int slot, const uint8_t *v, int n) {
     return V_GOTO;
 }
 
+/* The object the GAME says is under the cursor. The game's hover loop (script $07) runs findObject on the mouse position every
+ * frame and puts the result on the sentence line as VAR_SENTENCE_OBJECT1 ($611B low, $601B high). Our own hit-test above can miss
+ * objects the game finds (visibility rules, odd boxes: the invisible keypad), which left the preview on GO TO while the sentence
+ * line named the object. So when our lookup finds nothing, use the game's answer. Returns the object's slot, or 0. */
+static int ctx_game_hover_slot(void) {
+    uint16_t obj = (uint16_t)((wram(0x601B) << 8) | wram(0x611B));
+    if (!obj) return 0;
+    int n = wram(0x63D9);
+    if (n > 34) n = 34;
+    for (int i = 1; i <= n; i++) {
+        if (wram(0x65E7 + i) & 0x20) continue;            /* untouchable */
+        uint16_t id = (uint16_t)((wram((uint16_t)(0x64CF + i)) << 8) | wram((uint16_t)(0x64F2 + i)));
+        if (id == obj) return i;
+    }
+    return 0;
+}
+
 /* Called on a fresh RMB press in gameplay. Returns the verb to select for
  * the room object under the cursor, or 0 for "just a plain click" (not over
  * the room, or nothing better than GO TO).
@@ -2301,6 +2318,7 @@ static uint8_t ctx_rmb_pick(FILE *log, int *slot_out) {
     }
     uint8_t x = wram(0x611E), vy = wram(0x611F);
     int slot = ctx_find_object_slot(x, vy);
+    if (!slot) slot = ctx_game_hover_slot();
     if (slot_out) *slot_out = slot;
     uint8_t verb = V_GOTO;
     uint8_t verbs[32];
@@ -2750,6 +2768,7 @@ static uint8_t real_mouse_buttons(void) {
             uint8_t want = V_GOTO;
             if (wram(0x711A) == ROOM_BOX) {
                 int slot = ctx_find_object_slot(wram(0x611E), wram(0x611F));
+                if (!slot) slot = ctx_game_hover_slot();
                 if (slot) {
                     uint8_t verbs[32];
                     int n = ctx_object_verbs(slot, verbs, 32);
