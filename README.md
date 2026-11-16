@@ -2,9 +2,7 @@
 
 Play **Maniac Mansion** for the NES on PC with a mouse, as a real point-and-click adventure. The port does not replace the game's logic: it hooks a few spots in the ROM and lets the game run its own verb scripts, so a right click does exactly what the game itself would do. It also adds a pause menu, save slots, volume controls, picture filters and achievements. Built with [NESRecomp](https://github.com/mstan/nesrecomp).
 
-**No game data is included.** You need your own dump of the NES ROM: the **prototype** (recommended) or the **retail US release**. Any file name ending in `.nes` works, the game recognizes the ROM by its contents.
-
-**Which one?** The prototype is recommended: it is the game before content was cut for the retail release, so nothing is missing. The retail ROM works too. Each version keeps its own save slots, game saves and achievement list, and if both ROMs are in the folder the game asks which one to play (or set `Rom = prototype` or `Rom = retail` in `config.ini`).
+**No game data is included.** You need your own ROM: the **prototype** (recommended, nothing is cut) or the **retail US release**. Any `.nes` file name works. Each version has its own saves and achievements, and with both in the folder the game asks which to play (or set `Rom = prototype` or `retail` in `config.ini`).
 
 ![Gameplay with the mouse cursor](docs/screenshots/gameplay.png)
 
@@ -18,7 +16,7 @@ Play **Maniac Mansion** for the NES on PC with a mouse, as a real point-and-clic
 
 ## Download
 
-Get `ManiacMansion_NES_PC_win64.zip` from the [latest release](https://github.com/MeteorMessGames/ManiacMansion_NES_PC/releases/latest) (Windows 64-bit) or `ManiacMansion_NES_PC_linux64.tar.gz` (Linux 64-bit, needs SDL2 installed, for example `sudo apt install libsdl2-2.0-0`). Unzip it, put your ROM (a `.nes` file) in the folder, and double-click `ManiacMansion.exe` (Windows) or run `./ManiacMansion` (Linux). If no ROM is found, a file box opens so you can pick it. Retail ROM support is in this repository now and will be in the next release; the current release (v1.2.0) runs the prototype only.
+Get `ManiacMansion_NES_PC_win64.zip` from the [latest release](https://github.com/MeteorMessGames/ManiacMansion_NES_PC/releases/latest) (Windows 64-bit) or `ManiacMansion_NES_PC_linux64.tar.gz` (Linux 64-bit, needs SDL2 installed, for example `sudo apt install libsdl2-2.0-0`). Unzip it, put your ROM (a `.nes` file) in the folder, and double-click `ManiacMansion.exe` (Windows) or run `./ManiacMansion` (Linux). With no ROM in the folder, a file box opens. Retail support is in the source now; release v1.2.0 runs the prototype only.
 
 ## Features
 
@@ -31,7 +29,7 @@ Get `ManiacMansion_NES_PC_win64.zip` from the [latest release](https://github.co
 - Three picture filters (Sharp, CRT, CRT Strong), including a GPU CRT.
 - Fullscreen, fixed or automatic scaling, square pixels or 4:3 TV shape.
 - Controller support.
-- Works with the prototype (recommended) and the retail US ROM, with separate saves and achievements for each.
+- Prototype (recommended) and retail US ROM, with separate saves and achievements.
 - 47 achievements in four rarities, with a trophy page in the pause menu.
 - A launch-time update check (turn off with `UpdateCheck = 0` in `config.ini`).
 
