@@ -16,7 +16,7 @@ Play **Maniac Mansion** for the NES on PC with a mouse, as a real point-and-clic
 
 ## Download
 
-Get `ManiacMansion_NES_PC_win64.zip` from the [latest release](https://github.com/MeteorMessGames/ManiacMansion_NES_PC/releases/latest) (Windows 64-bit) or `ManiacMansion_NES_PC_linux64.tar.gz` (Linux 64-bit, needs SDL2 installed, for example `sudo apt install libsdl2-2.0-0`). Unzip it, put your ROM (a `.nes` file) in the folder, and double-click `ManiacMansion.exe` (Windows) or run `./ManiacMansion` (Linux). With no ROM in the folder, a file box opens. Retail support is in the source now; release v1.2.0 runs the prototype only.
+Get `ManiacMansion_NES_PC_win64.zip` from the [latest release](https://github.com/MeteorMessGames/ManiacMansion_NES_PC/releases/latest) (Windows 64-bit) or `ManiacMansion_NES_PC_linux64.tar.gz` (Linux 64-bit, needs SDL2 installed, for example `sudo apt install libsdl2-2.0-0`). Unzip it, put your ROM (a `.nes` file) in the folder, and double-click `ManiacMansion.exe` (Windows) or run `./ManiacMansion` (Linux). With no ROM in the folder, a file box opens. Works with the prototype (recommended), the retail US ROM and patched versions such as the Uncensored hack.
 
 ## Features
 
