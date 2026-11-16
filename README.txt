@@ -50,7 +50,7 @@ click skips too.
 
 CONTROLLER
 ----------
-D-pad / stick  Move the cursor (speed: pause menu -> Options -> Key Speed)
+D-pad / stick  Move the cursor (speed: pause menu -> Options -> Controller Speed)
 A              Left click
 B              Right click (context verb; skips cutscenes)
 X              Cycle the verb (Select)
@@ -78,17 +78,18 @@ The game is paused (and silent) while the menu is open. Use the mouse, or Up/Dow
 Enter. Esc or right click goes back.
 
   Resume Game   Back to the game.
-  Save State    Pick one of 10 slots (scroll the list with the mouse wheel
-                or Up/Down). Each slot shows a screenshot and the time it
-                was saved. Saving over a used slot asks you to click a
-                second time first.
+  Save State    Pick a slot (the list grows with your saves, plus one empty
+                slot; scroll it with the mouse wheel or Up/Down). Each slot
+                shows a screenshot and the time it was saved. Saving over a
+                used slot asks you to click a second time first.
   Load State    Pick a slot to load. The screenshot on the right shows what
                 you will get.
   Options       Music volume, Sound FX volume, Fullscreen, Filter, Scale,
-                Shape, Mouse Speed and Key Speed.
-                Volumes: drag or click the bar, or Left / Right in 5% steps.
+                Shape, Mouse Speed and Controller Speed.
+                Volumes: drag or click the bar, or Left / Right in 1% steps.
+                Left / Right changes any value row; Esc or right click goes back.
   Exit Game     Asks first if you have unsaved progress: Save to a slot and
-                exit, Exit without saving, or Cancel. Closing the window does
+                exit, Exit without saving, or Back. Closing the window does
                 the same. With nothing unsaved it just exits.
 
 
@@ -103,8 +104,8 @@ SAVING
 ------
 There are two kinds of saves:
 
-1. Save states (pause menu, 10 slots). Instant, any time, anywhere.
-   Files: ManiacMansion.slot1.state ... slot6.state, next to the game.
+1. Save states (pause menu, unlimited slots). Instant, any time, anywhere.
+   Files: ManiacMansion.slotN.state, next to the game.
    NOTE: a save state only loads in the exact build that made it. After an
    update, old save states may say "from a different version".
 
@@ -156,7 +157,7 @@ Shape (pause menu -> Options)
 Fullscreen (F11)
   Uses your monitor's own resolution (1080p, 1440p, 4K ...).
 
-Mouse Speed / Key Speed (pause menu -> Options)
+Mouse Speed / Controller Speed (pause menu -> Options)
   How fast the cursor moves with the mouse and with the arrow keys:
   50% to 300%, 100% is normal.
 

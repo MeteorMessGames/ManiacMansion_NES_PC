@@ -41,7 +41,7 @@ Two-object commands (an item used on something) are two replayed clicks.
 
 ## Save states and slots
 
-Save states are serialised emulator state files, one per slot (`ManiacMansion.slotN.state`), with a thumbnail and a timestamp. There are ten slots. A save state only loads in the exact build that wrote it.
+Save states are serialised emulator state files, one per slot (`ManiacMansion.slotN.state`), with a thumbnail and a timestamp. The slot list grows with the saves that exist, plus one empty slot when saving. A save state only loads in the exact build that wrote it.
 
 The game's own save is separate: it is the cartridge battery save, and survives updates.
 

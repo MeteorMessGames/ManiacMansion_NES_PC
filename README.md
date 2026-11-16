@@ -24,7 +24,7 @@ Get `ManiacMansion_NES_PC_win64.zip` from the [latest release](https://github.co
 - Context-sensitive right click that uses the game's own object and verb logic.
 - Inventory scrolling with the mouse wheel, and the classic two-step commands.
 - The game's own save and restore, from the middle mouse button.
-- Pause menu with 10 save-state slots, each with a screenshot.
+- Pause menu with unlimited save-state slots, each with a screenshot.
 - Music and sound effect volume, mouse and key speed.
 - Three picture filters (Sharp, CRT, CRT Strong), including a GPU CRT.
 - Fullscreen, fixed or automatic scaling, square pixels or 4:3 TV shape.
@@ -53,7 +53,7 @@ Achievements live on the [`achievements` branch](https://github.com/MeteorMessGa
 
 | Input | Action |
 |---|---|
-| D-pad / left stick | Move the cursor (speed follows Options > Key Speed) |
+| D-pad / left stick | Move the cursor (speed follows Options > Controller Speed) |
 | A | Left click |
 | B | Right click (context verb, skips cutscenes) |
 | X | Cycle the verb (Select) |
