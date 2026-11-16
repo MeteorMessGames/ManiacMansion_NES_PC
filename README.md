@@ -29,7 +29,7 @@ Get `ManiacMansion_NES_PC_win64.zip` from the [latest release](https://github.co
 - Three picture filters (Sharp, CRT, CRT Strong), including a GPU CRT.
 - Fullscreen, fixed or automatic scaling, square pixels or 4:3 TV shape.
 - Controller support.
-- 41 achievements in four rarities, with a trophy page in the pause menu.
+- 47 achievements in four rarities, with a trophy page in the pause menu.
 - A launch-time update check (turn off with `UpdateCheck = 0` in `config.ini`).
 
 The full player guide (controls, saving, tips) is in [README.txt](README.txt), which ships next to the exe.
@@ -38,7 +38,7 @@ The full player guide (controls, saving, tips) is in [README.txt](README.txt), w
 
 ![Achievement unlocked](docs/screenshots/achievement-toast.png)
 
-41 achievements in four rarities (Common, Rare, Epic, Legendary). A banner and a sound announce each one, and Esc > Achievements lists them all. Some are secret until earned.
+47 achievements in four rarities (Common, Rare, Epic, Legendary). A banner and a sound announce each one, and Esc > Achievements lists them all. Some are secret until earned.
 
 ## Mouse
 
