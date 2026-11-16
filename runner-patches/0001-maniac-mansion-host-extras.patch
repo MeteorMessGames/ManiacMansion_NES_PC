@@ -74,10 +74,18 @@ index ec92422..f5580f0 100644
  typedef struct {
      uint8_t  a, x, y, s, p;     /* p: N V - B D I Z C as pushed (B and bit 5 ignored on set) */
 diff --git a/runner/cyc/cyc_sdl.c b/runner/cyc/cyc_sdl.c
-index 91b2647..262cca8 100644
+index 91b2647..ea6fb15 100644
 --- a/runner/cyc/cyc_sdl.c
 +++ b/runner/cyc/cyc_sdl.c
-@@ -484,18 +484,91 @@ static void apply_picture_scale(void)
+@@ -117,6 +117,7 @@ static const char *s_vpad_path;
+ static int         s_tcp_port;
+ static int         s_key_hold[SDL_NUM_SCANCODES];   /* host loops a TCP-held key stays down */
+ static bool        s_hidden;
++static bool        s_show_pending;   /* window is created hidden and shown after the first frame, so no blank/white window flashes up while loading */
+ static bool        s_uncapped; /* measurement pacing only; render and audio still run */
+ static bool        s_pause_unfocused;
+ static char        s_image[1024];                   /* the image running (the save state slot's name) */
+@@ -484,18 +485,91 @@ static void apply_picture_scale(void)
          SDL_RenderSetIntegerScale(s_ren, integer);
  }
  
@@ -170,7 +178,7 @@ index 91b2647..262cca8 100644
  static bool ensure_texture(int w, int h)
  {
      if (s_tex && w == s_tex_w && h == s_tex_h) return true;
-@@ -1229,6 +1302,13 @@ static void show(bool loading, const char *toast_title, const char *toast_body)
+@@ -1229,6 +1303,13 @@ static void show(bool loading, const char *toast_title, const char *toast_body)
          }
      }
  #endif
@@ -184,7 +192,7 @@ index 91b2647..262cca8 100644
      if(!gpu_texture)pic=picture(&w,&h);
  #ifdef CYC_WITH_RECOMP_UI
      /* Rewind captures refresh their exact preview above the presentation step.
-@@ -1261,6 +1341,7 @@ static void show(bool loading, const char *toast_title, const char *toast_body)
+@@ -1261,6 +1342,7 @@ static void show(bool loading, const char *toast_title, const char *toast_body)
      (void)toast_body;
  #endif
      if(!gpu_texture)SDL_UpdateTexture(s_tex, NULL, pic, w * 4);
@@ -192,7 +200,17 @@ index 91b2647..262cca8 100644
      SDL_SetRenderDrawColor(s_ren, 0, 0, 0, 255);
      SDL_RenderClear(s_ren);
      SDL_Rect dst = { 0, 0, w, h };
-@@ -1516,7 +1597,9 @@ int cyc_sdl_main(const char *title_in, int scale)
+@@ -1413,7 +1495,8 @@ int cyc_sdl_main(const char *title_in, int scale)
+     s_tex_h = h;
+     s_win = SDL_CreateWindow(title, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, w * s_set.window_scale,
+                              logical_h() * s_set.window_scale,
+-                             SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI | (s_hidden ? SDL_WINDOW_HIDDEN : 0));
++                             SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI | SDL_WINDOW_HIDDEN);
++    s_show_pending = !s_hidden;
+     s_ren = NULL;
+     if (!create_renderer() || !ensure_texture(w, h)) {
+         char message[700]; snprintf(message, sizeof(message), "Could not create the game window or renderer: %s", SDL_GetError());
+@@ -1516,7 +1599,9 @@ int cyc_sdl_main(const char *title_in, int scale)
  #endif
                  cyc_session_event(&ev, player);
              }
@@ -203,6 +221,14 @@ index 91b2647..262cca8 100644
  #ifdef NESRECOMP_CYCLE_HDPACK
              else if(ev.type==SDL_RENDER_TARGETS_RESET || ev.type==SDL_RENDER_DEVICE_RESET){
                  cyc_hd_gpu_destroy(s_hd_gpu,ev.type==SDL_RENDER_DEVICE_RESET);
+@@ -1702,6 +1787,7 @@ int cyc_sdl_main(const char *title_in, int scale)
+             if(s_gpu_picture)cyc_hd_gpu_present_end(s_hd_gpu);
+ #endif
+             SDL_RenderPresent(s_ren);
++            if (s_show_pending) { s_show_pending = false; SDL_ShowWindow(s_win); SDL_RaiseWindow(s_win); }
+             shown = SDL_GetPerformanceCounter();
+             /* the one point a new width applies: after this present, before the next picture */
+             cyc_video_apply_pending();
 diff --git a/runner/cyc/hw_apu.c b/runner/cyc/hw_apu.c
 index a082d54..42488b9 100644
 --- a/runner/cyc/hw_apu.c
