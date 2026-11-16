@@ -1,6 +1,8 @@
 /* achievements.c - see achievements.h */
 #include "achievements.h"
 #include "achievements_table.h"
+#include "rom_db.h"
+#include "cyc_core.h"   /* cyc_prg_hash */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -52,11 +54,34 @@ static uint64_t siphash8(const uint8_t *m)
 #undef SIPROUND
 }
 
+/* Each ROM has its own progress. The prototype's records are the plain id hash (so old unlocks keep working); the retail ROM's
+ * are the id hash continued over "#retail". Records of the other ROM are kept untouched and written back, so both survive. */
+static const char *rom_salt(void)
+{
+    const MmRomInfo *r = mm_rom_by_hash(cyc_prg_hash());
+    return r && !strcmp(r->id, "retail") ? "#retail" : "";
+}
+
 static uint32_t id_hash(const char *id)   /* FNV-1a */
 {
     uint32_t h = 2166136261u;
     for (; *id; id++) { h ^= (uint8_t)*id; h *= 16777619u; }
+    for (const char *t = rom_salt(); *t; t++) { h ^= (uint8_t)*t; h *= 16777619u; }
     return h;
+}
+
+#define FOREIGN_MAX 64
+static uint8_t s_foreign[FOREIGN_MAX][16];   /* valid signed records that belong to the other ROM */
+static int     s_nforeign = 0;
+
+/* One verified record: ours (set the unlock) or the other ROM's (keep it as is). */
+static void take_record(const uint8_t *rec)
+{
+    uint32_t h = rd32(rec);
+    for (int i = 0; i < ACH_COUNT; i++)
+        if (id_hash(k_ach[i].id) == h) { s_got[i] = true; s_when[i] = (time_t)rd32(rec + 4); return; }
+    for (int i = 0; i < s_nforeign; i++) if (!memcmp(s_foreign[i], rec, 16)) return;
+    if (s_nforeign < FOREIGN_MAX) memcpy(s_foreign[s_nforeign++], rec, 16);
 }
 
 static size_t build_payload(uint8_t *out)   /* "MMA1" + one signed 16-byte record per earned achievement */
@@ -70,6 +95,7 @@ static size_t build_payload(uint8_t *out)   /* "MMA1" + one signed 16-byte recor
         wr64(out + n + 8, siphash8(out + n));
         n += 16;
     }
+    for (int i = 0; i < s_nforeign; i++) { memcpy(out + n, s_foreign[i], 16); n += 16; }   /* the other ROM's progress */
     return n;
 }
 
@@ -78,9 +104,7 @@ static void load_payload(const uint8_t *p, size_t n)
     if (n < 4 || memcmp(p, "MMA1", 4)) return;
     for (size_t o = 4; o + 16 <= n; o += 16) {
         if (rd64(p + o + 8) != siphash8(p + o)) continue;            /* tampered or not ours: ignore */
-        uint32_t h = rd32(p + o);
-        for (int i = 0; i < ACH_COUNT; i++)
-            if (id_hash(k_ach[i].id) == h) { s_got[i] = true; s_when[i] = (time_t)rd32(p + o + 4); }
+        take_record(p + o);
     }
 }
 
@@ -173,6 +197,7 @@ static void save_file(void)
         wr64(rec + 8, siphash8(rec));
         fwrite(rec, 1, 16, f);
     }
+    for (int i = 0; i < s_nforeign; i++) fwrite(s_foreign[i], 1, 16, f);   /* the other ROM's progress */
     fclose(f);
 }
 
@@ -199,9 +224,7 @@ void ach_init(const char *dir)
         uint8_t rec[16];
         while (fread(rec, 1, 16, f) == 16) {
             if (rd64(rec + 8) != siphash8(rec)) continue;            /* tampered or not ours: ignore */
-            uint32_t h = rd32(rec);
-            for (int i = 0; i < ACH_COUNT; i++)
-                if (id_hash(k_ach[i].id) == h) { s_got[i] = true; s_when[i] = (time_t)rd32(rec + 4); }
+            take_record(rec);
         }
     }
     fclose(f);

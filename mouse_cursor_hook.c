@@ -80,6 +80,7 @@
  * press.
  */
 #include "update_check.h"
+#include "rom_db.h"
 #include "splash_sfx.h"
 #include "mod_function_hooks.h"
 #include "mod_runtime.h"
@@ -604,10 +605,9 @@ static const char *const k_menu_rows[MI_COUNT] = { "Resume Game", "Save State", 
  * plus a .thumb sidecar (screenshot shown in the slot list). The old
  * single-file ManiacMansion.state is no longer used (any snapshot only
  * loads in the exe that wrote it anyway). */
-enum { MODE_MAIN, MODE_SAVE, MODE_LOAD, MODE_DISPLAY, MODE_QUIT, MODE_ACH, MODE_DBG };
+enum { MODE_MAIN, MODE_SAVE, MODE_LOAD, MODE_DISPLAY, MODE_QUIT, MODE_ACH, MODE_RESET, MODE_DBG };
 static void display_toast(const char *what, const char *value);
 static void set_achievements(bool on);
-static uint32_t s_ach_reset_until = 0;   /* tick until which "Reset all achievements" is armed (second press confirms) */
 #define MAX_SLOTS 999       /* save slots are unlimited in practice: the list shows the saves that exist plus one new slot */
 #define ACH_ROWS_VISIBLE 5    /* achievement list rows on screen (two lines each) */
 /* Menu geometry, all in units of u (= window height / 240) so every screen shares it: rows start at ML_ITEM_Y0, plain rows are
@@ -825,9 +825,19 @@ static uint8_t ach_rd(uint16_t addr) {
     return p ? *p : 0;
 }
 
+/* The retail US cartridge (PRG hash of the second ROM accepted by the release build); anything else is the prototype. */
+static bool rom_is_retail(void) { const MmRomInfo *r = mm_rom_by_hash(cyc_prg_hash()); return r && !strcmp(r->id, "retail"); }
+/* "(Prototype)" / "(USA)": the loaded ROM's title from its hash, without the game name. */
+static const char *rom_edition(void) {
+    const MmRomInfo *r = mm_rom_by_hash(cyc_prg_hash());
+    const char *p = r ? strchr(r->title, '(') : NULL;
+    return p ? p : "";
+}
+
 static void slot_file(int slot, const char *ext, char *out, size_t n) {
     char *base = SDL_GetBasePath();
-    snprintf(out, n, "%sManiacMansion.slot%d.%s", base ? base : "", slot, ext);
+    /* the retail ROM has its own slots: a state only loads in the ROM that wrote it */
+    snprintf(out, n, "%sManiacMansion.%sslot%d.%s", base ? base : "", rom_is_retail() ? "retail." : "", slot, ext);
     if (base) SDL_free(base);
 }
 
@@ -910,6 +920,7 @@ static void slot_time_text(int slot, char *out, size_t n) {
 static int menu_row_count(void) {
     if (s_menu_mode == MODE_DISPLAY) return DI_COUNT;
     if (s_menu_mode == MODE_QUIT) return 3;
+    if (s_menu_mode == MODE_RESET) return 2;   /* Yes, erase them all / Back */
     if (s_menu_mode == MODE_ACH) return ach_count() + 3;   /* the On/Off switch, the list, "Reset all achievements", Back */
     if (s_menu_mode != MODE_MAIN) return slot_rows() + 1;
     return MI_COUNT;
@@ -1046,13 +1057,13 @@ static void menu_status(const char *msg, uint32_t rgb) {
 
 static void menu_set_mode(int mode) {
     s_menu_mode = mode;
-    s_ach_reset_until = 0;
     s_menu_hover = -1;
     s_menu_scroll = 0;
     s_confirm_slot = -1;
     s_menu_status[0] = 0;
     if (mode == MODE_MAIN) return;
     if (mode == MODE_DISPLAY || mode == MODE_ACH) { s_menu_sel = 0; return; }
+    if (mode == MODE_RESET) { s_menu_sel = 1; return; }   /* start on Back, the safe choice */
     if (mode == MODE_QUIT) {
         s_menu_sel = 2;   /* start on Back, the safe choice */
         refresh_slots();
@@ -1198,15 +1209,17 @@ static void menu_activate(int item) {
     if (s_menu_mode == MODE_ACH) {
         if (item == 0) {   /* the On/Off switch (top row) */
             set_achievements(!ach_enabled());
-        } else if (item == ach_count() + 1) {   /* Reset all achievements: press twice within 4 seconds */
-            if (SDL_GetTicks() < s_ach_reset_until) {
-                s_ach_reset_until = 0;
-                ach_reset_all();
-                display_toast("Achievements", "all reset");
-            } else {
-                s_ach_reset_until = SDL_GetTicks() + 4000;
-            }
+        } else if (item == ach_count() + 1) {   /* Reset all achievements: ask first on its own screen */
+            menu_set_mode(MODE_RESET);
         } else if (item > ach_count() + 1) menu_back();
+        return;
+    }
+    if (s_menu_mode == MODE_RESET) {
+        if (item == 0) {
+            ach_reset_all();
+            display_toast("Achievements", "all reset");
+        }
+        menu_back();
         return;
     }
     if (s_menu_mode != MODE_MAIN) {
@@ -1238,6 +1251,12 @@ static void menu_activate(int item) {
 static void menu_back(void) {
     int from = s_menu_mode;
     if (from == MODE_QUIT && s_quit_from_window) { s_quit_from_window = false; menu_activate(MI_RESUME); return; }
+    if (from == MODE_RESET) {   /* back to the achievements list, on the Reset row */
+        menu_set_mode(MODE_ACH);
+        s_menu_sel = ach_count() + 1;
+        menu_keep_visible();
+        return;
+    }
     menu_set_mode(MODE_MAIN);
     s_menu_sel = from == MODE_SAVE ? MI_SAVE : from == MODE_LOAD ? MI_LOAD : from == MODE_ACH ? MI_ACH : from == MODE_QUIT ? MI_EXIT : MI_DISPLAY;
 }
@@ -1571,7 +1590,7 @@ static const uint32_t *menu_present(void *ctx, int *w, int *h) {
         mr_scale_nearest(d, pw, ph, s_menu_frozen, s_frozen_w, MENU_H, slots ? 90 : 170);
     }
     mr_rect(d, pw, ph, 0, 0, L.sw, ph, 0x15161D, 236);                 /* sidebar */
-    mr_rect(d, pw, ph, L.sw, 0, (int)(2 * u) > 1 ? (int)(2 * u) : 1, ph, 0x2C6FE0, 200);  /* edge accent */
+    if (s_menu_mode != MODE_RESET) mr_rect(d, pw, ph, L.sw, 0, (int)(2 * u) > 1 ? (int)(2 * u) : 1, ph, 0x2C6FE0, 200);  /* edge accent (not on the reset confirmation) */
 
     {   /* title, shrunk to fit the sidebar */
         float tpx = 13.0f * u;
@@ -1584,7 +1603,10 @@ static const uint32_t *menu_present(void *ctx, int *w, int *h) {
                       s_menu_mode == MODE_LOAD ? "Load State" :
                       s_menu_mode == MODE_DISPLAY ? "Options" :
                       s_menu_mode == MODE_ACH ? "Achievements" :
-                      s_menu_mode == MODE_QUIT ? "Exit Game" : "Paused";
+                      s_menu_mode == MODE_QUIT ? "Exit Game" :
+                      s_menu_mode == MODE_RESET ? "Reset Achievements" : "Paused";
+    char subbuf[64];
+    if (s_menu_mode == MODE_MAIN && rom_edition()[0]) { snprintf(subbuf, sizeof subbuf, "Paused  %s", rom_edition()); sub = subbuf; }
     mr_text(d, pw, ph, L.pad, L.sub_y, 7.5f * u, 0x9AA0B4, 255, sub);
     mr_rect(d, pw, ph, L.pad, L.sep_y, L.sw - 2 * L.pad, (int)u > 1 ? (int)u : 1, 0x3A3D4C, 255);
 
@@ -1662,6 +1684,13 @@ static const uint32_t *menu_present(void *ctx, int *w, int *h) {
             }
             continue;
         }
+        if (s_menu_mode == MODE_RESET) {
+            const char *rr[2] = { "Yes, erase them all", "Back" };
+            float rpx = 8.0f * u;
+            mr_text(d, pw, ph, L.pad + (int)(6 * u), y0 + (int)((rowh - rpx) / 2), fit_px(rpx, L.sw - 2 * L.pad - (int)(8 * u), rr[i]),
+                    i == 0 ? 0xFF7070 : fg, 255, rr[i]);
+            continue;
+        }
         if (s_menu_mode == MODE_QUIT) {
             char ql[48], qn[32];
             slot_name(s_quit_slot, qn, sizeof qn);
@@ -1676,11 +1705,9 @@ static const uint32_t *menu_present(void *ctx, int *w, int *h) {
                 float bpx = 8.0f * u;
                 bool switch_row = i == 0;
                 bool reset_row = i == ach_count() + 1;
-                bool armed = reset_row && SDL_GetTicks() < s_ach_reset_until;
                 const char *label = switch_row ? (ach_enabled() ? "Achievements: On" : "Achievements: Off")
-                                  : !reset_row ? "Back" : armed ? "Press again to erase ALL achievements" : "Reset all achievements";
-                mr_text(d, pw, ph, L.pad + (int)(6 * u), y0 + (int)((rowh - bpx) / 2), fit_px(bpx, L.sw - 2 * L.pad - (int)(12 * u), label),
-                        armed ? 0xFF7070 : fg, 255, label);
+                                  : !reset_row ? "Back" : "Reset all achievements";
+                mr_text(d, pw, ph, L.pad + (int)(6 * u), y0 + (int)((rowh - bpx) / 2), fit_px(bpx, L.sw - 2 * L.pad - (int)(12 * u), label), fg, 255, label);
                 continue;
             }
             bool got = ach_unlocked(ai);
@@ -1740,6 +1767,14 @@ static const uint32_t *menu_present(void *ctx, int *w, int *h) {
     }
 
     if (slots) draw_slot_preview(d, pw, ph, &L);
+    if (s_menu_mode == MODE_RESET) {   /* what is about to happen, in words, under the two rows */
+        char w1[96];
+        snprintf(w1, sizeof w1, "Erase every achievement%s%s?", rom_edition()[0] ? " for " : "", rom_edition());
+        int avail = L.sw - 2 * L.pad;
+        mr_text(d, pw, ph, L.pad, (int)(104 * u), fit_px(8.0f * u, avail, w1), 0xE6E9F4, 255, w1);
+        mr_text(d, pw, ph, L.pad, (int)(118 * u), fit_px(7.0f * u, avail, "This cannot be undone."), 0xFF7070, 255, "This cannot be undone.");
+        mr_text(d, pw, ph, L.pad, (int)(132 * u), fit_px(6.5f * u, avail, "The other version keeps its own list."), 0x9AA0B4, 255, "The other version keeps its own list.");
+    }
     {   /* one info / status line above the footer, the same place on every screen */
         char info[96];
         info[0] = 0;
@@ -2142,6 +2177,9 @@ static void display_frame_end(void) {
     audio_frame_end();
 }
 
+static char s_rom_path[1024] = "";   /* config.ini "RomPath": the ROM picked with the file dialog (kept when the file is rewritten) */
+static char s_rom_pref[16] = "ask";   /* config.ini "Rom": which ROM to start when both are in the folder (read by the exe's ROM picker) */
+
 static void display_load_setting(void *ctx, const char *key, const char *value) {
     (void)ctx;
     if (!strcmp(key, "Filter")) { int v = atoi(value); s_filter = v == 4 ? FILTER_CRT_STRONG : (v == 2 || v == 3) ? FILTER_CRT : FILTER_SHARP; }
@@ -2150,6 +2188,8 @@ static void display_load_setting(void *ctx, const char *key, const char *value) 
     else if (!strcmp(key, "Scale")) { int v = atoi(value); s_scale = v >= 2 && v <= 6 ? v : 0; }
     else if (!strcmp(key, "Aspect")) s_aspect = atoi(value) == 1 ? 1 : 0;
     else if (!strcmp(key, "Achievements")) ach_set_enabled(atoi(value) != 0);
+    else if (!strcmp(key, "Rom")) snprintf(s_rom_pref, sizeof s_rom_pref, "%s", !strncmp(value, "proto", 5) ? "prototype" : !strncmp(value, "retail", 6) ? "retail" : "ask");
+    else if (!strcmp(key, "RomPath")) snprintf(s_rom_path, sizeof s_rom_path, "%s", value);
     else if (!strcmp(key, "Splash")) s_splash_enabled = atoi(value) != 0;
     else if (!strcmp(key, "UpdateCheck")) s_update_check = atoi(value) != 0;
     else if (!strcmp(key, "MouseSpeed")) s_mouse_speed = atoi(value);
@@ -2163,8 +2203,8 @@ static void display_load_setting(void *ctx, const char *key, const char *value) 
 
 static void display_save_settings(void *ctx, FILE *f) {
     (void)ctx;
-    fprintf(f, "Filter = %d\nMusicVolume = %d\nSfxVolume = %d\nScale = %d\nAspect = %d\nSplash = %d\nUpdateCheck = %d\nMouseSpeed = %d\nPadSpeed = %d\nAchievements = %d\n",
-            s_filter == FILTER_CRT_STRONG ? 4 : s_filter == FILTER_CRT ? 2 : 0, s_music_vol, s_sfx_vol, s_scale, s_aspect, s_splash_enabled ? 1 : 0, s_update_check ? 1 : 0, s_mouse_speed, s_pad_speed, ach_enabled() ? 1 : 0);
+    fprintf(f, "Filter = %d\nMusicVolume = %d\nSfxVolume = %d\nScale = %d\nAspect = %d\nSplash = %d\nUpdateCheck = %d\nMouseSpeed = %d\nPadSpeed = %d\nAchievements = %d\nRom = %s\n%s%s%s",
+            s_filter == FILTER_CRT_STRONG ? 4 : s_filter == FILTER_CRT ? 2 : 0, s_music_vol, s_sfx_vol, s_scale, s_aspect, s_splash_enabled ? 1 : 0, s_update_check ? 1 : 0, s_mouse_speed, s_pad_speed, ach_enabled() ? 1 : 0, s_rom_pref, s_rom_path[0] ? "RomPath = " : "", s_rom_path, s_rom_path[0] ? "\n" : "");
 }
 
 /* Startup splash (the Meteor Mess Games logo with the twinkling stars): twinkling bell sparkles play over it. They run only

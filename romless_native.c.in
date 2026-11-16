@@ -26,7 +26,12 @@ const uint32_t cyc_native_ram_view_count = 0;
 
 @MM_HOOK_SITES@
 
-#define MM_ROM_NAME "Maniac Mansion (Prototype).nes"
+/* The second accepted ROM: the retail US cartridge (same board, a different PRG hash). See rom_db.h. */
+uint32_t cyc_native_alt_prg_hash_get(void) { return 0x94B7EEDFu; }
+/* The retail ROM keeps its own cartridge save (the game's own Save), whatever its file is called. The prototype keeps its old
+ * name (the ROM file's stem), so existing saves still load. Set once the ROM is chosen, in find_rom() below. */
+static const char *s_save_stem = NULL;
+const char *cyc_native_save_stem_get(void) { return s_save_stem; }
 
 /* Before main: look for the ROM next to the exe. Started without a ROM
  * argument and none found, tell the player what to do (a GUI exe has no
@@ -34,26 +39,224 @@ const uint32_t cyc_native_ram_view_count = 0;
 #include <SDL.h>
 #include <stdio.h>
 #include <stdlib.h>   /* __argc on Windows */
-__attribute__((constructor)) static void find_rom(void) {
-    static char path[4096];
-    char *base = SDL_GetBasePath();
-    snprintf(path, sizeof path, "%s%s", base ? base : "", MM_ROM_NAME);
-    if (base) SDL_free(base);
-    SDL_RWops *f = SDL_RWFromFile(path, "rb");   /* UTF-8 path on Windows too */
-    if (f) {
-        SDL_RWclose(f);
-        cyc_native_fds_image_path = path;
-        return;
-    }
+#include <string.h>
+#include "rom_db.h"
 #ifdef _WIN32
-    if (__argc <= 1)
-        SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_INFORMATION, "Maniac Mansion NES PC",
-            "Your ROM is not here yet.\n\n"
-            "Put your own copy of the Maniac Mansion NES prototype ROM in the\n"
-            "same folder as this program, named exactly:\n\n"
-            "    " MM_ROM_NAME "\n\n"
-            "then start the game again. See README.txt.", NULL);
+#include <windows.h>
+#else
+#include <dirent.h>
 #endif
+
+int mm_rom_picker(const char *const *titles, int n, int *remember);   /* rom_picker.c */
+#define MM_MAX_FOUND 8
+typedef struct { char path[4096]; const MmRomInfo *info; } FoundRom;
+
+/* Hash a file as an iNES ROM; the known ROM it is, or NULL. */
+static const MmRomInfo *identify(const char *path) {
+    SDL_RWops *f = SDL_RWFromFile(path, "rb");   /* UTF-8 path on Windows too */
+    if (!f) return NULL;
+    Sint64 n = SDL_RWsize(f);
+    const MmRomInfo *r = NULL;
+    if (n > 16 && n <= 4 * 1024 * 1024) {
+        uint8_t *buf = (uint8_t *)malloc((size_t)n);
+        if (buf && SDL_RWread(f, buf, 1, (size_t)n) == (size_t)n) r = mm_rom_by_hash(mm_ines_prg_hash(buf, (size_t)n));
+        free(buf);
+    }
+    SDL_RWclose(f);
+    return r;
+}
+
+static bool is_nes_name(const char *name) {
+    size_t n = strlen(name);
+    return n > 4 && (name[n - 4] == '.') && (name[n - 3] | 32) == 'n' && (name[n - 2] | 32) == 'e' && (name[n - 1] | 32) == 's';
+}
+
+/* Every *.nes file next to the exe that is one of the known ROMs (by hash, not by name), one per distinct ROM. */
+static int scan_roms(const char *base, FoundRom *out) {
+    int n = 0;
+    const char *dir = base && *base ? base : "./";
+#ifdef _WIN32
+    char pat[4200];
+    snprintf(pat, sizeof pat, "%s*.nes", dir);
+    WIN32_FIND_DATAA fd;
+    HANDLE h = FindFirstFileA(pat, &fd);
+    if (h == INVALID_HANDLE_VALUE) return 0;
+    do {
+        const char *name = fd.cFileName;
+#else
+    DIR *d = opendir(dir);
+    if (!d) return 0;
+    struct dirent *de;
+    while ((de = readdir(d))) {
+        const char *name = de->d_name;
+        if (!is_nes_name(name)) continue;
+#endif
+        char path[4096];
+        snprintf(path, sizeof path, "%s%s", dir, name);
+        const MmRomInfo *r = identify(path);
+        if (r) {
+            bool dup = false;
+            for (int i = 0; i < n; i++) if (out[i].info == r) dup = true;
+            if (!dup && n < MM_MAX_FOUND) { snprintf(out[n].path, sizeof out[n].path, "%s", path); out[n].info = r; n++; }
+        }
+#ifdef _WIN32
+    } while (FindNextFileA(h, &fd));
+    FindClose(h);
+#else
+    }
+    closedir(d);
+#endif
+    return n;
+}
+
+/* config.ini value of KEY (read here because the ROM is chosen before the game starts), "" when absent. */
+static void cfg_get(const char *base, const char *key, char *out, size_t n) {
+    char p[4096], line[4600];
+    size_t kl = strlen(key);
+    out[0] = 0;
+    snprintf(p, sizeof p, "%sconfig.ini", base ? base : "");
+    FILE *f = fopen(p, "r");
+    if (!f) return;
+    while (fgets(line, sizeof line, f)) {
+        if (strncmp(line, key, kl) != 0) continue;
+        char *eq = line + kl;
+        while (*eq == ' ') eq++;
+        if (*eq != '=') continue;
+        char *val = eq + 1;
+        while (*val == ' ') val++;
+        size_t k = 0;
+        while (val[k] && val[k] != '\r' && val[k] != '\n' && k + 1 < n) { out[k] = val[k]; k++; }
+        out[k] = 0;
+    }
+    fclose(f);
+}
+
+/* Set KEY = value in config.ini's [Game] section (the game's own settings live there and it keeps the key when it rewrites the file). */
+static void cfg_set(const char *base, const char *key, const char *value) {
+    char p[4096], line[4600];
+    static char text[65536];
+    size_t len = 0, kl = strlen(key);
+    bool placed = false;
+    snprintf(p, sizeof p, "%sconfig.ini", base ? base : "");
+    FILE *f = fopen(p, "r");
+    if (f) {
+        while (fgets(line, sizeof line, f)) {
+            const char *q = line + kl;
+            bool is_key = strncmp(line, key, kl) == 0;
+            if (is_key) { while (*q == ' ') q++; is_key = *q == '='; }
+            if (is_key) continue;
+            size_t l = strlen(line);
+            if (len + l + 1 < sizeof text) { memcpy(text + len, line, l); len += l; }
+            if (!placed && !strncmp(line, "[Game]", 6)) {
+                int w = snprintf(text + len, sizeof text - len, "%s = %s\n", key, value);
+                if (w > 0 && len + (size_t)w < sizeof text) len += (size_t)w;
+                placed = true;
+            }
+        }
+        fclose(f);
+    }
+    if (!placed) {
+        if (len && text[len - 1] != '\n') text[len++] = '\n';
+        int w = snprintf(text + len, sizeof text - len, "[Game]\n%s = %s\n", key, value);
+        if (w > 0) len += (size_t)w;
+    }
+    f = fopen(p, "w");
+    if (!f) return;
+    fwrite(text, 1, len, f);
+    fclose(f);
+}
+
+/* Let the player pick a ROM file: the system file dialog (Windows: the Explorer open box). 1 = chose, 0 = cancelled or none available. */
+static int browse_rom(char *out, size_t n) {
+#ifdef _WIN32
+    wchar_t wpath[4096] = { 0 };
+    OPENFILENAMEW ofn;
+    memset(&ofn, 0, sizeof ofn);
+    ofn.lStructSize = sizeof ofn;
+    ofn.lpstrFilter = L"NES ROM (*.nes)\0*.nes\0All files\0*.*\0";
+    ofn.lpstrFile = wpath;
+    ofn.nMaxFile = 4096;
+    ofn.lpstrTitle = L"Choose your Maniac Mansion ROM";
+    ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+    if (!GetOpenFileNameW(&ofn)) return 0;
+    return WideCharToMultiByte(CP_UTF8, 0, wpath, -1, out, (int)n, NULL, NULL) > 0;
+#else
+    static const char *const cmds[] = {
+        "zenity --file-selection --title='Choose your Maniac Mansion ROM' --file-filter='NES ROM | *.nes *.NES' 2>/dev/null",
+        "kdialog --getopenfilename . '*.nes *.NES' 2>/dev/null" };
+    for (unsigned i = 0; i < 2; i++) {
+        FILE *p = popen(cmds[i], "r");
+        if (!p) continue;
+        out[0] = 0;
+        if (fgets(out, (int)n, p)) { size_t l = strlen(out); while (l && (out[l - 1] == '\n' || out[l - 1] == '\r')) out[--l] = 0; }
+        int rc = pclose(p);
+        if (out[0] && rc == 0) return 1;
+        if (rc == 0 || rc == 256) return 0;   /* the dialog opened and was cancelled */
+    }
+    return 0;
+#endif
+}
+
+#ifdef _WIN32
+__attribute__((constructor)) static void find_rom(void) {
+    int argc = __argc;
+#else
+__attribute__((constructor)) static void find_rom(int argc, char **argv) {
+    (void)argv;
+#endif
+    static char path[4096];
+    static FoundRom found[MM_MAX_FOUND];
+    if (argc > 1) return;   /* a ROM given on the command line: the host loads that one */
+    char *base = SDL_GetBasePath();
+    int nf = scan_roms(base, found), pick = -1;
+    char saved[4096];
+    if (nf == 0) {   /* none next to the exe: the one picked last time */
+        cfg_get(base, "RomPath", saved, sizeof saved);
+        const MmRomInfo *r = saved[0] ? identify(saved) : NULL;
+        if (r) { snprintf(found[0].path, sizeof found[0].path, "%s", saved); found[0].info = r; nf = 1; }
+    }
+    while (nf == 0) {   /* still none: pick the file (Explorer on Windows) */
+        char chosen[4096];
+        if (!browse_rom(chosen, sizeof chosen)) {
+            SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_INFORMATION, "Maniac Mansion NES PC",
+                "No Maniac Mansion ROM was chosen.\n\n"
+                "Start the game again and pick your own copy of the NES ROM (the prototype or the retail US cartridge),\n"
+                "or put it in the same folder as this program (any file name ending in .nes). See README.txt.", NULL);
+            exit(0);
+        }
+        const MmRomInfo *r = identify(chosen);
+        if (!r) {
+            SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_WARNING, "Maniac Mansion NES PC",
+                "That file is not a Maniac Mansion ROM this game knows.\nOnly the prototype and the retail US ROM work.", NULL);
+            continue;
+        }
+        snprintf(found[0].path, sizeof found[0].path, "%s", chosen);
+        found[0].info = r;
+        nf = 1;
+        cfg_set(base, "RomPath", chosen);   /* remembered, so the next start does not ask again */
+    }
+    if (nf == 1) pick = 0;
+    else if (nf > 1) {   /* several known ROMs here: config.ini decides, else ask by title */
+        char pref[32];
+        cfg_get(base, "Rom", pref, sizeof pref);
+#ifdef _WIN32
+        if (GetAsyncKeyState(VK_SHIFT) & 0x8000) pref[0] = 0;   /* Shift held at launch: ask again even if a choice was remembered */
+#endif
+        for (int i = 0; i < nf; i++) if (!strncmp(pref, found[i].info->id, strlen(found[i].info->id))) pick = i;
+        while (pick < 0) {   /* ask in our own window (same look as the Esc menu) */
+            const char *titles[MM_MAX_FOUND];
+            for (int i = 0; i < nf; i++) titles[i] = found[i].info->title;
+            int r = mm_rom_picker(titles, nf, NULL);
+            if (r < 0) exit(0);
+            pick = r;
+        }
+    }
+    if (base) SDL_free(base);
+    if (pick >= 0) {
+        snprintf(path, sizeof path, "%s", found[pick].path);
+        cyc_native_fds_image_path = path;
+        if (!strcmp(found[pick].info->id, "retail")) s_save_stem = "ManiacMansion_retail";
+    }
 }
 
 bool cyc_native_has(uint16_t addr) {

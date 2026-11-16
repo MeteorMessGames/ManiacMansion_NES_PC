@@ -4,14 +4,19 @@ Player guide
 
 GETTING STARTED
 ---------------
-You need your own copy of the Maniac Mansion NES prototype ROM; it is not
-included. Put it in this folder named exactly:
+You need your own copy of the Maniac Mansion NES ROM; it is not included.
+Both the prototype and the retail US cartridge work. Put the .nes file in
+this folder (any file name ending in .nes; the game recognizes the ROM by its
+contents, not its name). If no ROM is found, a file box opens so you can pick
+it from anywhere; the choice is remembered (RomPath in config.ini).
 
-    Maniac Mansion (Prototype).nes
+With both ROMs in the folder you are asked which one to play; set
+Rom = prototype or Rom = retail in config.ini to skip the question. The retail
+version keeps its own save slots.
 
-then double-click ManiacMansion.exe (Windows) or run ./ManiacMansion (Linux,
+Then double-click ManiacMansion.exe (Windows) or run ./ManiacMansion (Linux,
 needs SDL2: sudo apt install libsdl2-2.0-0).
-Only that exact prototype ROM works; any other file is refused.
+Only those two ROMs work; any other file is refused.
 
 1. Press Enter (or right-click) to skip the logo and intro screens.
 2. On the character screen, click two kids to go with Dave, then click START.

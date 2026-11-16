@@ -13,7 +13,7 @@ endif()
 nesrecomp_add_cycle_game(nes_game
     ROM "${MM_ROM}"
     GAME_CONFIG "${CMAKE_CURRENT_LIST_DIR}/game.toml"
-    HOST_EXTRAS "${CMAKE_CURRENT_LIST_DIR}/mouse_cursor_hook.c" "${CMAKE_CURRENT_LIST_DIR}/menu_render.c" "${CMAKE_CURRENT_LIST_DIR}/achievements.c" "${CMAKE_CURRENT_LIST_DIR}/crt_filter.c" "${CMAKE_CURRENT_LIST_DIR}/crt_gpu.c" "${CMAKE_CURRENT_LIST_DIR}/update_check.c" "${CMAKE_CURRENT_LIST_DIR}/splash_sfx.c"
+    HOST_EXTRAS "${CMAKE_CURRENT_LIST_DIR}/mouse_cursor_hook.c" "${CMAKE_CURRENT_LIST_DIR}/menu_render.c" "${CMAKE_CURRENT_LIST_DIR}/rom_picker.c" "${CMAKE_CURRENT_LIST_DIR}/achievements.c" "${CMAKE_CURRENT_LIST_DIR}/crt_filter.c" "${CMAKE_CURRENT_LIST_DIR}/crt_gpu.c" "${CMAKE_CURRENT_LIST_DIR}/update_check.c" "${CMAKE_CURRENT_LIST_DIR}/splash_sfx.c"
     MODS GAME_ID "maniac-mansion-proto"
     RECOMPILER "${NESRECOMP_ROOT}/build/recompiler/NESRecomp"
 )
@@ -23,6 +23,7 @@ nesrecomp_add_cycle_game(nes_game
 # interpreter. The ROM is still needed at configure time, only to read the
 # ROM hashes and the hook-site table out of the generated dispatch file.
 option(MM_ROMLESS "Build without the game's code; the player's ROM runs on the interpreter" OFF)
+target_include_directories(nes_game PRIVATE "${CMAKE_CURRENT_LIST_DIR}")
 if(MM_ROMLESS)
     get_target_property(_mm_srcs nes_game SOURCES)
     set(_mm_keep "")
@@ -83,7 +84,7 @@ if(MINGW)
     # (libgcc_s_seh-1.dll, libstdc++-6.dll -- pulled in by mod_runtime.cpp's
     # C++ linkage) instead of distributing them alongside SDL2.dll.
     target_link_options(nes_game PRIVATE -static-libgcc -static-libstdc++)
-    target_link_libraries(nes_game PRIVATE wininet)   # update check (update_check.c)
+    target_link_libraries(nes_game PRIVATE wininet comdlg32)   # update check (update_check.c), ROM file picker (romless_native.c.in)
 endif()
 
 # Player guide (README.txt) next to the executable (CRLF so Notepad on Windows shows it right).

@@ -1,3 +1,40 @@
+diff --git a/runner/cyc/cyc_fds_save.inc b/runner/cyc/cyc_fds_save.inc
+index c2b1d97..453674f 100644
+--- a/runner/cyc/cyc_fds_save.inc
++++ b/runner/cyc/cyc_fds_save.inc
+@@ -86,6 +86,8 @@ static bool default_save_path(const char *image_path, const char *extension, cha
+     const char *base = image_path, *s1 = strrchr(image_path, '/'), *s2 = strrchr(image_path, '\\');
+     if (s1 && s1 + 1 > base) base = s1 + 1;
+     if (s2 && s2 + 1 > base) base = s2 + 1;
++    const char *own = cyc_native_save_stem_get();   /* a program may name its save itself (no dot in the name) */
++    if (own && *own) base = own;
+     const char *dot = strrchr(base, '.');
+     int stem = (int)(dot ? (size_t)(dot - base) : strlen(base));
+     char saves[1000];
+diff --git a/runner/cyc/cyc_host.c b/runner/cyc/cyc_host.c
+index 82df696..8b2c6f5 100644
+--- a/runner/cyc/cyc_host.c
++++ b/runner/cyc/cyc_host.c
+@@ -175,6 +175,9 @@
+ #include "cyc_mod.h"
+ #include "cyc_ramview.h"
+ #include "cyc_recomp.h"
++
++__attribute__((weak)) uint32_t cyc_native_alt_prg_hash_get(void) { return 0; }
++__attribute__((weak)) const char *cyc_native_save_stem_get(void) { return NULL; }
+ #include "cyc_render.h"
+ #include "cyc_run.h"
+ #include "cyc_session.h"
+@@ -1388,7 +1391,8 @@ session_restart:
+ #endif
+         return 2;
+     }
+-    if (cyc_native_program_name && cyc_prg_hash() != cyc_native_prg_hash) {
++    if (cyc_native_program_name && cyc_prg_hash() != cyc_native_prg_hash &&
++        !(cyc_native_alt_prg_hash_get() && cyc_prg_hash() == cyc_native_alt_prg_hash_get())) {
+         cyc_diagnostics_error("PRG ROM does not match the ROM '%s' was recompiled from (hash %08X, expected %08X)\n",
+                 cyc_native_program_name, cyc_prg_hash(), cyc_native_prg_hash);
+ #if defined(CYC_WITH_SDL)
 diff --git a/runner/cyc/cyc_host_extras.h b/runner/cyc/cyc_host_extras.h
 index 6c9c768..cafb9d2 100644
 --- a/runner/cyc/cyc_host_extras.h
@@ -73,6 +110,22 @@ index ec92422..f5580f0 100644
  
  typedef struct {
      uint8_t  a, x, y, s, p;     /* p: N V - B D I Z C as pushed (B and bit 5 ignored on set) */
+diff --git a/runner/cyc/cyc_recomp.h b/runner/cyc/cyc_recomp.h
+index 0ccaf3d..8d9839a 100644
+--- a/runner/cyc/cyc_recomp.h
++++ b/runner/cyc/cyc_recomp.h
+@@ -25,6 +25,11 @@ extern const char    *cyc_native_program_name;
+ extern const char    *cyc_native_display_name;
+ extern const uint32_t cyc_native_prg_hash;
+ extern const uint32_t cyc_native_cart_hash;
++/* A second ROM revision with the same board that the host also accepts, 0 = none. The host has a weak default returning 0; a program
++ * that ships without its game code defines it (the interpreter runs whichever of the two ROMs the player has). */
++uint32_t cyc_native_alt_prg_hash_get(void);
++/* Optional (weak): a name for the cartridge save file (without extension) instead of the ROM file's stem, NULL = use the stem. */
++const char *cyc_native_save_stem_get(void);
+ /* FDS programs (mapper 20): the BIOS CRC32 the compiler verified against
+  * bios/disksys.toml, and game.toml's [fds] bios and image, resolved to
+  * absolute paths at compile time as the host's defaults. 0 / NULL for
 diff --git a/runner/cyc/cyc_sdl.c b/runner/cyc/cyc_sdl.c
 index 91b2647..ea6fb15 100644
 --- a/runner/cyc/cyc_sdl.c
@@ -229,6 +282,26 @@ index 91b2647..ea6fb15 100644
              shown = SDL_GetPerformanceCounter();
              /* the one point a new width applies: after this present, before the next picture */
              cyc_video_apply_pending();
+diff --git a/runner/cyc/cyc_session.c b/runner/cyc/cyc_session.c
+index d0444cb..fcdf0cf 100644
+--- a/runner/cyc/cyc_session.c
++++ b/runner/cyc/cyc_session.c
+@@ -1,5 +1,6 @@
+ /* cyc_session.c - see cyc_session.h. */
+ #include "cyc_session.h"
++#include "cyc_recomp.h"
+ #include "cyc_diagnostics.h"
+ #include "cyc_core.h"
+ #include "cyc_ring.h"
+@@ -120,6 +121,8 @@ bool cyc_session_mods_start(const char *image_path, char *err, size_t err_len)
+     cyc_diagnostics_note("starting selected mod plugins");
+ #if NESRECOMP_ENABLE_MODS
+     if (!s_mods) return true;
++    /* A program that accepts a second ROM revision has no mod target for it: the ROM identity is checked by the host. */
++    if (cyc_native_alt_prg_hash_get()) image_path = NULL;
+     int online=0;
+ #ifdef NESRECOMP_NET
+     NesNetplayConfig cfg;nes_netplay_config_defaults(&cfg);nes_netplay_config_apply_env(&cfg);
 diff --git a/runner/cyc/hw_apu.c b/runner/cyc/hw_apu.c
 index a082d54..42488b9 100644
 --- a/runner/cyc/hw_apu.c
