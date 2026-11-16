@@ -53,7 +53,7 @@ The full player guide (controls, saving, tips) is in [README.txt](README.txt), w
 
 | Input | Action |
 |---|---|
-| D-pad / left stick | Move the cursor (speed follows Options > Key Speed) |
+| D-pad / left stick | Move the cursor (speed follows Options > Controller Speed) |
 | A | Left click |
 | B | Right click (context verb, skips cutscenes) |
 | X | Cycle the verb (Select) |

@@ -302,6 +302,8 @@ static int  s_aspect = 0;
 static bool s_game_started = false;               /* cursor sprite seen once: past the title screens */
 static volatile int s_inv_wheel = 0;              /* wheel notches queued from events (+ = up) */
 static bool s_ach_req = false;                    /* achievements switch queued from events */
+static int  s_filter_req_dir = 0;                 /* Left / Right on the Filter row: -1 / +1 */
+static bool s_fs_req = false;                     /* Left / Right on the Fullscreen row */
 static bool s_shape_req = false;                  /* toggle queued from events */
 static int s_speed_req_row = -1, s_speed_req_dir = 0;   /* Options: step a cursor speed row, handled in frame_end */
 static bool host_draws_sharp(void);
@@ -608,6 +610,19 @@ static void set_achievements(bool on);
 static uint32_t s_ach_reset_until = 0;   /* tick until which "Reset all achievements" is armed (second press confirms) */
 #define MAX_SLOTS 999       /* save slots are unlimited in practice: the list shows the saves that exist plus one new slot */
 #define ACH_ROWS_VISIBLE 5    /* achievement list rows on screen (two lines each) */
+/* Menu geometry, all in units of u (= window height / 240) so every screen shares it: rows start at ML_ITEM_Y0, plain rows are
+ * ML_ROW_H tall (Music / Sound FX sliders ML_SLIDER_H, achievement cards ML_CARD_H), the Back row of the long-list screens is pinned
+ * at ML_BACK_Y, one info / status line sits at ML_INFO_Y, and the footer (separator + two hint lines) is at the bottom. */
+#define ML_ITEM_Y0   54
+#define ML_ROW_H     14
+#define ML_GAP        2
+#define ML_CARD_H    23
+#define ML_SLIDER_H  21
+#define ML_BACK_Y   184
+#define ML_INFO_Y   203
+#define ML_FOOT_SEP 213
+#define ML_HINT1_Y  217
+#define ML_HINT2_Y  226
 #define SLOT_ROWS_VISIBLE 7   /* slot list rows on screen; the rest scroll (wheel, Up/Down) */
 #define THUMB_W 128
 #define THUMB_H 120
@@ -895,24 +910,29 @@ static void slot_time_text(int slot, char *out, size_t n) {
 static int menu_row_count(void) {
     if (s_menu_mode == MODE_DISPLAY) return DI_COUNT;
     if (s_menu_mode == MODE_QUIT) return 3;
-    if (s_menu_mode == MODE_ACH) return ach_count() + 3;   /* the list, the On/Off switch, "Reset all achievements", Back */
+    if (s_menu_mode == MODE_ACH) return ach_count() + 3;   /* the On/Off switch, the list, "Reset all achievements", Back */
     if (s_menu_mode != MODE_MAIN) return slot_rows() + 1;
     return MI_COUNT;
 }
-/* Rows drawn at once: the slot lists scroll, the other menus fit. */
+/* The long-list screens (Save, Load, Achievements) keep their Back row pinned below the scrolling list. */
+static bool menu_pinned_back(void) { return s_menu_mode == MODE_SAVE || s_menu_mode == MODE_LOAD || s_menu_mode == MODE_ACH; }
+/* Rows that scroll: every row except a pinned Back. */
+static int menu_list_rows(void) { return menu_row_count() - (menu_pinned_back() ? 1 : 0); }
+/* Rows drawn at once in the scrolling part: the long lists scroll, the other menus fit. */
 static int menu_visible_rows(void) {
-    int n = menu_row_count();
+    int n = menu_list_rows();
     if (s_menu_mode == MODE_ACH) return n > ACH_ROWS_VISIBLE ? ACH_ROWS_VISIBLE : n;
     return (s_menu_mode == MODE_SAVE || s_menu_mode == MODE_LOAD) && n > SLOT_ROWS_VISIBLE ? SLOT_ROWS_VISIBLE : n;
 }
 static void menu_scroll_clamp(void) {
-    int max = menu_row_count() - menu_visible_rows();
+    int max = menu_list_rows() - menu_visible_rows();
     if (s_menu_scroll > max) s_menu_scroll = max;
     if (s_menu_scroll < 0) s_menu_scroll = 0;
 }
-/* scroll so the selected row is on screen */
+/* scroll so the selected row is on screen (the pinned Back row never scrolls) */
 static void menu_keep_visible(void) {
     int vis = menu_visible_rows();
+    if (s_menu_sel >= menu_list_rows()) { menu_scroll_clamp(); return; }
     if (s_menu_sel < s_menu_scroll) s_menu_scroll = s_menu_sel;
     if (s_menu_sel >= s_menu_scroll + vis) s_menu_scroll = s_menu_sel - vis + 1;
     menu_scroll_clamp();
@@ -923,8 +943,9 @@ static int row_slot(int row) {
     return slot <= slot_rows() ? slot : -1;
 }
 
-/* Sidebar geometry for a presented size (all derived from the height). */
-typedef struct { int sw, pad, item_y0, item_h, item_gap, title_y, sub_y, sep_y; float u; } MenuLayout;
+/* Sidebar geometry for a presented size (all derived from the height). Every screen uses the same row start, gap and footer;
+ * only the achievement cards are taller, and only that screen's panel is wider (the card text needs the room). */
+typedef struct { int sw, pad, item_y0, item_h, item_gap, title_y, sub_y, sep_y, back_y, info_y, foot_sep, hint1_y, hint2_y; float u; } MenuLayout;
 static MenuLayout menu_layout(int w, int h) {
     MenuLayout L;
     L.u = (float)h / 240.0f;
@@ -941,31 +962,51 @@ static MenuLayout menu_layout(int w, int h) {
     L.title_y = (int)(16 * L.u);
     L.sub_y = (int)(33 * L.u);
     L.sep_y = (int)(46 * L.u);
-    if (s_menu_mode == MODE_MAIN || s_menu_mode == MODE_DISPLAY || s_menu_mode == MODE_QUIT) {
-        L.item_y0 = (int)(58 * L.u);
-        /* Options has 9 rows: tighter so they clear the footer */
-        L.item_h = (int)((s_menu_mode == MODE_DISPLAY ? 13 : 17) * L.u);
-        L.item_gap = (int)((s_menu_mode == MODE_DISPLAY ? 1 : 3) * L.u);
-    } else if (s_menu_mode == MODE_ACH) {
-        L.item_y0 = (int)(52 * L.u);
-        L.item_h = (int)(23 * L.u);
-        L.item_gap = (int)(2 * L.u);
-    } else {
-        L.item_y0 = (int)(54 * L.u);
-        L.item_h = (int)(14 * L.u);
-        L.item_gap = (int)(2 * L.u);
-    }
+    L.item_y0 = (int)(ML_ITEM_Y0 * L.u);
+    L.item_h = (int)((s_menu_mode == MODE_ACH ? ML_CARD_H : ML_ROW_H) * L.u);
+    L.item_gap = (int)(ML_GAP * L.u);
+    L.back_y = (int)(ML_BACK_Y * L.u);
+    L.info_y = (int)(ML_INFO_Y * L.u);
+    L.foot_sep = (int)(ML_FOOT_SEP * L.u);
+    L.hint1_y = (int)(ML_HINT1_Y * L.u);
+    L.hint2_y = (int)(ML_HINT2_Y * L.u);
     return L;
+}
+
+/* Height of a row in the current screen: Music / Sound FX are two-line sliders, the pinned Back row is a plain row,
+ * everything else follows the screen's list row height. */
+static int menu_row_height(const MenuLayout *L, int row) {
+    if (s_menu_mode == MODE_DISPLAY && (row == DI_MUSIC || row == DI_SFX)) return (int)(ML_SLIDER_H * L->u);
+    if (menu_pinned_back() && row == menu_row_count() - 1) return (int)(ML_ROW_H * L->u);
+    return L->item_h;
+}
+/* Where a row is on screen (false: scrolled out of view). The ONE place that knows row positions, used by drawing,
+ * mouse hit-testing and the volume slider, so they cannot drift apart. */
+static bool menu_row_rect(const MenuLayout *L, int row, int *y, int *h) {
+    int n = menu_row_count();
+    if (row < 0 || row >= n) return false;
+    if (menu_pinned_back() && row == n - 1) { *y = L->back_y; *h = (int)(ML_ROW_H * L->u); return true; }
+    if (s_menu_mode == MODE_DISPLAY) {   /* rows differ in height: walk down from the first */
+        int yy = L->item_y0;
+        for (int r = 0; r < row; r++) yy += menu_row_height(L, r) + L->item_gap;
+        *y = yy; *h = menu_row_height(L, row);
+        return true;
+    }
+    int k = row - s_menu_scroll;
+    if (k < 0 || k >= menu_visible_rows()) return false;
+    *y = L->item_y0 + k * (L->item_h + L->item_gap);
+    *h = L->item_h;
+    return true;
 }
 
 static int menu_row_at(int x, int y) {
     if (s_hi_w <= 0) return -1;
     MenuLayout L = menu_layout(s_hi_w, s_hi_h);
     if (x < L.pad / 2 || x >= L.sw - L.pad / 2) return -1;
-    int vis = menu_visible_rows();
-    for (int k = 0; k < vis; k++) {
-        int y0 = L.item_y0 + k * (L.item_h + L.item_gap);
-        if (y >= y0 && y < y0 + L.item_h) return s_menu_scroll + k;
+    int n = menu_row_count();
+    for (int row = 0; row < n; row++) {
+        int y0, rh;
+        if (menu_row_rect(&L, row, &y0, &rh) && y >= y0 && y < y0 + rh) return row;
     }
     return -1;
 }
@@ -1011,9 +1052,9 @@ static void menu_set_mode(int mode) {
     s_confirm_slot = -1;
     s_menu_status[0] = 0;
     if (mode == MODE_MAIN) return;
-    if (mode == MODE_DISPLAY) { s_menu_sel = 0; return; }
+    if (mode == MODE_DISPLAY || mode == MODE_ACH) { s_menu_sel = 0; return; }
     if (mode == MODE_QUIT) {
-        s_menu_sel = 0;
+        s_menu_sel = 2;   /* start on Back, the safe choice */
         refresh_slots();
         int slot = 0;
         for (int i = 1; i <= MAX_SLOTS && !slot; i++) if (!s_slots[i].used) slot = i;
@@ -1155,7 +1196,7 @@ static void menu_activate(int item) {
         return;
     }
     if (s_menu_mode == MODE_ACH) {
-        if (item == ach_count()) {   /* the On/Off switch */
+        if (item == 0) {   /* the On/Off switch (top row) */
             set_achievements(!ach_enabled());
         } else if (item == ach_count() + 1) {   /* Reset all achievements: press twice within 4 seconds */
             if (SDL_GetTicks() < s_ach_reset_until) {
@@ -1199,18 +1240,6 @@ static void menu_back(void) {
     if (from == MODE_QUIT && s_quit_from_window) { s_quit_from_window = false; menu_activate(MI_RESUME); return; }
     menu_set_mode(MODE_MAIN);
     s_menu_sel = from == MODE_SAVE ? MI_SAVE : from == MODE_LOAD ? MI_LOAD : from == MODE_ACH ? MI_ACH : from == MODE_QUIT ? MI_EXIT : MI_DISPLAY;
-}
-
-/* "Last saved" line: the newest slot. */
-static void last_saved_text(char *out, size_t n) {
-    int best = -1;
-    for (int s = 0; s <= MAX_SLOTS; s++)
-        if (s_slots[s].used && (best < 0 || s_slots[s].mtime > s_slots[best].mtime)) best = s;
-    if (best < 0) { snprintf(out, n, "No saves yet"); return; }
-    char when[48], name[32];
-    slot_time_text(best, when, sizeof when);
-    slot_name(best, name, sizeof name);
-    snprintf(out, n, "Last saved %s (%s)", when, name);
 }
 
 /* Size to present the menu at: the window's real drawable, letterboxed to
@@ -1411,18 +1440,19 @@ static const uint32_t *display_present(int *w, int *h) {
     return s_crt_pic;
 }
 
-static const char *const k_display_rows[DI_COUNT] = { "Music", "Sound FX", "Fullscreen", "Filter", "Scale", "Shape", "Mouse Speed", "Key Speed", "Back" };
+static const char *const k_display_rows[DI_COUNT] = { "Music", "Sound FX", "Fullscreen", "Filter", "Scale", "Shape", "Mouse Speed", "Controller Speed", "Back" };
 
 /* The slider of a volume row in the Options list (false: not a volume row). */
 static bool volume_bar(const MenuLayout *L, int row, int *bx, int *by, int *bw, int *bh) {
     if (row != DI_MUSIC && row != DI_SFX) return false;
     /* full-width bar along the bottom of the row, label and value above */
     float u = L->u;
-    int y0 = L->item_y0 + row * (L->item_h + L->item_gap);
+    int y0, rh;
+    if (!menu_row_rect(L, row, &y0, &rh)) return false;
     *bx = L->pad + (int)(6 * u);
     *bw = L->sw - L->pad / 2 - (int)(6 * u) - *bx;
     *bh = (int)(3 * u) > 2 ? (int)(3 * u) : 2;
-    *by = y0 + L->item_h - *bh - (int)(0.8f * u);
+    *by = y0 + rh - *bh - (int)(0.8f * u);
     return *bw > 4;
 }
 
@@ -1479,6 +1509,18 @@ static const char *display_row_value(int item, char *buf, size_t n) {
     }
     (void)buf; (void)n;
     return "";
+}
+
+/* First footer line: only shown where Left / Right changes the selected row (Options value rows, the Achievements switch). */
+static void menu_hint(char *out, size_t n) {
+    const char *t = "";
+    int sel = s_menu_sel;
+    switch (s_menu_mode) {
+    case MODE_DISPLAY: t = sel == DI_BACK ? "" : "Left / Right Change"; break;
+    case MODE_ACH:     t = sel == 0 ? "Left / Right Change" : ""; break;
+    default: break;
+    }
+    snprintf(out, n, "%s", t);
 }
 
 static const uint32_t *menu_present(void *ctx, int *w, int *h) {
@@ -1538,60 +1580,72 @@ static const uint32_t *menu_present(void *ctx, int *w, int *h) {
         if (tw > avail && tw > 0) tpx = tpx * avail / tw;
         mr_text(d, pw, ph, L.pad, L.title_y, tpx, 0xFFFFFF, 255, "Maniac Mansion");
     }
-    const char *sub = s_menu_mode == MODE_SAVE ? "Save to which slot?" :
-                      s_menu_mode == MODE_LOAD ? "Load which save?" :
+    const char *sub = s_menu_mode == MODE_SAVE ? "Save State" :
+                      s_menu_mode == MODE_LOAD ? "Load State" :
                       s_menu_mode == MODE_DISPLAY ? "Options" :
                       s_menu_mode == MODE_ACH ? "Achievements" :
-                      s_menu_mode == MODE_QUIT ? "Exit the game?" : "Paused";
+                      s_menu_mode == MODE_QUIT ? "Exit Game" : "Paused";
     mr_text(d, pw, ph, L.pad, L.sub_y, 7.5f * u, 0x9AA0B4, 255, sub);
     mr_rect(d, pw, ph, L.pad, L.sep_y, L.sw - 2 * L.pad, (int)u > 1 ? (int)u : 1, 0x3A3D4C, 255);
 
     int n = menu_row_count();
+    int lrows = menu_list_rows();
     int vis = menu_visible_rows();
+    bool pinned = menu_pinned_back();
     menu_scroll_clamp();
-    if (vis < n) {   /* scrollbar beside the slot list */
+    if (vis < lrows) {   /* scrollbar beside the scrolling list */
         int track_y = L.item_y0, track_h = vis * (L.item_h + L.item_gap) - L.item_gap;
         int bw = (int)(1.5f * u) > 2 ? (int)(1.5f * u) : 2;
         int bx = L.sw - L.pad / 2 + (L.pad / 2 - bw) / 2;
-        int th = track_h * vis / n, ty = track_y + (track_h - th) * s_menu_scroll / (n - vis);
+        int th = track_h * vis / lrows, ty = track_y + (track_h - th) * s_menu_scroll / (lrows - vis);
         mr_round_rect(d, pw, ph, bx, track_y, bw, track_h, bw / 2, 0xFFFFFF, 30);
         mr_round_rect(d, pw, ph, bx, ty, bw, th, bw / 2, 0x6FA2F5, 230);
     }
-    for (int i = s_menu_scroll; i < s_menu_scroll + vis && i < n; i++) {
-        int y0 = L.item_y0 + (i - s_menu_scroll) * (L.item_h + L.item_gap);
+    for (int ri = 0; ri < vis + (pinned ? 1 : 0); ri++) {   /* the scrolling rows, then the pinned Back row */
+        int i = ri < vis ? s_menu_scroll + ri : n - 1;
+        int y0, rowh;
+        if (!menu_row_rect(&L, i, &y0, &rowh)) continue;
         bool sel = i == s_menu_sel;
         bool hov = i == s_menu_hover;
-        bool ach_row = s_menu_mode == MODE_ACH && i < ach_count();
+        int ai = i - 1;   /* Achievements page: row 0 is the On/Off switch, the achievements start at row 1 */
+        bool ach_row = s_menu_mode == MODE_ACH && i >= 1 && i <= ach_count();
         if (ach_row) {   /* earned = tinted card with a rarity-coloured outline; not yet earned = plain grey card, no outline */
             int rx = L.pad / 2, rw = L.sw - L.pad;
-            if (ach_unlocked(i)) {
-                uint32_t ob = rarity_outline(ach_rarity(i));
+            if (ach_unlocked(ai)) {
+                uint32_t ob = rarity_outline(ach_rarity(ai));
                 int ot = (int)(0.8f * u) > 1 ? (int)(0.8f * u) : 1;
-                mr_round_rect(d, pw, ph, rx, y0, rw, L.item_h, (int)(4 * u), ob, 255);
-                mr_round_rect(d, pw, ph, rx + ot, y0 + ot, rw - 2 * ot, L.item_h - 2 * ot, (int)(4 * u) - ot > 1 ? (int)(4 * u) - ot : 1,
-                              ach_rarity(i) == 0 ? 0x5A3A1E : ach_rarity(i) == 1 ? 0x2A3F5F : ach_rarity(i) == 2 ? 0x45296B : 0x6B5414, 255);
+                mr_round_rect(d, pw, ph, rx, y0, rw, rowh, (int)(4 * u), ob, 255);
+                mr_round_rect(d, pw, ph, rx + ot, y0 + ot, rw - 2 * ot, rowh - 2 * ot, (int)(4 * u) - ot > 1 ? (int)(4 * u) - ot : 1,
+                              ach_rarity(ai) == 0 ? 0x5A3A1E : ach_rarity(ai) == 1 ? 0x2A3F5F : ach_rarity(ai) == 2 ? 0x45296B : 0x6B5414, 255);
             } else {
-                mr_round_rect(d, pw, ph, rx, y0, rw, L.item_h, (int)(4 * u), 0x262830, 235);
+                mr_round_rect(d, pw, ph, rx, y0, rw, rowh, (int)(4 * u), 0x262830, 235);
             }
         }
         if (sel) {
-            mr_round_rect(d, pw, ph, L.pad / 2, y0, L.sw - L.pad, L.item_h, (int)(4 * u), 0x2C6FE0, ach_row ? 95 : 215);
+            mr_round_rect(d, pw, ph, L.pad / 2, y0, L.sw - L.pad, rowh, (int)(4 * u), 0x2C6FE0, ach_row ? 95 : 215);
         } else if (hov) {
-            mr_round_rect(d, pw, ph, L.pad / 2, y0, L.sw - L.pad, L.item_h, (int)(4 * u), 0xFFFFFF, 28);
+            mr_round_rect(d, pw, ph, L.pad / 2, y0, L.sw - L.pad, rowh, (int)(4 * u), 0xFFFFFF, 28);
         }
         uint32_t fg = sel ? 0xFFFFFF : 0xD6D9E4;
         if (s_menu_mode == MODE_MAIN) {
-            float tpx = 8.5f * u;
-            mr_text(d, pw, ph, L.pad + (int)(6 * u), y0 + (int)((L.item_h - tpx) / 2), tpx, fg, 255, k_menu_rows[i]);
+            float tpx = 8.0f * u;
+            mr_text(d, pw, ph, L.pad + (int)(6 * u), y0 + (int)((rowh - tpx) / 2), tpx, fg, 255, k_menu_rows[i]);
             continue;
         }
         if (s_menu_mode == MODE_DISPLAY) {
             bool vol = i == DI_MUSIC || i == DI_SFX;
             float tpx = vol ? 7.0f * u : 8.0f * u;
-            int ty = vol ? y0 + (int)(0.5f * u) : y0 + (int)((L.item_h - tpx) / 2);
-            mr_text(d, pw, ph, L.pad + (int)(6 * u), ty, tpx, fg, 255, k_display_rows[i]);
+            int ty = vol ? y0 + (int)(0.5f * u) : y0 + (int)((rowh - tpx) / 2);
             char vb[32];
             const char *val = display_row_value(i, vb, sizeof vb);
+            char vcue[48];
+            if (sel && !vol && i != DI_BACK && val[0]) { snprintf(vcue, sizeof vcue, "< %s >", val); val = vcue; }   /* Left / Right changes it */
+            {   /* the label shrinks if needed so it never runs into the value on the right */
+                int lx = L.pad + (int)(6 * u);
+                int room = L.sw - L.pad / 2 - (int)(6 * u) - (val[0] ? mr_text_width(7.0f * u, val) + (int)(5 * u) : 0) - lx;
+                float lpx = fit_px(tpx, room, k_display_rows[i]);
+                mr_text(d, pw, ph, lx, vol ? ty : y0 + (int)((rowh - lpx) / 2), lpx, fg, 255, k_display_rows[i]);
+            }
             int bx, by, bw, bh;
             if (volume_bar(&L, i, &bx, &by, &bw, &bh)) {
                 int v = i == DI_MUSIC ? s_music_vol : s_sfx_vol;
@@ -1603,7 +1657,7 @@ static const uint32_t *menu_present(void *ctx, int *w, int *h) {
             if (val[0]) {
                 float vpx = 7.0f * u;
                 int vx = L.sw - L.pad / 2 - (int)(6 * u) - mr_text_width(vpx, val);
-                int vy = vol ? y0 + (int)(0.5f * u) : y0 + (int)((L.item_h - vpx) / 2);
+                int vy = vol ? y0 + (int)(0.5f * u) : y0 + (int)((rowh - vpx) / 2);
                 mr_text(d, pw, ph, vx, vy, vpx, sel ? 0xFFFFFF : 0x9AA0B4, 255, val);
             }
             continue;
@@ -1612,29 +1666,29 @@ static const uint32_t *menu_present(void *ctx, int *w, int *h) {
             char ql[48], qn[32];
             slot_name(s_quit_slot, qn, sizeof qn);
             snprintf(ql, sizeof ql, "Save to %s and exit", qn);
-            const char *qrows[3] = { ql, "Exit without saving", "Cancel" };
+            const char *qrows[3] = { ql, "Exit without saving", "Back" };
             float qpx = 8.0f * u;
-            mr_text(d, pw, ph, L.pad + (int)(6 * u), y0 + (int)((L.item_h - qpx) / 2), fit_px(qpx, L.sw - 2 * L.pad - (int)(8 * u), qrows[i]), fg, 255, qrows[i]);
+            mr_text(d, pw, ph, L.pad + (int)(6 * u), y0 + (int)((rowh - qpx) / 2), fit_px(qpx, L.sw - 2 * L.pad - (int)(8 * u), qrows[i]), fg, 255, qrows[i]);
             continue;
         }
         if (s_menu_mode == MODE_ACH) {
-            if (i >= ach_count()) {
-                float bpx = 7.5f * u;
-                bool switch_row = i == ach_count();
+            if (i == 0 || i > ach_count()) {
+                float bpx = 8.0f * u;
+                bool switch_row = i == 0;
                 bool reset_row = i == ach_count() + 1;
                 bool armed = reset_row && SDL_GetTicks() < s_ach_reset_until;
                 const char *label = switch_row ? (ach_enabled() ? "Achievements: On" : "Achievements: Off")
                                   : !reset_row ? "Back" : armed ? "Press again to erase ALL achievements" : "Reset all achievements";
-                mr_text(d, pw, ph, L.pad + (int)(6 * u), y0 + (int)((L.item_h - bpx) / 2), fit_px(bpx, L.sw - 2 * L.pad - (int)(12 * u), label),
+                mr_text(d, pw, ph, L.pad + (int)(6 * u), y0 + (int)((rowh - bpx) / 2), fit_px(bpx, L.sw - 2 * L.pad - (int)(12 * u), label),
                         armed ? 0xFF7070 : fg, 255, label);
                 continue;
             }
-            bool got = ach_unlocked(i);
+            bool got = ach_unlocked(ai);
             uint32_t rc_body, rc_shine, rc_edge;
-            rarity_colors(ach_rarity(i), &rc_body, &rc_shine, &rc_edge);
+            rarity_colors(ach_rarity(ai), &rc_body, &rc_shine, &rc_edge);
             {   /* trophy: rarity colour when earned (bronze / silver / purple / gold), grey when not */
                 int ps = (int)(u * 0.7f) > 1 ? (int)(u * 0.7f) : 1;
-                int tx = L.pad + (int)(4 * u), ty0 = y0 + (L.item_h - 19 * ps) / 2;
+                int tx = L.pad + (int)(4 * u), ty0 = y0 + (rowh - 19 * ps) / 2;
                 for (int ty = 0; ty < 19; ty++)
                     for (int tx_ = 0; tx_ < 14; tx_++) {
                         uint32_t c;
@@ -1650,26 +1704,26 @@ static const uint32_t *menu_present(void *ctx, int *w, int *h) {
             int tro = (int)(4 * u) + 14 * ((int)(u * 0.7f) > 1 ? (int)(u * 0.7f) : 1) + (int)(4 * u);   /* text starts after the trophy */
             int avail = L.sw - 2 * L.pad - (int)(8 * u) - tro;
             char pts[16];
-            snprintf(pts, sizeof pts, "%dp", ach_points(i));
+            snprintf(pts, sizeof pts, "%dp", ach_points(ai));
             float ppx = 6.0f * u;
             int pw_ = mr_text_width(ppx, pts);
             mr_text(d, pw, ph, L.sw - L.pad / 2 - (int)(6 * u) - pw_, y0 + (int)(3 * u), ppx,
                     got ? rc_body : 0x5E6274, 255, pts);
-            const char *rn = ach_rarity_name(ach_rarity(i));   /* rarity word under the points */
+            const char *rn = ach_rarity_name(ach_rarity(ai));   /* rarity word under the points */
             float rpx = 4.8f * u;
             int rw = mr_text_width(rpx, rn);
             mr_text(d, pw, ph, L.sw - L.pad / 2 - (int)(6 * u) - rw, y0 + (int)(13 * u), rpx,
                     got ? rc_body : 0x5E6274, 255, rn);
             char nb[96], db[160];
-            bool veil = ach_hidden(i) && !got;   /* hidden until unlocked */
-            float npx = fit_trunc(nb, sizeof nb, 7.2f * u, 0.72f, avail - pw_ - (int)(3 * u), veil ? "???" : ach_name(i));
+            bool veil = ach_hidden(ai) && !got;   /* hidden until unlocked */
+            float npx = fit_trunc(nb, sizeof nb, 7.2f * u, 0.72f, avail - pw_ - (int)(3 * u), veil ? "???" : ach_name(ai));
             mr_text(d, pw, ph, L.pad + tro, y0 + (int)(2.5f * u), npx, got ? 0xFFFFFF : 0x7D8296, 255, nb);
-            float dpx = fit_trunc(db, sizeof db, 5.6f * u, 0.72f, avail - rw - (int)(4 * u), veil ? "Hidden achievement." : ach_desc(i));
+            float dpx = fit_trunc(db, sizeof db, 5.6f * u, 0.72f, avail - rw - (int)(4 * u), veil ? "Hidden achievement." : ach_desc(ai));
             mr_text(d, pw, ph, L.pad + tro, y0 + (int)(13 * u), dpx, got ? 0xF3E3B0 : 0x6A6F82, 255, db);
             continue;
         }
-        float tpx = 7.5f * u;
-        int ty = y0 + (int)((L.item_h - tpx) / 2);
+        float tpx = 8.0f * u;
+        int ty = y0 + (int)((rowh - tpx) / 2);
         int slot = row_slot(i);
         if (slot < 0) {
             mr_text(d, pw, ph, L.pad + (int)(6 * u), ty, tpx, fg, 255, "Back");
@@ -1682,30 +1736,28 @@ static const uint32_t *menu_present(void *ctx, int *w, int *h) {
         float dpx = 6.0f * u;
         uint32_t dc = s_slots[slot].used ? (sel ? 0xE6E9F4 : 0x9AA0B4) : 0x5E6274;
         int dx = L.sw - L.pad / 2 - (int)(6 * u) - mr_text_width(dpx, when);
-        mr_text(d, pw, ph, dx, y0 + (int)((L.item_h - dpx) / 2), dpx, dc, 255, when);
+        mr_text(d, pw, ph, dx, y0 + (int)((rowh - dpx) / 2), dpx, dc, 255, when);
     }
 
-    if (slots) {
-        draw_slot_preview(d, pw, ph, &L);
-        if (s_menu_status[0])
-            mr_text(d, pw, ph, L.pad, ph - (int)(55 * u), fit_px(6.5f * u, L.sw - 2 * L.pad, s_menu_status), s_menu_status_rgb, 255, s_menu_status);
-    } else {
+    if (slots) draw_slot_preview(d, pw, ph, &L);
+    {   /* one info / status line above the footer, the same place on every screen */
         char info[96];
-        if (s_menu_mode == MODE_DISPLAY) snprintf(info, sizeof info, "Left / Right adjust   F9 filter   F11 fullscreen");
-        else if (s_menu_mode == MODE_QUIT) snprintf(info, sizeof info, "%s", s_dirty ? "Unsaved progress will be lost." : "");
+        info[0] = 0;
+        if (s_menu_mode == MODE_QUIT) snprintf(info, sizeof info, "%s", s_dirty ? "Unsaved progress will be lost." : "");
         else if (s_menu_mode == MODE_ACH) snprintf(info, sizeof info, "%d / %d unlocked   %d / %d points", ach_unlocked_count(), ach_count(), ach_points_unlocked(), ach_points_total());
-        else last_saved_text(info, sizeof info);
-        int foot_y = ph - (int)(58 * u);
         int avail = L.sw - 2 * L.pad;
-        if (s_menu_status[0]) mr_text(d, pw, ph, L.pad, foot_y - (int)(12 * u), fit_px(7.0f * u, avail, s_menu_status), s_menu_status_rgb, 255, s_menu_status);
-        mr_text(d, pw, ph, L.pad, foot_y, fit_px(6.5f * u, avail, info), 0x9AA0B4, 255, info);
+        if (s_menu_status[0]) mr_text(d, pw, ph, L.pad, L.info_y, fit_px(6.5f * u, avail, s_menu_status), s_menu_status_rgb, 255, s_menu_status);
+        else if (info[0]) mr_text(d, pw, ph, L.pad, L.info_y, fit_px(6.5f * u, avail, info), 0x9AA0B4, 255, info);
     }
-    mr_rect(d, pw, ph, L.pad, ph - (int)(44 * u), L.sw - 2 * L.pad, (int)u > 1 ? (int)u : 1, 0x3A3D4C, 255);
-    static const char *const hints_main[3] = { "Esc   Resume", "Up / Down   Select", "Enter   Confirm" };
-    static const char *const hints_slot[3] = { "Esc / Right-click   Back", "Up / Down / Wheel   Select", "Enter   Confirm" };
-    const char *const *hints = s_menu_mode != MODE_MAIN ? hints_slot : hints_main;
-    for (int i = 0; i < 3; i++)
-        mr_text(d, pw, ph, L.pad, ph - (int)((38 - i * 10) * u), 6.0f * u, 0x7D8296, 255, hints[i]);
+    {   /* footer: a separator and two hint lines; the first follows the selected row, the second is the same everywhere */
+        int avail = L.sw - 2 * L.pad;
+        char h1[64];
+        menu_hint(h1, sizeof h1);
+        const char *h2 = s_menu_mode == MODE_MAIN ? "Esc Resume   Up / Down Select" : "Esc Back   Up / Down Select";
+        mr_rect(d, pw, ph, L.pad, L.foot_sep, avail, (int)u > 1 ? (int)u : 1, 0x3A3D4C, 255);
+        if (h1[0]) mr_text(d, pw, ph, L.pad, L.hint1_y, fit_px(6.0f * u, avail, h1), 0xB4B9CC, 255, h1);
+        mr_text(d, pw, ph, L.pad, L.hint2_y, fit_px(6.0f * u, avail, h2), 0x7D8296, 255, h2);
+    }
 
     *w = pw;
     *h = ph;
@@ -1780,8 +1832,18 @@ static void menu_event(void *ctx, const void *event, int player) {
             s_shape_req = true;
             return;
         }
+        if ((sc == SDL_SCANCODE_LEFT || sc == SDL_SCANCODE_RIGHT) && s_menu_mode == MODE_DISPLAY &&
+            s_menu_sel == DI_FILTER) {
+            s_filter_req_dir = sc == SDL_SCANCODE_LEFT ? -1 : 1;
+            return;
+        }
+        if ((sc == SDL_SCANCODE_LEFT || sc == SDL_SCANCODE_RIGHT) && s_menu_mode == MODE_DISPLAY &&
+            s_menu_sel == DI_FULLSCREEN) {
+            s_fs_req = true;
+            return;
+        }
         if ((sc == SDL_SCANCODE_LEFT || sc == SDL_SCANCODE_RIGHT) && s_menu_mode == MODE_ACH &&
-            s_menu_sel == ach_count()) {
+            s_menu_sel == 0) {
             s_ach_req = true;
             return;
         }
@@ -1984,7 +2046,7 @@ static void step_speed(int row, int dir) {
     cyc_host_save_settings();
     char v[16];
     snprintf(v, sizeof v, "%d%%", *p);
-    display_toast(row == DI_MOUSE ? "Mouse Speed" : "Key Speed", v);
+    display_toast(row == DI_MOUSE ? "Mouse Speed" : "Controller Speed", v);
 }
 
 static void set_filter(int f) {
@@ -2070,6 +2132,8 @@ static void display_frame_end(void) {
     if (s_scale_req_dir) { step_scale(s_scale_req_dir); s_scale_req_dir = 0; }
     if (s_shape_req) { s_shape_req = false; set_shape(!s_aspect); }
     if (s_ach_req) { s_ach_req = false; set_achievements(!ach_enabled()); }
+    if (s_filter_req_dir) { int dir = s_filter_req_dir; s_filter_req_dir = 0; set_filter(s_filter + dir); }
+    if (s_fs_req) { s_fs_req = false; display_activate(DI_FULLSCREEN); }
     if (s_speed_req_row >= 0) { int row = s_speed_req_row; s_speed_req_row = -1; step_speed(row, s_speed_req_dir); }
     if (s_vol_req_row >= 0) {
         set_volume(s_vol_req_row, s_vol_req_value);
@@ -2226,7 +2290,7 @@ static void menu_frame_end(void *ctx) {
  * (the activating Enter/Space/click, Escape) is released. */
 /* Game controller (SDL GameController API, first attached pad). The runner opens the pads for its own
  * mapping, which this mod's joypad hook bypasses, so the hook reads the pad itself:
- *   D-pad / left stick  cursor (speed from Options > Key Speed)     A  left click
+ *   D-pad / left stick  cursor (speed from Options > Controller Speed)     A  left click
  *   B  right click (context verb, skips cutscenes)                    X  Select (cycle verb)
  *   Y  skip the current message      LB  game menu
  *   Start / Back / Guide / Share  pause menu (Esc) */
