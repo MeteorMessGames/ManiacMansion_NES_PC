@@ -1327,7 +1327,7 @@ static bool      s_splash_enabled = true;      /* config [Game] Splash */
 static int       s_mouse_speed = 100;          /* config [Game] MouseSpeed (percent): cursor speed with the mouse */
 static int       s_pad_speed = 100;            /* config [Game] PadSpeed (percent): cursor speed with arrow keys / d-pad */
 static bool      s_update_check = true;        /* config [Game] UpdateCheck: ask GitHub for a newer release at launch */
-#define MM_MOD_VERSION "1.1.0"                 /* the release this build is based on; bump with each release */
+#define MM_MOD_VERSION "1.2.0"                 /* the release this build is based on; bump with each release */
 static int       s_splash_frame = 0;
 static bool      s_splash_skip = false;
 static uint8_t  *s_splash_snap = NULL;

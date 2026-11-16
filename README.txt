@@ -9,7 +9,8 @@ included. Put it in this folder named exactly:
 
     Maniac Mansion (Prototype).nes
 
-then double-click ManiacMansion.exe.
+then double-click ManiacMansion.exe (Windows) or run ./ManiacMansion (Linux,
+needs SDL2: sudo apt install libsdl2-2.0-0).
 Only that exact prototype ROM works; any other file is refused.
 
 1. Press Enter (or right-click) to skip the logo and intro screens.

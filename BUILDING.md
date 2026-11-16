@@ -15,7 +15,6 @@ git checkout e8091c8dd149f64ee3bd3489d00c011c50100f09
 git apply path/to/ManiacMansion_NES_PC/runner-patches/0001-maniac-mansion-host-extras.patch
 
 # this repo must sit inside the NESRecomp checkout, named mm-proto-port
-# (add -b achievements for the version with the achievements)
 git clone https://github.com/MeteorMessGames/ManiacMansion_NES_PC.git mm-proto-port
 
 # 1. the recompiler (a plain C tool)
