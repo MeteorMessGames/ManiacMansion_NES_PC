@@ -29,7 +29,7 @@ Get `ManiacMansion_NES_PC_win64.zip` from the [latest release](https://github.co
 - Three picture filters (Sharp, CRT, CRT Strong), including a GPU CRT.
 - Fullscreen, fixed or automatic scaling, square pixels or 4:3 TV shape.
 - Controller support.
-- Prototype (recommended) and retail US ROM, with separate saves and achievements.
+- Prototype (recommended) and retail US ROM, plus patched versions such as the community "Uncensored" hack in any patch combination. Every ROM, by its contents, gets its own saves and achievements.
 - 47 achievements in four rarities, with a trophy page in the pause menu.
 - A launch-time update check (turn off with `UpdateCheck = 0` in `config.ini`).
 

@@ -23,7 +23,9 @@ The port is a mod on top of [NESRecomp](https://github.com/mstan/nesrecomp). NES
 
 Each site in `game.toml` is matched by address and checked by the CRC32 of the bytes there, so a different ROM refuses to hook. The prototype and retail US ROM have identical hook sites, opcodes and object numbers, so the release build accepts both (the runner patch adds a second PRG hash).
 
-Each ROM keeps its own progress: save slots (`ManiacMansion.retail.slotN.*`), cartridge save (`saves/ManiacMansion_retail.sav`) and achievement records (retail ids are hashed with `#retail`, stored beside the prototype's).
+Any other Maniac Mansion ROM (patched versions such as the community "Uncensored" hack, in any patch combination) is accepted when it is MMC1 with 256 or 512 KB of PRG and the four hook sites are intact (`mm_is_family` in `rom_db.h`). Those hacks ship their own mouse driver, which redirects the joypad call to `$9810`; the release build lists a fifth hook site there (added in `CMakeLists.txt`, since the recompiler needs every `game.toml` site to exist in its build ROM).
+
+Each ROM keeps its own progress: save slots (`ManiacMansion.<tag>.slotN.*`), cartridge save (`saves/ManiacMansion_<tag>.sav`) and achievement records (every other ROM's ids are hashed with `#` and its tag, `#retail` or `#x<HASH>`, stored beside the prototype's).
 
 | Site | What the mod does there |
 |---|---|
