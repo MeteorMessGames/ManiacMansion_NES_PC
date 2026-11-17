@@ -41,6 +41,20 @@ The full player guide (controls, saving, tips) is in [README.txt](README.txt), w
 
 47 achievements in four rarities (Common, Rare, Epic, Legendary). A banner and a sound announce each one, and Esc > Achievements lists them all. Some are secret until earned. Unlocks are kept in an encrypted file, `ManiacMansion.dat`, next to the exe (a newer exe keeps them), with a separate list for every ROM.
 
+## ROMs
+
+| ROM | Notes |
+|---|---|
+| Prototype | Recommended: the game before content was cut for the retail release. |
+| Retail US release | Works too. |
+| Patched versions (for example the community "Uncensored" hack, in any patch combination) | Accepted when the ROM is a Maniac Mansion with its four mouse hook sites intact; the hack's own mouse driver is handled. Shown as "custom" plus a hash if the game does not know it by name. |
+
+The game recognizes a ROM by its contents, never by its file name. With several ROMs in the folder a window asks which to play (`Rom = prototype`, `retail` or `x<HASH>` in `config.ini` skips it). Each ROM keeps its own save-state slots, in-game save and achievement list, so versions never mix.
+
+## Files
+
+Next to the exe: `config.ini` (settings), `ManiacMansion.dat` (achievements, encrypted, one list per ROM), `saves/` (the game's own save), `ManiacMansion.<tag>.slotN.state` and `.thumb` (save-state slots; the prototype's have no tag, the retail ROM's say `retail`, any other ROM's say `x<HASH>`) and `mouse_debug.log` (for bug reports; menu steps that take 12 ms or more are listed in it as `[perf]` lines).
+
 ## Mouse
 
 | Button | Action |

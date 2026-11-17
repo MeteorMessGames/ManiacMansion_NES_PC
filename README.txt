@@ -175,6 +175,14 @@ Update check
 
 Your volume, filter and scale choices are remembered (config.ini).
 
+Choosing a ROM (config.ini)
+  Rom = ask             (default) ask which ROM to play when several are here
+  Rom = prototype       always start the prototype
+  Rom = retail          always start the retail US ROM
+  Rom = x3D4DF25C       always start the patched ROM with that hash (the
+                        picker shows the hash of a ROM it does not know)
+  Hold Shift while starting (Windows) to be asked again.
+
 
 TIPS FOR NEW PLAYERS
 --------------------
@@ -188,11 +196,18 @@ TIPS FOR NEW PLAYERS
 FILES IN THIS FOLDER
 --------------------
 ManiacMansion.exe            The game
-Maniac Mansion (Prototype).nes   Your ROM (you provide it)
+*.nes                        Your ROM(s) (you provide them, any file name)
 config.ini                   Settings (window size, filter, volumes ...)
-saves\                       The game's own battery save
-ManiacMansion.slotN.state    Save-state slots (+ .thumb screenshots)
-mouse_debug.log              Log for bug reports
+ManiacMansion.dat            Your achievements (encrypted; every ROM has its
+                             own list in it; keep it with the game)
+saves\                       The game's own battery save, one per ROM
+ManiacMansion.slotN.state    Save-state slots of the prototype (+ .thumb
+                             screenshots). The retail ROM uses
+                             ManiacMansion.retail.slotN.*, any other ROM
+                             ManiacMansion.x<HASH>.slotN.*, so no two ROMs
+                             share saves
+mouse_debug.log              Log for bug reports; slow menu steps (12 ms or
+                             more) are listed in it as [perf] lines
 README.txt                   This guide
 LICENSE.txt, licenses\       License terms for this program and the parts
                              it is built from
