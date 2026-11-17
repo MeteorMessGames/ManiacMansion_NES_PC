@@ -39,7 +39,7 @@ The full player guide (controls, saving, tips) is in [README.txt](README.txt), w
 
 ![Achievement unlocked](docs/screenshots/achievement-toast.png)
 
-47 achievements in four rarities (Common, Rare, Epic, Legendary). A banner and a sound announce each one, and Esc > Achievements lists them all. Some are secret until earned.
+47 achievements in four rarities (Common, Rare, Epic, Legendary). A banner and a sound announce each one, and Esc > Achievements lists them all. Some are secret until earned. Unlocks are kept in an encrypted file, `ManiacMansion.dat`, next to the exe (a newer exe keeps them), with a separate list for every ROM.
 
 ## Mouse
 

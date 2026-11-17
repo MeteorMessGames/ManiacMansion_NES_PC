@@ -29,7 +29,7 @@ Each ROM keeps its own progress: save slots (`ManiacMansion.<tag>.slotN.*`), car
 
 | Site | What the mod does there |
 |---|---|
-| Joypad read (`$FB68`, bank-0 copy `$9EAB`) | Replaces the controller bits with the mouse, keyboard or pad state. Presses are written the way the ROM latches them, on the rising edge only. |
+| Joypad read (`$FB68`, bank-0 copy `$9EAB`; `$9810` in the Uncensored hacks, which redirect the call to their own mouse driver) | Replaces the controller bits with the mouse, keyboard or pad state. Presses are written the way the ROM latches them, on the rising edge only. |
 | Cursor clamp (`$9539`) | Undoes the game's clamp of its cursor position, so the mouse reaches the screen edges. In play the cursor is held to the room area. |
 | Game save (`$9659`) | Mirrors the cartridge battery save into the save-state slot used this session. |
 
