@@ -14,6 +14,8 @@
 #define STBTT_STATIC
 #include "third_party/stb_truetype.h"
 #include "menu_font.h"
+#include "menu_font8.h"
+#include <ctype.h>
 
 static stbtt_fontinfo s_fallback;
 static int s_font_ok = -1;
@@ -150,4 +152,40 @@ int mr_text(uint32_t *d, int w, int h, int x, int y, float px, uint32_t rgb, int
         if (p[1] && font_for(p[1]) == f) pen += scale * stbtt_GetCodepointKernAdvance(f, *p, p[1]);
     }
     return (int)pen;
+}
+
+int mr_glyph_width(const char *str, int pitch) {
+    int n = str ? (int)strlen(str) : 0;
+    return n ? n * pitch - 2 : 0;
+}
+
+int mr_glyph_text(uint32_t *d, int w, int h, int x, int y, int s, uint32_t rgb, const char *str, int pitch, int clip0, int clip1) {
+    if (!str || s < 1) return 0;
+    if (clip0 < 0) clip0 = 0;
+    if (clip1 > w) clip1 = w;
+    int n = 0;
+    for (const unsigned char *p = (const unsigned char *)str; *p; p++, n++) {
+        int c = toupper(*p);
+        if (c < 33 || c > 127) continue;
+        const uint8_t *g = mr_font8[c];
+        int cx = x + n * pitch * s;
+        if (cx + 8 * s <= clip0 || cx >= clip1) continue;
+        for (int r = 0; r < 7; r++) {
+            if (!g[r]) continue;
+            for (int b = 0; b < 8; b++) {
+                if (!(g[r] & (0x80 >> b))) continue;
+                int x0 = cx + b * s, y0 = y + r * s;
+                for (int j = 0; j < s; j++) {
+                    int py = y0 + j;
+                    if (py < 0 || py >= h) continue;
+                    for (int i = 0; i < s; i++) {
+                        int px = x0 + i;
+                        if (px < clip0 || px >= clip1) continue;
+                        d[(size_t)py * w + px] = 0xFF000000u | (rgb & 0xFFFFFF);
+                    }
+                }
+            }
+        }
+    }
+    return n ? n * pitch - 2 : 0;
 }

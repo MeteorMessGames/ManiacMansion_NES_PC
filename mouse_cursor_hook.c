@@ -611,21 +611,6 @@ enum { MODE_MAIN, MODE_SAVE, MODE_LOAD, MODE_DISPLAY, MODE_QUIT, MODE_ACH, MODE_
 static void display_toast(const char *what, const char *value);
 static void set_achievements(bool on);
 #define MAX_SLOTS 999       /* save slots are unlimited in practice: the list shows the saves that exist plus one new slot */
-#define ACH_ROWS_VISIBLE 6    /* achievement list rows on screen (two lines each) */
-/* Menu geometry, all in units of u (= window height / 240) so every screen shares it: rows start at ML_ITEM_Y0, plain rows are
- * ML_ROW_H tall (Music / Sound FX sliders ML_SLIDER_H, achievement cards ML_CARD_H), the Back row of the long-list screens is pinned
- * at ML_BACK_Y, and one info / status line sits at ML_INFO_Y (no footer). */
-#define ML_ITEM_Y0   54
-#define ML_ROW_H     14
-#define ML_GAP        2
-#define ML_CARD_H    23
-#define ML_MAIN_ROW_H 18   /* the first screen is spaced out: taller rows, wider gaps */
-#define ML_MAIN_GAP   9
-#define ML_OPT_GAP    4   /* Options rows: a little more air than the default gap */
-#define ML_SLIDER_H  21
-#define ML_BACK_Y   208
-#define ML_INFO_Y   226
-#define SLOT_ROWS_VISIBLE 9   /* slot list rows on screen; the rest scroll (wheel, Up/Down) */
 #define THUMB_W 128
 #define THUMB_H 120
 typedef struct {
@@ -984,23 +969,22 @@ static int menu_row_count(void) {
 static bool menu_pinned_back(void) { return s_menu_mode == MODE_SAVE || s_menu_mode == MODE_LOAD || s_menu_mode == MODE_ACH; }
 /* Rows that scroll: every row except a pinned Back. */
 static int menu_list_rows(void) { return menu_row_count() - (menu_pinned_back() ? 1 : 0); }
-/* Rows drawn at once in the scrolling part: the long lists scroll, the other menus fit. */
-static int menu_visible_rows(void) {
-    int n = menu_list_rows();
-    if (s_menu_mode == MODE_ACH) return n > ACH_ROWS_VISIBLE ? ACH_ROWS_VISIBLE : n;
-    return (s_menu_mode == MODE_SAVE || s_menu_mode == MODE_LOAD) && n > SLOT_ROWS_VISIBLE ? SLOT_ROWS_VISIBLE : n;
-}
+/* Rows drawn at once in the scrolling part: as many as fit from the first shown one (rows differ in height). */
+static int menu_fit_from(int first);
+static int menu_visible_rows(void) { return menu_fit_from(menu_pinned_back() ? s_menu_scroll : 0); }
 static void menu_scroll_clamp(void) {
-    int max = menu_list_rows() - menu_visible_rows();
+    int n = menu_list_rows(), max = 0;
+    if (!menu_pinned_back()) { s_menu_scroll = 0; return; }
+    while (max < n && menu_fit_from(max) < n - max) max++;
     if (s_menu_scroll > max) s_menu_scroll = max;
     if (s_menu_scroll < 0) s_menu_scroll = 0;
 }
 /* scroll so the selected row is on screen (the pinned Back row never scrolls) */
 static void menu_keep_visible(void) {
-    int vis = menu_visible_rows();
+    if (!menu_pinned_back()) { s_menu_scroll = 0; return; }
     if (s_menu_sel >= menu_list_rows()) { menu_scroll_clamp(); return; }
     if (s_menu_sel < s_menu_scroll) s_menu_scroll = s_menu_sel;
-    if (s_menu_sel >= s_menu_scroll + vis) s_menu_scroll = s_menu_sel - vis + 1;
+    while (s_menu_scroll < s_menu_sel && s_menu_sel >= s_menu_scroll + menu_fit_from(s_menu_scroll)) s_menu_scroll++;
     menu_scroll_clamp();
 }
 /* slot for a row in the slot lists, -1 = Back */
@@ -1009,73 +993,132 @@ static int row_slot(int row) {
     return slot <= slot_rows() ? slot : -1;
 }
 
-/* Sidebar geometry for a presented size (all derived from the height). Every screen uses the same row start, gap and bottom rows;
- * only the achievement cards are taller, and only that screen's panel is wider (the card text needs the room). */
-typedef struct { int sw, pad, item_y0, item_h, item_gap, title_y, sub_y, sep_y, back_y, info_y; float u; } MenuLayout;
+/* ---- Retro menu geometry. Everything is laid out on a logical 256x240 grid (the game's own screen) and drawn at an
+ * integer scale s, centred in the presented picture, in the game's own font and colours (menu_font8.h). ---- */
+#define C_OLIVE  0xB8D808u
+#define C_ORANGE 0xD86000u
+#define C_WHITE  0xFCFCFCu
+#define C_DIM    0x707828u
+#define C_RED    0xE84830u
+#define C_PANEL  0x000000u
+#define C_THUMBBG 0x101018u
+typedef struct MenuLayout {
+    int s, ox, oy;             /* device pixels per logical pixel, device origin of the 256x240 grid */
+    int px, py, pw, ph;        /* panel (logical) */
+    int ly0, ly1, back_y;      /* first row y, lowest usable y of the scrolling list, y of the pinned Back row (-1 none) */
+    int info_y;                /* one status / info line */
+} MenuLayout;
+
+static int menu_row_h(int row) {
+    switch (s_menu_mode) {
+    case MODE_MAIN:    return 16;
+    case MODE_DISPLAY: return (row == DI_MUSIC || row == DI_SFX) ? 20 : 14;
+    case MODE_SAVE:
+    case MODE_LOAD:    return row == menu_row_count() - 1 ? 14 : 24;
+    case MODE_ACH: {
+        int n = ach_count();
+        return (row == 0 || row >= n + 1) ? 12 : 35;
+    }
+    default:           return 14;
+    }
+}
+static int menu_row_gap(void) { return s_menu_mode == MODE_MAIN ? 0 : 2; }
+
 static MenuLayout menu_layout(int w, int h) {
     MenuLayout L;
-    L.u = (float)h / 240.0f;
-    L.sw = (int)(w * 0.40f);
-    {   /* on a wide picture, keep the sidebar the width it has at 256:240 */
-        int cap = (int)(h * 256.0f / 240.0f * 0.40f);
-        if (L.sw > cap) L.sw = cap;
+    memset(&L, 0, sizeof L);
+    L.s = h / 240;
+    if (L.s < 1) L.s = 1;
+    if (w < 256 * L.s && w / 256 >= 1) L.s = w / 256;
+    L.ox = (w - 256 * L.s) / 2;
+    L.oy = (h - 240 * L.s) / 2;
+    L.back_y = -1;
+    switch (s_menu_mode) {
+    case MODE_MAIN:
+        L.pw = 152; L.ph = 40 + MI_COUNT * 16 + 22;
+        L.px = (256 - L.pw) / 2; L.py = (240 - L.ph) / 2;
+        L.ly0 = L.py + 40; L.ly1 = 240; L.info_y = L.py + L.ph - 17;
+        break;
+    case MODE_DISPLAY: {
+        int sum = 0;
+        for (int r = 0; r < DI_COUNT; r++) sum += menu_row_h(r) + (r ? menu_row_gap() : 0);
+        L.pw = 232; L.ph = 30 + sum + 22;
+        L.px = (256 - L.pw) / 2; L.py = (240 - L.ph) / 2;
+        L.ly0 = L.py + 30; L.ly1 = 240; L.info_y = L.py + L.ph - 13;
+        break;
     }
-    if (s_menu_mode == MODE_ACH) {   /* the achievement cards need room for full names: a wider panel */
-        int wide = (int)(w * 0.64f), cap = (int)(h * 256.0f / 240.0f * 0.64f);
-        L.sw = wide < cap ? wide : cap;
+    case MODE_SAVE:
+    case MODE_LOAD:
+        L.px = 6; L.py = 20; L.pw = 132; L.ph = 200;
+        L.ly0 = L.py + 30; L.back_y = L.py + 172; L.ly1 = L.back_y - 4; L.info_y = L.py + 188;
+        break;
+    case MODE_ACH:
+        L.px = 6; L.py = 6; L.pw = 244; L.ph = 228;
+        L.ly0 = L.py + 32; L.back_y = L.py + 200; L.ly1 = L.back_y - 6; L.info_y = L.py + 216;
+        break;
+    case MODE_QUIT:
+        L.pw = 232; L.ph = 30 + 3 * 14 + 2 * 2 + 36;
+        L.px = (256 - L.pw) / 2; L.py = (240 - L.ph) / 2;
+        L.ly0 = L.py + 30; L.ly1 = 240; L.info_y = L.py + 30 + 3 * 14 + 2 * 2 + 12;
+        break;
+    case MODE_RESET:
+    default:
+        L.pw = 232; L.ph = 150;
+        L.px = (256 - L.pw) / 2; L.py = (240 - L.ph) / 2;
+        L.ly0 = L.py + 30; L.ly1 = 240; L.info_y = L.py + L.ph - 13;
+        break;
     }
-    L.pad = (int)(10 * L.u);
-    L.title_y = (int)(16 * L.u);
-    L.sub_y = (int)(33 * L.u);
-    L.sep_y = (int)(46 * L.u);
-    L.item_y0 = (int)(ML_ITEM_Y0 * L.u);
-    L.item_h = (int)((s_menu_mode == MODE_ACH ? ML_CARD_H : ML_ROW_H) * L.u);
-    L.item_gap = (int)(ML_GAP * L.u);
-    L.back_y = (int)(ML_BACK_Y * L.u);
-    L.info_y = (int)(ML_INFO_Y * L.u);
     return L;
 }
 
-/* Height of a row in the current screen: Music / Sound FX are two-line sliders, the pinned Back row is a plain row,
- * everything else follows the screen's list row height. */
-static int menu_row_height(const MenuLayout *L, int row) {
-    if (s_menu_mode == MODE_DISPLAY && (row == DI_MUSIC || row == DI_SFX)) return (int)(ML_SLIDER_H * L->u);
-    if (menu_pinned_back() && row == menu_row_count() - 1) return (int)(ML_ROW_H * L->u);
-    if (s_menu_mode == MODE_MAIN) return (int)(ML_MAIN_ROW_H * L->u);
-    return L->item_h;
+/* How many rows from `first` fit in the list area (at least one). */
+static int menu_fit_from(int first) {
+    MenuLayout L = menu_layout(768, 720);
+    int n = menu_list_rows(), y = L.ly0, cnt = 0;
+    for (int r = first; r < n; r++) {
+        int h = menu_row_h(r);
+        if (y + h > L.ly1) break;
+        y += h + menu_row_gap();
+        cnt++;
+    }
+    if (cnt == 0 && first < n) cnt = 1;
+    return cnt;
 }
-/* Where a row is on screen (false: scrolled out of view). The ONE place that knows row positions, used by drawing,
- * mouse hit-testing and the volume slider, so they cannot drift apart. */
-static bool menu_row_rect(const MenuLayout *L, int row, int *y, int *h) {
+
+/* Where a row is (logical grid): false if it is scrolled out of view. The ONE place that knows row positions, used by
+ * drawing, mouse hit-testing and the volume slider, so they cannot drift apart. */
+static bool menu_row_geom(const MenuLayout *L, int row, int *y, int *h) {
     int n = menu_row_count();
     if (row < 0 || row >= n) return false;
-    if (menu_pinned_back() && row == n - 1) { *y = L->back_y; *h = (int)(ML_ROW_H * L->u); return true; }
-    if (s_menu_mode == MODE_DISPLAY) {   /* rows differ in height: walk down from the first */
-        int yy = L->item_y0;
-        for (int r = 0; r < row; r++) yy += menu_row_height(L, r) + (int)(ML_OPT_GAP * L->u);
-        *y = yy; *h = menu_row_height(L, row);
-        return true;
-    }
-    if (s_menu_mode == MODE_MAIN) {
-        *y = L->item_y0 + row * (int)((ML_MAIN_ROW_H + ML_MAIN_GAP) * L->u);
-        *h = (int)(ML_MAIN_ROW_H * L->u);
-        return true;
-    }
-    int k = row - s_menu_scroll;
-    if (k < 0 || k >= menu_visible_rows()) return false;
-    *y = L->item_y0 + k * (L->item_h + L->item_gap);
-    *h = L->item_h;
+    if (menu_pinned_back() && row == n - 1) { *y = L->back_y; *h = menu_row_h(row); return true; }
+    int first = menu_pinned_back() ? s_menu_scroll : 0;
+    if (row < first || row >= first + menu_fit_from(first)) return false;
+    int yy = L->ly0;
+    for (int r = first; r < row; r++) yy += menu_row_h(r) + menu_row_gap();
+    *y = yy;
+    *h = menu_row_h(row);
+    return true;
+}
+
+/* Same in device pixels. */
+static bool menu_row_rect(const MenuLayout *L, int row, int *y, int *h) {
+    int gy, gh;
+    if (!menu_row_geom(L, row, &gy, &gh)) return false;
+    *y = L->oy + gy * L->s;
+    *h = gh * L->s;
     return true;
 }
 
 static int menu_row_at(int x, int y) {
     if (s_hi_w <= 0) return -1;
     MenuLayout L = menu_layout(s_hi_w, s_hi_h);
-    if (x < L.pad / 2 || x >= L.sw - L.pad / 2) return -1;
+    int lx = (x - L.ox) / L.s, ly = (y - L.oy) / L.s;
+    if (x < L.ox || y < L.oy) return -1;
+    if (lx < L.px + 2 || lx >= L.px + L.pw - 2) return -1;
     int n = menu_row_count();
     for (int row = 0; row < n; row++) {
         int y0, rh;
-        if (menu_row_rect(&L, row, &y0, &rh) && y >= y0 && y < y0 + rh) return row;
+        if (menu_row_geom(&L, row, &y0, &rh) && ly >= y0 && ly < y0 + rh) return row;
     }
     return -1;
 }
@@ -1350,50 +1393,62 @@ static void menu_target_size(int *w, int *h) {
     *h = th;
 }
 
-/* Font size for s at up to px, shrunk so it fits in avail pixels. */
-static float fit_px(float px, int avail, const char *s) {
-    int tw = mr_text_width(px, s);
-    return (tw > avail && tw > 0) ? px * avail / tw : px;
+/* Retro drawing helpers: everything below is in logical grid units, drawn at scale L->s. */
+static void lr(uint32_t *d, int pw, int ph, const MenuLayout *L, int x, int y, int w, int h, uint32_t rgb) {
+    mr_rect(d, pw, ph, L->ox + x * L->s, L->oy + y * L->s, w * L->s, h * L->s, rgb, 255);
 }
-/* Like fit_px but never shrinks below minfrac of px: what still does not fit is cut and ends in "...". */
-static float fit_trunc(char *out, size_t n, float px, float minfrac, int avail, const char *s) {
+static void lbox(uint32_t *d, int pw, int ph, const MenuLayout *L, int x, int y, int w, int h, uint32_t rgb) {
+    lr(d, pw, ph, L, x, y, w, 1, rgb); lr(d, pw, ph, L, x, y + h - 1, w, 1, rgb);
+    lr(d, pw, ph, L, x, y, 1, h, rgb); lr(d, pw, ph, L, x + w - 1, y, 1, h, rgb);
+}
+static void lpanel(uint32_t *d, int pw, int ph, const MenuLayout *L, int x, int y, int w, int h) {
+    lr(d, pw, ph, L, x, y, w, h, C_PANEL);
+    lbox(d, pw, ph, L, x, y, w, h, C_OLIVE);
+    lbox(d, pw, ph, L, x + 2, y + 2, w - 4, h - 4, C_ORANGE);
+}
+static int ltext(uint32_t *d, int pw, int ph, const MenuLayout *L, int x, int y, uint32_t rgb, const char *str, int pitch) {
+    return mr_glyph_text(d, pw, ph, L->ox + x * L->s, L->oy + y * L->s, L->s, rgb, str, pitch, 0, pw);
+}
+static int ltext_clip(uint32_t *d, int pw, int ph, const MenuLayout *L, int x, int y, uint32_t rgb, const char *str, int pitch,
+                      int clip_x, int clip_w) {   /* x may start left of the clip window (scrolling text) */
+    return mr_glyph_text(d, pw, ph, L->ox + x * L->s, L->oy + y * L->s, L->s, rgb, str, pitch,
+                         L->ox + clip_x * L->s, L->ox + (clip_x + clip_w) * L->s);
+}
+static void ltext_r(uint32_t *d, int pw, int ph, const MenuLayout *L, int xr, int y, uint32_t rgb, const char *str, int pitch) {
+    ltext(d, pw, ph, L, xr - mr_glyph_width(str, pitch), y, rgb, str, pitch);
+}
+static void ltext_c(uint32_t *d, int pw, int ph, const MenuLayout *L, int cx, int y, uint32_t rgb, const char *str, int pitch) {
+    ltext(d, pw, ph, L, cx - mr_glyph_width(str, pitch) / 2 - 1, y, rgb, str, pitch);
+}
+/* Cut s to fit avail logical pixels at this pitch, ending in "..". */
+static void ltrunc(char *out, size_t n, const char *s, int pitch, int avail) {
     snprintf(out, n, "%s", s);
-    float f = fit_px(px, avail, out);
-    if (f < px * minfrac) f = px * minfrac;
     size_t len = strlen(out);
-    while (len > 3 && mr_text_width(f, out) > avail) {
-        len--;
-        out[len] = 0;
-        if (len > 3) { out[len - 1] = '.'; out[len - 2] = '.'; out[len - 3] = '.'; }
-    }
-    return f;
+    while (len > 3 && mr_glyph_width(out, pitch) > avail) { len--; out[len] = 0; if (len > 2) { out[len - 1] = '.'; out[len - 2] = '.'; } }
+}
+static uint32_t tint(uint32_t c, int pct) {
+    return (((c >> 16) & 0xFF) * pct / 100 << 16) | (((c >> 8) & 0xFF) * pct / 100 << 8) | ((c & 0xFF) * pct / 100);
+}
+static void larrow(uint32_t *d, int pw, int ph, const MenuLayout *L, int x, int y) {   /* the selection marker, 4 wide 7 tall */
+    for (int i = 0; i < 4; i++) lr(d, pw, ph, L, x + i, y + i, 1, 7 - 2 * i, C_WHITE);
 }
 
 /* Right-hand preview in the slot lists: the selected slot's screenshot. */
 static void draw_slot_preview(uint32_t *d, int pw, int ph, const MenuLayout *L) {
-    float u = L->u;
     int slot = row_slot(s_menu_sel);
-    int area_x = L->sw, area_w = pw - L->sw;
-    int bw = (int)(area_w * 0.80f), bh = bw * MENU_H / MENU_W;
-    int bx = area_x + (area_w - bw) / 2, by = L->item_y0;
-    if (by + bh > ph - (int)(30 * u)) { bh = ph - (int)(30 * u) - by; bw = bh * MENU_W / MENU_H; bx = area_x + (area_w - bw) / 2; }
     if (slot < 0) return;
-    int b = (int)u > 1 ? (int)u : 1;
-    mr_rect(d, pw, ph, bx - 2 * b, by - 2 * b, bw + 4 * b, bh + 4 * b, 0x15161D, 230);
-    mr_rect(d, pw, ph, bx - b, by - b, bw + 2 * b, bh + 2 * b, 0x2C6FE0, 220);
-    char name[32], when[48], cap[96];
+    lpanel(d, pw, ph, L, 146, 50, 104, 100);
+    lr(d, pw, ph, L, 152, 56, 92, 88, C_THUMBBG);
+    char name[32], when[48];
     slot_name(slot, name, sizeof name);
     slot_time_text(slot, when, sizeof when);
     if (s_slots[slot].used && slot_thumb(slot)) {
-        mr_blit_scaled(d, pw, ph, bx, by, bw, bh, s_slots[slot].thumb, THUMB_W, THUMB_H);
+        mr_blit_scaled(d, pw, ph, L->ox + 152 * L->s, L->oy + 57 * L->s, 92 * L->s, 86 * L->s, s_slots[slot].thumb, THUMB_W, THUMB_H);
     } else {
-        mr_rect(d, pw, ph, bx, by, bw, bh, 0x0C0D12, 255);
-        const char *t = s_slots[slot].used ? "No preview" : "Empty slot";
-        float px = 9.0f * u;
-        mr_text(d, pw, ph, bx + (bw - mr_text_width(px, t)) / 2, by + (bh - (int)px) / 2, px, 0x7D8296, 255, t);
+        ltext_c(d, pw, ph, L, 198, 96, C_DIM, s_slots[slot].used ? "NO PREVIEW" : "EMPTY SLOT", 8);
     }
-    snprintf(cap, sizeof cap, "%s   %s", name, when);
-    mr_text(d, pw, ph, bx, by + bh + (int)(6 * u), fit_px(7.0f * u, bw, cap), 0xFFFFFF, 255, cap);
+    ltext_c(d, pw, ph, L, 198, 158, C_WHITE, name, 8);
+    ltext_c(d, pw, ph, L, 198, 168, C_OLIVE, when, 7);
 }
 
 /* 2026-11-10: Meteor Mess Games startup splash (splash_data.h, from
@@ -1527,17 +1582,15 @@ static const uint32_t *display_present(int *w, int *h) {
 
 static const char *const k_display_rows[DI_COUNT] = { "Music", "Sound FX", "Fullscreen", "Filter", "Scale", "Shape", "Mouse Speed", "Controller Speed", "Back" };
 
-/* The slider of a volume row in the Options list (false: not a volume row). */
+/* The slider of a volume row in the Options list (false: not a volume row). Device pixels. */
 static bool volume_bar(const MenuLayout *L, int row, int *bx, int *by, int *bw, int *bh) {
     if (row != DI_MUSIC && row != DI_SFX) return false;
-    /* full-width bar along the bottom of the row, label and value above */
-    float u = L->u;
-    int y0, rh;
-    if (!menu_row_rect(L, row, &y0, &rh)) return false;
-    *bx = L->pad + (int)(6 * u);
-    *bw = L->sw - L->pad / 2 - (int)(6 * u) - *bx;
-    *bh = (int)(3 * u) > 2 ? (int)(3 * u) : 2;
-    *by = y0 + rh - *bh - (int)(0.8f * u);
+    int gy, gh;
+    if (!menu_row_geom(L, row, &gy, &gh)) return false;
+    *bx = L->ox + (L->px + 18) * L->s;
+    *bw = (L->pw - 28) * L->s;
+    *by = L->oy + (gy + 11) * L->s;
+    *bh = 4 * L->s;
     return *bw > 4;
 }
 
@@ -1596,6 +1649,62 @@ static const char *display_row_value(int item, char *buf, size_t n) {
     return "";
 }
 
+/* One achievement card: trophy in the rarity colour, name, description (scrolls on the selected card when it does not fit),
+ * rarity word and points. Everything stays inside the card. */
+static int      s_card_ai = -1;       /* card whose description is scrolling */
+static uint32_t s_card_t0 = 0;
+static void draw_ach_card(uint32_t *d, int pw, int ph, const MenuLayout *L, int ai, int gy, bool sel) {
+    int cx = L->px + 16, cw = L->pw - 36;
+    bool got = ach_unlocked(ai);
+    uint32_t body, shine, edge;
+    rarity_colors(ach_rarity(ai), &body, &shine, &edge);
+    uint32_t border = sel ? C_WHITE : (got ? body : 0x40402C);
+    lr(d, pw, ph, L, cx, gy, cw, 35, got ? tint(body, 22) : 0x161612);
+    lbox(d, pw, ph, L, cx, gy, cw, 35, border);
+    if (sel) larrow(d, pw, ph, L, L->px + 8, gy + 14);
+    int pct = got ? 100 : 55;
+    for (int y = 0; y < 19; y++)
+        for (int x = 0; x < 14; x++) {
+            uint32_t c;
+            switch (k_trophy_art[y][x]) {
+                case 'G': c = body; break;
+                case 'H': c = shine; break;
+                case 'D': c = edge; break;
+                default: continue;
+            }
+            lr(d, pw, ph, L, cx + 5 + x, gy + 8 + y, 1, 1, tint(c, pct));
+        }
+    int ax = cx + 24, area = cw - 24 - 6;
+    bool veil = ach_hidden(ai) && !got;   /* hidden until unlocked */
+    const char *name = veil ? "???" : ach_name(ai);
+    const char *desc = veil ? "Hidden achievement." : ach_desc(ai);
+    char nb[96];
+    int np = mr_glyph_width(name, 8) <= area ? 8 : 7;
+    ltrunc(nb, sizeof nb, name, np, area);
+    ltext(d, pw, ph, L, ax, gy + 4, sel ? C_WHITE : (got ? C_OLIVE : C_DIM), nb, np);
+    uint32_t dc = sel ? C_OLIVE : (got ? 0x96AA1E : C_DIM);
+    int dw = mr_glyph_width(desc, 7);
+    if (sel && dw > area) {
+        uint32_t now = SDL_GetTicks();
+        if (s_card_ai != ai) { s_card_ai = ai; s_card_t0 = now; }
+        int maxoff = dw - area, scroll_ms = maxoff * 1000 / 30;
+        uint32_t k = (now - s_card_t0) % (uint32_t)(1000 + scroll_ms + 1300);
+        int off = k < 1000 ? 0 : (int)((k - 1000) * 30 / 1000);
+        if (off > maxoff) off = maxoff;
+        ltext_clip(d, pw, ph, L, ax - off, gy + 14, dc, desc, 7, ax, area);
+    } else {
+        char db[160];
+        ltrunc(db, sizeof db, desc, 7, area);
+        ltext(d, pw, ph, L, ax, gy + 14, dc, db, 7);
+    }
+    uint32_t pc = got ? body : tint(body, 70);
+    char lab[48], pts[16];
+    snprintf(lab, sizeof lab, "%s%s", ach_rarity_name(ach_rarity(ai)), got ? "  EARNED" : "");
+    ltext(d, pw, ph, L, ax, gy + 24, pc, lab, 7);
+    snprintf(pts, sizeof pts, "%dP", ach_points(ai));
+    ltext_r(d, pw, ph, L, cx + cw - 5, gy + 24, pc, pts, 8);
+}
+
 static const uint32_t *menu_present_inner(void *ctx, int *w, int *h);
 static const uint32_t *menu_present(void *ctx, int *w, int *h) {   /* timed wrapper: one frame of the menu */
     uint64_t pf_t0 = perf_begin();
@@ -1619,7 +1728,6 @@ static const uint32_t *menu_present_inner(void *ctx, int *w, int *h) {
     }
     uint32_t *d = s_hi_pic;
     MenuLayout L = menu_layout(pw, ph);
-    float u = L.u;
     bool slots = s_menu_mode == MODE_SAVE || s_menu_mode == MODE_LOAD;
 
     /* game, lightly dimmed (darker behind the slot preview) */
@@ -1650,199 +1758,117 @@ static const uint32_t *menu_present_inner(void *ctx, int *w, int *h) {
     } else {
         mr_scale_nearest(d, pw, ph, s_menu_frozen, s_frozen_w, MENU_H, slots ? 90 : 170);
     }
-    mr_rect(d, pw, ph, 0, 0, L.sw, ph, 0x15161D, 236);                 /* sidebar */
-
-    {   /* title, shrunk to fit the sidebar */
-        float tpx = 13.0f * u;
-        int avail = L.sw - 2 * L.pad;
-        int tw = mr_text_width(tpx, "Maniac Mansion");
-        if (tw > avail && tw > 0) tpx = tpx * avail / tw;
-        mr_text(d, pw, ph, L.pad, L.title_y, tpx, 0xFFFFFF, 255, "Maniac Mansion");
-    }
-    const char *sub = s_menu_mode == MODE_SAVE ? "Save State" :
-                      s_menu_mode == MODE_LOAD ? "Load State" :
-                      s_menu_mode == MODE_DISPLAY ? "Options" :
-                      s_menu_mode == MODE_ACH ? "Achievements" :
-                      s_menu_mode == MODE_QUIT ? "Exit Game" :
-                      s_menu_mode == MODE_RESET ? "Reset Achievements" : "Paused";
-    char subbuf[64];
-    if (s_menu_mode == MODE_MAIN && rom_edition()[0]) { snprintf(subbuf, sizeof subbuf, "Paused  %s", rom_edition()); sub = subbuf; }
-    mr_text(d, pw, ph, L.pad, L.sub_y, fit_px(7.5f * u, L.sw - 2 * L.pad, sub), 0x9AA0B4, 255, sub);   /* shrinks a long ROM title to the sidebar */
-    mr_rect(d, pw, ph, L.pad, L.sep_y, L.sw - 2 * L.pad, (int)u > 1 ? (int)u : 1, 0x3A3D4C, 255);
-
     int n = menu_row_count();
+    menu_scroll_clamp();
     int lrows = menu_list_rows();
     int vis = menu_visible_rows();
     bool pinned = menu_pinned_back();
-    menu_scroll_clamp();
+    int first = pinned ? s_menu_scroll : 0;
+    if (s_menu_mode != MODE_ACH) s_card_ai = -1;
+
+    lpanel(d, pw, ph, &L, L.px, L.py, L.pw, L.ph);
+    const char *title = s_menu_mode == MODE_SAVE ? "Save State" :
+                        s_menu_mode == MODE_LOAD ? "Load State" :
+                        s_menu_mode == MODE_DISPLAY ? "Options" :
+                        s_menu_mode == MODE_ACH ? "Achievements" :
+                        s_menu_mode == MODE_QUIT ? "Exit Game" :
+                        s_menu_mode == MODE_RESET ? "Reset Achievements" : "Maniac Mansion";
+    char sub[64] = "";
+    if (s_menu_mode == MODE_MAIN) snprintf(sub, sizeof sub, "Paused");
+    else if (s_menu_mode == MODE_ACH) snprintf(sub, sizeof sub, "%d / %d    %d / %d pts", ach_unlocked_count(), ach_count(), ach_points_unlocked(), ach_points_total());
+    int pcx = L.px + L.pw / 2;
+    ltext_c(d, pw, ph, &L, pcx, L.py + 7, C_OLIVE, title, 8);
+    if (sub[0]) ltext_c(d, pw, ph, &L, pcx, L.py + 17, C_DIM, sub, 8);
+    lr(d, pw, ph, &L, L.px + 8, L.py + (sub[0] ? 28 : 20), L.pw - 16, 1, C_ORANGE);
+
     if (vis < lrows) {   /* scrollbar beside the scrolling list */
-        int track_y = L.item_y0, track_h = vis * (L.item_h + L.item_gap) - L.item_gap;
-        int bw = (int)(1.5f * u) > 2 ? (int)(1.5f * u) : 2;
-        int bx = L.sw - L.pad / 2 + (L.pad / 2 - bw) / 2;
-        int th = track_h * vis / lrows, ty = track_y + (track_h - th) * s_menu_scroll / (lrows - vis);
-        mr_round_rect(d, pw, ph, bx, track_y, bw, track_h, bw / 2, 0xFFFFFF, 30);
-        mr_round_rect(d, pw, ph, bx, ty, bw, th, bw / 2, 0x6FA2F5, 230);
+        int th_total = L.ly1 - L.ly0;
+        int th = th_total * vis / lrows;
+        if (th < 8) th = 8;
+        int span = lrows - vis;
+        int ty = L.ly0 + (span > 0 ? (th_total - th) * s_menu_scroll / span : 0);
+        lr(d, pw, ph, &L, L.px + L.pw - 8, L.ly0, 2, th_total, 0x46280A);
+        lr(d, pw, ph, &L, L.px + L.pw - 8, ty, 2, th, C_ORANGE);
     }
+    int ax = L.px + 18, rx = L.px + L.pw - 10;   /* text column, right edge for values */
     for (int ri = 0; ri < vis + (pinned ? 1 : 0); ri++) {   /* the scrolling rows, then the pinned Back row */
-        int i = ri < vis ? s_menu_scroll + ri : n - 1;
-        int y0, rowh;
-        if (!menu_row_rect(&L, i, &y0, &rowh)) continue;
+        int i = ri < vis ? first + ri : n - 1;
+        int gy, gh;
+        if (!menu_row_geom(&L, i, &gy, &gh)) continue;
         bool sel = i == s_menu_sel;
-        bool hov = i == s_menu_hover;
-        int ai = i - 1;   /* Achievements page: row 0 is the On/Off switch, the achievements start at row 1 */
-        bool ach_row = s_menu_mode == MODE_ACH && i >= 1 && i <= ach_count();
-        if (ach_row) {   /* earned = tinted card with a rarity-coloured outline; not yet earned = plain grey card, no outline */
-            int rx = L.pad / 2, rw = L.sw - L.pad;
-            if (ach_unlocked(ai)) {
-                uint32_t ob = rarity_outline(ach_rarity(ai));
-                int ot = (int)(0.8f * u) > 1 ? (int)(0.8f * u) : 1;
-                mr_round_rect(d, pw, ph, rx, y0, rw, rowh, (int)(4 * u), ob, 255);
-                mr_round_rect(d, pw, ph, rx + ot, y0 + ot, rw - 2 * ot, rowh - 2 * ot, (int)(4 * u) - ot > 1 ? (int)(4 * u) - ot : 1,
-                              ach_rarity(ai) == 0 ? 0x5A3A1E : ach_rarity(ai) == 1 ? 0x2A3F5F : ach_rarity(ai) == 2 ? 0x45296B : 0x6B5414, 255);
-            } else {
-                mr_round_rect(d, pw, ph, rx, y0, rw, rowh, (int)(4 * u), 0x262830, 235);
-            }
-        }
-        if (sel) {
-            mr_round_rect(d, pw, ph, L.pad / 2, y0, L.sw - L.pad, rowh, (int)(4 * u), 0x2C6FE0, ach_row ? 95 : 215);
-        } else if (hov) {
-            mr_round_rect(d, pw, ph, L.pad / 2, y0, L.sw - L.pad, rowh, (int)(4 * u), 0xFFFFFF, 28);
-        }
-        uint32_t fg = sel ? 0xFFFFFF : 0xD6D9E4;
+        uint32_t fg = sel ? C_WHITE : C_OLIVE;
+        int ty = gy + (gh - 7) / 2;
+        if (s_menu_mode == MODE_ACH && i >= 1 && i <= ach_count()) { draw_ach_card(d, pw, ph, &L, i - 1, gy, sel); continue; }
+        if (sel) larrow(d, pw, ph, &L, L.px + 8, s_menu_mode == MODE_SAVE || s_menu_mode == MODE_LOAD ? (row_slot(i) >= 0 ? gy + 8 : ty)
+                                              : (s_menu_mode == MODE_DISPLAY && (i == DI_MUSIC || i == DI_SFX)) ? gy : ty);
         if (s_menu_mode == MODE_MAIN) {
-            float tpx = 8.0f * u;
-            mr_text(d, pw, ph, L.pad + (int)(6 * u), y0 + (int)((rowh - tpx) / 2), tpx, fg, 255, k_menu_rows[i]);
-            continue;
-        }
-        if (s_menu_mode == MODE_DISPLAY) {
+            ltext(d, pw, ph, &L, ax, ty, fg, k_menu_rows[i], 8);
+        } else if (s_menu_mode == MODE_DISPLAY) {
             bool vol = i == DI_MUSIC || i == DI_SFX;
-            float tpx = vol ? 7.0f * u : 8.0f * u;
-            int ty = vol ? y0 + (int)(0.5f * u) : y0 + (int)((rowh - tpx) / 2);
-            char vb[32];
+            int y = vol ? gy : ty;
+            char vb[32], vcue[48];
             const char *val = display_row_value(i, vb, sizeof vb);
-            char vcue[48];
             if (sel && !vol && i != DI_BACK && val[0]) { snprintf(vcue, sizeof vcue, "< %s >", val); val = vcue; }   /* Left / Right changes it */
-            {   /* the label shrinks if needed so it never runs into the value on the right */
-                int lx = L.pad + (int)(6 * u);
-                int room = L.sw - L.pad / 2 - (int)(6 * u) - (val[0] ? mr_text_width(7.0f * u, val) + (int)(5 * u) : 0) - lx;
-                float lpx = fit_px(tpx, room, k_display_rows[i]);
-                mr_text(d, pw, ph, lx, vol ? ty : y0 + (int)((rowh - lpx) / 2), lpx, fg, 255, k_display_rows[i]);
-            }
-            int bx, by, bw, bh;
-            if (volume_bar(&L, i, &bx, &by, &bw, &bh)) {
-                int v = i == DI_MUSIC ? s_music_vol : s_sfx_vol;
-                int r = bh / 2;
-                mr_round_rect(d, pw, ph, bx, by, bw, bh, r, 0x000000, 120);
-                if (v > 0) mr_round_rect(d, pw, ph, bx, by, bw * v / 100 > bh ? bw * v / 100 : bh, bh, r,
-                                         sel ? 0xFFFFFF : 0x6FA2F5, 255);
-            }
+            ltext(d, pw, ph, &L, ax, y, fg, k_display_rows[i], 8);
             if (val[0]) {
-                float vpx = 7.0f * u;
-                int vx = L.sw - L.pad / 2 - (int)(6 * u) - mr_text_width(vpx, val);
-                int vy = vol ? y0 + (int)(0.5f * u) : y0 + (int)((rowh - vpx) / 2);
-                mr_text(d, pw, ph, vx, vy, vpx, sel ? 0xFFFFFF : 0x9AA0B4, 255, val);
+                int vp = mr_glyph_width(k_display_rows[i], 8) + 8 + mr_glyph_width(val, 8) > L.pw - 28 ? 7 : 8;
+                ltext_r(d, pw, ph, &L, rx, y, fg, val, vp);
             }
-            continue;
-        }
-        if (s_menu_mode == MODE_RESET) {
+            if (vol) {
+                int v = i == DI_MUSIC ? s_music_vol : s_sfx_vol;
+                lr(d, pw, ph, &L, ax, gy + 11, L.pw - 28, 4, 0x46280A);
+                if (v > 0) lr(d, pw, ph, &L, ax, gy + 11, (L.pw - 28) * v / 100, 4, fg);
+            }
+        } else if (s_menu_mode == MODE_RESET) {
             const char *rr[2] = { "Yes, erase them all", "Back" };
-            float rpx = 8.0f * u;
-            mr_text(d, pw, ph, L.pad + (int)(6 * u), y0 + (int)((rowh - rpx) / 2), fit_px(rpx, L.sw - 2 * L.pad - (int)(8 * u), rr[i]),
-                    i == 0 ? 0xFF7070 : fg, 255, rr[i]);
-            continue;
-        }
-        if (s_menu_mode == MODE_QUIT) {
-            char ql[48], qn[32];
+            ltext(d, pw, ph, &L, ax, ty, i == 0 && !sel ? C_RED : fg, rr[i], 8);
+        } else if (s_menu_mode == MODE_QUIT) {
+            char ql[48], qn[32], qb[48];
             slot_name(s_quit_slot, qn, sizeof qn);
             snprintf(ql, sizeof ql, "Save to %s and exit", qn);
             const char *qrows[3] = { ql, "Exit without saving", "Back" };
-            float qpx = 8.0f * u;
-            mr_text(d, pw, ph, L.pad + (int)(6 * u), y0 + (int)((rowh - qpx) / 2), fit_px(qpx, L.sw - 2 * L.pad - (int)(8 * u), qrows[i]), fg, 255, qrows[i]);
-            continue;
-        }
-        if (s_menu_mode == MODE_ACH) {
-            if (i == 0 || i > ach_count()) {
-                float bpx = 8.0f * u;
-                bool switch_row = i == 0;
-                bool reset_row = i == ach_count() + 1;
-                const char *label = switch_row ? (ach_enabled() ? "Achievements: On" : "Achievements: Off")
-                                  : !reset_row ? "Back" : "Reset all achievements";
-                mr_text(d, pw, ph, L.pad + (int)(6 * u), y0 + (int)((rowh - bpx) / 2), fit_px(bpx, L.sw - 2 * L.pad - (int)(12 * u), label), fg, 255, label);
-                continue;
+            ltrunc(qb, sizeof qb, qrows[i], 8, L.pw - 28);
+            ltext(d, pw, ph, &L, ax, ty, fg, qb, 8);
+        } else if (s_menu_mode == MODE_ACH) {
+            bool switch_row = i == 0, reset_row = i == ach_count() + 1;
+            if (switch_row) {
+                ltext(d, pw, ph, &L, ax, ty, fg, "Achievements", 8);
+                ltext_r(d, pw, ph, &L, rx - 4, ty, fg, sel ? (ach_enabled() ? "< On >" : "< Off >") : (ach_enabled() ? "On" : "Off"), 8);
+            } else {
+                ltext(d, pw, ph, &L, ax, ty, fg, reset_row ? "Reset all achievements" : "Back", 8);
             }
-            bool got = ach_unlocked(ai);
-            uint32_t rc_body, rc_shine, rc_edge;
-            rarity_colors(ach_rarity(ai), &rc_body, &rc_shine, &rc_edge);
-            {   /* trophy: rarity colour when earned (bronze / silver / purple / gold), grey when not */
-                int ps = (int)(u * 0.7f) > 1 ? (int)(u * 0.7f) : 1;
-                int tx = L.pad + (int)(4 * u), ty0 = y0 + (rowh - 19 * ps) / 2;
-                for (int ty = 0; ty < 19; ty++)
-                    for (int tx_ = 0; tx_ < 14; tx_++) {
-                        uint32_t c;
-                        switch (k_trophy_art[ty][tx_]) {
-                            case 'G': c = got ? rc_body : 0x4C4F5D; break;
-                            case 'H': c = got ? rc_shine : 0x676B7C; break;
-                            case 'D': c = got ? rc_edge : 0x2E303A; break;
-                            default: continue;
-                        }
-                        mr_rect(d, pw, ph, tx + tx_ * ps, ty0 + ty * ps, ps, ps, c, 255);
-                    }
-            }
-            int tro = (int)(4 * u) + 14 * ((int)(u * 0.7f) > 1 ? (int)(u * 0.7f) : 1) + (int)(4 * u);   /* text starts after the trophy */
-            int avail = L.sw - 2 * L.pad - (int)(8 * u) - tro;
-            char pts[16];
-            snprintf(pts, sizeof pts, "%dp", ach_points(ai));
-            float ppx = 6.0f * u;
-            int pw_ = mr_text_width(ppx, pts);
-            mr_text(d, pw, ph, L.sw - L.pad / 2 - (int)(6 * u) - pw_, y0 + (int)(3 * u), ppx,
-                    got ? rc_body : 0x5E6274, 255, pts);
-            const char *rn = ach_rarity_name(ach_rarity(ai));   /* rarity word under the points */
-            float rpx = 4.8f * u;
-            int rw = mr_text_width(rpx, rn);
-            mr_text(d, pw, ph, L.sw - L.pad / 2 - (int)(6 * u) - rw, y0 + (int)(13 * u), rpx,
-                    got ? rc_body : 0x5E6274, 255, rn);
-            char nb[96], db[160];
-            bool veil = ach_hidden(ai) && !got;   /* hidden until unlocked */
-            float npx = fit_trunc(nb, sizeof nb, 7.2f * u, 0.72f, avail - pw_ - (int)(3 * u), veil ? "???" : ach_name(ai));
-            mr_text(d, pw, ph, L.pad + tro, y0 + (int)(2.5f * u), npx, got ? 0xFFFFFF : 0x7D8296, 255, nb);
-            float dpx = fit_trunc(db, sizeof db, 5.6f * u, 0.72f, avail - rw - (int)(4 * u), veil ? "Hidden achievement." : ach_desc(ai));
-            mr_text(d, pw, ph, L.pad + tro, y0 + (int)(13 * u), dpx, got ? 0xF3E3B0 : 0x6A6F82, 255, db);
-            continue;
+        } else {   /* Save / Load slots */
+            int slot = row_slot(i);
+            if (slot < 0) { ltext(d, pw, ph, &L, ax, ty, fg, "Back", 8); continue; }
+            char name[32], when[48];
+            slot_name(slot, name, sizeof name);
+            slot_time_text(slot, when, sizeof when);
+            ltext(d, pw, ph, &L, ax, gy + 4, fg, name, 8);
+            ltext(d, pw, ph, &L, ax, gy + 13, sel ? C_OLIVE : (s_slots[slot].used ? C_DIM : tint(C_DIM, 70)), when, 7);
         }
-        float tpx = 8.0f * u;
-        int ty = y0 + (int)((rowh - tpx) / 2);
-        int slot = row_slot(i);
-        if (slot < 0) {
-            mr_text(d, pw, ph, L.pad + (int)(6 * u), ty, tpx, fg, 255, "Back");
-            continue;
-        }
-        char name[32], when[48];
-        slot_name(slot, name, sizeof name);
-        slot_time_text(slot, when, sizeof when);
-        mr_text(d, pw, ph, L.pad + (int)(6 * u), ty, tpx, fg, 255, name);
-        float dpx = 6.0f * u;
-        uint32_t dc = s_slots[slot].used ? (sel ? 0xE6E9F4 : 0x9AA0B4) : 0x5E6274;
-        int dx = L.sw - L.pad / 2 - (int)(6 * u) - mr_text_width(dpx, when);
-        mr_text(d, pw, ph, dx, y0 + (int)((rowh - dpx) / 2), dpx, dc, 255, when);
     }
 
     if (slots) draw_slot_preview(d, pw, ph, &L);
     if (s_menu_mode == MODE_RESET) {   /* what is about to happen, in words, under the two rows */
-        const char *w1 = "Erase all achievements for this ROM?";
-        int avail = L.sw - 2 * L.pad;
-        mr_text(d, pw, ph, L.pad, (int)(104 * u), fit_px(8.0f * u, avail, w1), 0xE6E9F4, 255, w1);
-        mr_text(d, pw, ph, L.pad, (int)(118 * u), fit_px(7.0f * u, avail, "This cannot be undone."), 0xFF7070, 255, "This cannot be undone.");
-        mr_text(d, pw, ph, L.pad, (int)(132 * u), fit_px(6.5f * u, avail, "Other ROMs keep their own lists."), 0x9AA0B4, 255, "Other ROMs keep their own lists.");
+        int y0 = L.py + 70;
+        ltext_c(d, pw, ph, &L, pcx, y0, C_WHITE, "Erase all achievements", 8);
+        ltext_c(d, pw, ph, &L, pcx, y0 + 10, C_WHITE, "for this ROM?", 8);
+        ltext_c(d, pw, ph, &L, pcx, y0 + 24, C_RED, "This cannot be undone.", 8);
+        ltext_c(d, pw, ph, &L, pcx, y0 + 38, C_DIM, "Other ROMs keep their", 7);
+        ltext_c(d, pw, ph, &L, pcx, y0 + 47, C_DIM, "own lists.", 7);
     }
-    {   /* one info / status line at the bottom, the same place on every screen */
-        char info[96];
+    {   /* one info / status line at the bottom of the panel */
+        char info[96], ib[96];
         info[0] = 0;
         if (s_menu_mode == MODE_QUIT) snprintf(info, sizeof info, "%s", s_dirty ? "Unsaved progress will be lost." : "");
-        else if (s_menu_mode == MODE_ACH) snprintf(info, sizeof info, "%d / %d unlocked   %d / %d points", ach_unlocked_count(), ach_count(), ach_points_unlocked(), ach_points_total());
-        int avail = L.sw - 2 * L.pad;
-        if (s_menu_status[0]) mr_text(d, pw, ph, L.pad, L.info_y, fit_px(6.5f * u, avail, s_menu_status), s_menu_status_rgb, 255, s_menu_status);
-        else if (info[0]) mr_text(d, pw, ph, L.pad, L.info_y, fit_px(6.5f * u, avail, info), 0x9AA0B4, 255, info);
+        else if (s_menu_mode == MODE_MAIN) snprintf(info, sizeof info, "%s", rom_edition());
+        const char *txt = s_menu_status[0] ? s_menu_status : info;
+        if (txt[0]) {
+            ltrunc(ib, sizeof ib, txt, 7, L.pw - 20);
+            ltext_c(d, pw, ph, &L, pcx, L.info_y, s_menu_status[0] ? s_menu_status_rgb : C_DIM, ib, 7);
+        }
     }
+
     *w = pw;
     *h = ph;
     return d;
@@ -1969,7 +1995,7 @@ static void menu_event(void *ctx, const void *event, int player) {
         int row = s_vol_drag >= 0 ? s_vol_drag : menu_row_at(x, y);
         int bx, by, bw, bh;
         if (row >= 0 && volume_bar(&L, row, &bx, &by, &bw, &bh) &&
-            (s_vol_drag >= 0 || y >= by - (int)(5 * L.u))) {
+            (s_vol_drag >= 0 || y >= by - 5 * L.s)) {
             int v = (int)((float)(x - bx) * 100.0f / bw + 0.5f);
             s_vol_drag = row;
             s_menu_sel = row;

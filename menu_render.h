@@ -14,3 +14,8 @@ void mr_round_rect(uint32_t *d, int w, int h, int x, int y, int rw, int rh, int 
 /* Anti-aliased text, top-left at (x, y), `px` pixels tall. Returns the pen x. */
 int  mr_text(uint32_t *d, int w, int h, int x, int y, float px, uint32_t rgb, int alpha, const char *s);
 int  mr_text_width(float px, const char *s);
+/* The game's own 6x7 letters (menu_font8.h), upper-cased. (x, y) = top-left of the first 8x8 cell in device pixels, s = device
+ * pixels per font pixel, pitch = font pixels between cells (8 = the game's spacing, 7 = a tighter line). Pixels outside
+ * [clip0, clip1) in x are not drawn (pass 0, w for no clip). Returns the drawn width in font pixels (n * pitch - 2). */
+int mr_glyph_text(uint32_t *d, int w, int h, int x, int y, int s, uint32_t rgb, const char *str, int pitch, int clip0, int clip1);
+int mr_glyph_width(const char *str, int pitch);
