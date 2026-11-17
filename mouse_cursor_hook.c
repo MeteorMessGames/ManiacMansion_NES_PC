@@ -1412,7 +1412,7 @@ static bool      s_splash_enabled = true;      /* config [Game] Splash */
 static int       s_mouse_speed = 100;          /* config [Game] MouseSpeed (percent): cursor speed with the mouse */
 static int       s_pad_speed = 100;            /* config [Game] PadSpeed (percent): cursor speed with arrow keys / d-pad */
 static bool      s_update_check = true;        /* config [Game] UpdateCheck: ask GitHub for a newer release at launch */
-#define MM_MOD_VERSION "1.3.2"                 /* the release this build is based on; bump with each release */
+#define MM_MOD_VERSION "1.3.3"                 /* the release this build is based on; bump with each release */
 static int       s_splash_frame = 0;
 static bool      s_splash_skip = false;
 static uint8_t  *s_splash_snap = NULL;
@@ -1828,12 +1828,11 @@ static const uint32_t *menu_present_inner(void *ctx, int *w, int *h) {
 
     if (slots) draw_slot_preview(d, pw, ph, &L);
     if (s_menu_mode == MODE_RESET) {   /* what is about to happen, in words, under the two rows */
-        char w1[96];
-        snprintf(w1, sizeof w1, "Erase every achievement%s%s?", rom_edition()[0] ? " for " : "", rom_edition());
+        const char *w1 = "Erase all achievements for this ROM?";
         int avail = L.sw - 2 * L.pad;
         mr_text(d, pw, ph, L.pad, (int)(104 * u), fit_px(8.0f * u, avail, w1), 0xE6E9F4, 255, w1);
         mr_text(d, pw, ph, L.pad, (int)(118 * u), fit_px(7.0f * u, avail, "This cannot be undone."), 0xFF7070, 255, "This cannot be undone.");
-        mr_text(d, pw, ph, L.pad, (int)(132 * u), fit_px(6.5f * u, avail, "The other version keeps its own list."), 0x9AA0B4, 255, "The other version keeps its own list.");
+        mr_text(d, pw, ph, L.pad, (int)(132 * u), fit_px(6.5f * u, avail, "Other ROMs keep their own lists."), 0x9AA0B4, 255, "Other ROMs keep their own lists.");
     }
     {   /* one info / status line at the bottom, the same place on every screen */
         char info[96];
