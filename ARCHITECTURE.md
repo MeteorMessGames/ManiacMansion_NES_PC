@@ -17,7 +17,7 @@ The port is a mod on top of [NESRecomp](https://github.com/mstan/nesrecomp). NES
 | `rom_db.h`, `rom_picker.c` | The known ROMs by PRG hash, and the window that asks which to play |
 | `romless_native.c.in` | Stand-in for the generated game code in the release build (ROM hashes and hook sites only; finds the ROM next to the exe) |
 | `game.toml` | Hook sites and their CRC32 checks |
-| `runner-patches/` | The small NESRecomp patch (display controls, GPU present hook, APU write hook, per-channel volume) |
+| `runner-patches/` | The small NESRecomp patch (display controls, GPU present hook, APU write hook, per-channel volume, a second accepted ROM and its cartridge-save name for the release build, no window flash while loading) |
 
 ## Hook sites
 
@@ -63,3 +63,9 @@ The runner presents a 256x240 frame. The mod chooses the scale (automatic whole-
 ## Update check
 
 At launch a background thread asks GitHub once whether a newer release exists, and the game shows a short notice if so. Nothing about the user is sent. `UpdateCheck = 0` in `config.ini` turns it off.
+
+## Performance notes
+
+- The ROM's identity is its PRG hash, and the runner recomputes it over the whole PRG (256 or 512 KB) on every call, so the menu and the achievement code take it once per run (`rom_hash_cached`, `s_salt_hash`).
+- The save-slot scan reads the folder once and keeps the exe folder path; it used to ask the OS for the path and stat a file for each of up to 999 slots.
+- Menu steps that take 12 ms or more are written to `mouse_debug.log` as `[perf]` lines (`perf_end` in `mouse_cursor_hook.c`), so a slow machine can be diagnosed from the log.
