@@ -96,10 +96,11 @@ obscure and involved its trigger is:
   Legendary  gold     40 points
 Many are secret and show as ??? until you earn them. The On / Off switch
 is the first row of the list. A banner and a sound
-announce each unlock. Your unlocks are kept inside the game's own exe (there
-is no file to edit), so putting a newer exe in the folder starts you fresh.
-"Reset all achievements" at the bottom of the list erases everything (press
-it twice to confirm).
+announce each unlock. Your unlocks are kept in an encrypted file next to the
+exe (ManiacMansion.dat), so a newer exe keeps them. Keep the file with
+the game; delete it to start fresh. Every ROM has its own list.
+"Reset all achievements" at the bottom of the list erases the list of the ROM
+you are playing, after a confirmation screen.
 
 SAVING
 ------

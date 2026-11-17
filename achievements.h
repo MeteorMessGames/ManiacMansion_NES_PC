@@ -1,15 +1,15 @@
 /* achievements.h - achievement tracking for the Maniac Mansion mod.
  * Definitions come from the generated achievements_table.h (tools/ach/ach_tool.py gen):
  * each achievement is a set of memory conditions that must all hold at once. Unlocks
- * are stored inside the executable (test builds use ManiacMansion.achievements), separate from
- * save states, so loading a state never takes one away. */
+ * are stored in an encrypted file next to the exe, ManiacMansion.achievements (test builds write it
+ * as plain signed records), separate from save states, so loading a state never takes one away. */
 #pragma once
 #include <stdbool.h>
 #include <stdint.h>
 
 typedef uint8_t (*AchRead)(uint16_t addr);
 
-void        ach_init(const char *dir);          /* load the unlocks (from the executable itself; test builds: the unlock file in dir) */
+void        ach_init(const char *dir);          /* load the unlocks from the unlock file in dir */
 void        ach_reset_all(void);                /* forget every unlock and save */
 bool        ach_enabled(void);                  /* menu switch: false = nothing is checked, shown or saved */
 void        ach_set_enabled(bool on);

@@ -58,7 +58,7 @@ The runner presents a 256x240 frame. The mod chooses the scale (automatic whole-
 
 ## Achievements
 
-`achievements_table.h` is generated: each achievement is a list of conditions on the game's RAM (equality, comparison with a mask, a script being active, or "was true earlier this session"). The engine checks the table every frame while a game is in play and holds a condition for a few frames before it counts, so loading or starting the game cannot unlock anything by accident. Unlocks are stored in a signed block inside the exe, so there is no file to edit, and a new build starts with none.
+`achievements_table.h` is generated: each achievement is a list of conditions on the game's RAM (equality, comparison with a mask, a script being active, or "was true earlier this session"). The engine checks the table every frame while a game is in play and holds a condition for a few frames before it counts, so loading or starting the game cannot unlock anything by accident. Unlocks are stored in `ManiacMansion.dat` next to the exe: every record carries its own signature tag, and the file is encrypted with a key that ships in the program, which keeps casual looking and editing out. The exe itself is never rewritten.
 
 ## Update check
 

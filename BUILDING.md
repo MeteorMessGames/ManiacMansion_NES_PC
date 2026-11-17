@@ -52,6 +52,6 @@ cmake --build build-win -j
 ## Notes
 
 - `-DMM_NO_SIM=ON` keeps the developer-only simulator out of the build; the repo does not contain it, so a normal clone builds the same either way.
-- Unlocked achievements are stored inside the built exe itself (a signed block in its data, rewritten when you earn something); building a new exe starts with none.
+- Unlocked achievements are stored in an encrypted file next to the exe (`ManiacMansion.dat`), not in the exe, so rebuilding or replacing the exe keeps them.
 - `git apply` the runner patch only to the pinned NESRecomp commit above. Verified: a fresh clone at that commit plus the patch plus this repo builds the recompiler and the game from scratch.
 - The runner patch is a derivative of NESRecomp and carries its license (PolyForm Noncommercial, see `licenses/`). This repo's own code is MIT.

@@ -7,13 +7,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
-#ifndef MM_SIM
 #ifdef _WIN32
 #include <windows.h>
-#else
-#include <unistd.h>
-#include <sys/stat.h>
-#endif
 #endif
 
 #define QMAX 64
@@ -26,7 +21,7 @@ static char   s_path[1100] = "";
 static bool   s_latch[ACH_COUNT > 0 ? ACH_COUNT : 1][ACH_MAX_CONDS]; /* ACH_LEQ conditions seen true earlier this session */
 
 /* ---- Unlock file ----
- * ManiacMansion.achievements is a small binary file, not text: "MMA1", then 16-byte records
+ * ManiacMansion.dat (called ManiacMansion.achievements in v1.3 test builds; read and moved on the next save) is a small binary file, not text: "MMA1", then 16-byte records
  * { u32 id hash, u32 unix time, u64 SipHash-2-4 tag of the first 8 bytes }. A record whose tag does not
  * verify is ignored, so adding lines to the file (or hand-editing it) unlocks nothing. This stops casual
  * edits only: the key is in the program. Old plain-text files are not read. */
@@ -56,17 +51,17 @@ static uint64_t siphash8(const uint8_t *m)
 
 /* Each ROM has its own progress. The prototype's records are the plain id hash (so old unlocks keep working); every other ROM's
  * are the id hash continued over "#" and its tag ("#retail", "#x<HASH of its PRG data>"). Records of the other ROM are kept untouched and written back, so both survive. */
+static uint32_t s_salt_hash = 0;   /* the ROM the cached salt is for (0: not taken yet); file scope so a test can switch ROMs */
 static const char *rom_salt(void)
 {
     static char salt[32];
-    static uint32_t for_hash = 0;
-    if (!for_hash) {   /* cyc_prg_hash() walks the whole PRG on every call and this is asked for every id of every record: once */
+    if (!s_salt_hash) {   /* cyc_prg_hash() walks the whole PRG on every call and this is asked for every id of every record: once */
         uint32_t h = cyc_prg_hash();
         if (h == 2166136261u) return "";   /* nothing loaded yet: do not keep it */
         char tag[24];
         mm_rom_tag(h, tag, sizeof tag);   /* "" prototype, "retail", else "x<HASH>": one list per ROM */
         if (tag[0]) snprintf(salt, sizeof salt, "#%s", tag); else salt[0] = 0;
-        for_hash = h;
+        s_salt_hash = h;
     }
     return salt;
 }
@@ -117,126 +112,93 @@ static void load_payload(const uint8_t *p, size_t n)
     }
 }
 
-#ifndef MM_SIM
-/* ---- Unlocks stored inside the program itself (release builds) ----
- * There is no unlock file to edit. The list lives in a reserved block of the executable's data (s_blob):
- * a 16-byte marker, a 2-byte length, then the signed payload above. Loading just reads the block from memory.
- * Saving rewrites the executable: a copy with the new block is written next to it, the running file is renamed
- * out of the way and the copy takes its name (both Windows and Linux allow renaming a running program). If anything
- * fails the unlocks simply stay in memory for the session. Replacing the exe with a new release starts fresh. */
-#define BLOB_MARK 16
-#define BLOB_CAP  16384
-static unsigned char s_blob[BLOB_MARK + 2 + BLOB_CAP] __attribute__((used)) = {
-    'M', 'M', 'A', 'x', 'U', 'N', 'L', 'K', 0x6E, 0x21, 0xB4, 0x9D, 0x53, 0xF0, 0x08, 0xC7 };
+/* ---- The unlock file ----
+ * ManiacMansion.achievements, next to the exe, holds every ROM's records (the signed payload above). Release builds write it encrypted:
+ * "MMA2", an 8-byte nonce, then the payload XORed with a keystream (SipHash-2-4 of the nonce and a block counter, keyed with the program's
+ * key). Test builds (MM_SIM) write the payload as it is ("MMA1") so the test tools can read it, unless built with MM_ACH_ENCRYPT; every build reads both. Each record keeps its
+ * own tag, so a changed or invented record is ignored. The key is in the program: this keeps casual looking and editing out, it does not stop
+ * a determined cheater. If the file cannot be written the unlocks stay in memory for the session. A new exe keeps the file (and so the unlocks). */
+#define ACH_FILE_NAME "ManiacMansion.dat"
+#define ACH_OLD_FILE_NAME "ManiacMansion.achievements"   /* the first name of the unlock file: still read, then replaced by the new name on the next save */
 
-static bool exe_path(char *out, size_t n)
+#define PAYLOAD_MAX (4 + (size_t)(ACH_COUNT + FOREIGN_MAX) * 16)
+
+static void keystream_xor(uint8_t *data, size_t n, const uint8_t nonce[8])
 {
-#ifdef _WIN32
-    DWORD k = GetModuleFileNameA(NULL, out, (DWORD)n);
-    return k > 0 && k < n;
-#else
-    ssize_t k = readlink("/proc/self/exe", out, n - 1);
-    if (k <= 0) return false;
-    out[k] = 0;
-    return true;
-#endif
+    uint64_t nn = rd64(nonce);
+    for (size_t o = 0, blk = 0; o < n; o += 8, blk++) {
+        uint8_t m[8], ks[8];
+        wr64(m, nn ^ (0x9E3779B97F4A7C15ULL * (uint64_t)(blk + 1)));
+        wr64(ks, siphash8(m));
+        for (size_t k = 0; k < 8 && o + k < n; k++) data[o + k] ^= ks[k];
+    }
 }
 
-static bool persist_exe(void)
+static void make_nonce(uint8_t nonce[8])
 {
-    char path[1100], tmp[1110], old[1110];
-    if (!exe_path(path, sizeof path)) return false;
-    snprintf(tmp, sizeof tmp, "%s.new", path);
-    snprintf(old, sizeof old, "%s.old", path);
-    uint8_t pay[BLOB_CAP];
-    size_t pn = build_payload(pay);
-    if (pn > BLOB_CAP) return false;
-    FILE *f = fopen(path, "rb");
-    if (!f) return false;
-    fseek(f, 0, SEEK_END);
-    long sz = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    if (sz <= 0) { fclose(f); return false; }
-    uint8_t *buf = (uint8_t *)malloc((size_t)sz);
-    if (!buf || fread(buf, 1, (size_t)sz, f) != (size_t)sz) { free(buf); fclose(f); return false; }
-    fclose(f);
-    long at = -1;
-    for (long i = 0; i + BLOB_MARK + 2 + BLOB_CAP <= sz; i++)
-        if (buf[i] == s_blob[0] && !memcmp(buf + i, s_blob, BLOB_MARK)) { at = i; break; }
-    if (at < 0) { free(buf); return false; }
-    uint8_t *blk = buf + at + BLOB_MARK;
-    memset(blk, 0, 2 + BLOB_CAP);
-    blk[0] = (uint8_t)(pn & 0xFF); blk[1] = (uint8_t)(pn >> 8);
-    memcpy(blk + 2, pay, pn);
-    f = fopen(tmp, "wb");
-    bool ok = f && fwrite(buf, 1, (size_t)sz, f) == (size_t)sz;
-    if (f) ok = (fclose(f) == 0) && ok;
-    free(buf);
-    if (!ok) { remove(tmp); return false; }
-#ifdef _WIN32
-    if (!MoveFileExA(path, old, MOVEFILE_REPLACE_EXISTING)) { remove(tmp); return false; }
-    if (!MoveFileExA(tmp, path, MOVEFILE_REPLACE_EXISTING)) { MoveFileExA(old, path, MOVEFILE_REPLACE_EXISTING); return false; }
-#else
-    struct stat st;
-    if (stat(path, &st) == 0) chmod(tmp, st.st_mode);
-    if (rename(tmp, path) != 0) { remove(tmp); return false; }
-#endif
-    memset(s_blob + BLOB_MARK, 0, 2 + BLOB_CAP);               /* keep the in-memory copy in step */
-    s_blob[BLOB_MARK] = (uint8_t)(pn & 0xFF); s_blob[BLOB_MARK + 1] = (uint8_t)(pn >> 8);
-    memcpy(s_blob + BLOB_MARK + 2, pay, pn);
-    return true;
+    static uint32_t counter = 0;
+    uint64_t v = (uint64_t)time(NULL) * 0x9E3779B97F4A7C15ULL ^ ((uint64_t)clock() << 20) ^ ((uint64_t)++counter * 0xD6E8FEB86659FD93ULL);
+    v ^= (uint64_t)(uintptr_t)&v;   /* address-space layout adds a little more */
+    wr64(nonce, v);
 }
-#endif
 
 static void save_file(void)
 {
-#ifndef MM_SIM
-    persist_exe();
-    return;
-#endif
     if (!s_path[0]) return;
-    FILE *f = fopen(s_path, "wb");
+    static uint8_t pay[PAYLOAD_MAX], out[12 + PAYLOAD_MAX];
+    size_t pn = build_payload(pay), on;
+#if defined(MM_SIM) && !defined(MM_ACH_ENCRYPT)   /* MM_ACH_ENCRYPT: a test build that writes the real (encrypted) format */
+    memcpy(out, pay, pn);
+    on = pn;
+#else
+    uint8_t nonce[8];
+    make_nonce(nonce);
+    memcpy(out, "MMA2", 4);
+    memcpy(out + 4, nonce, 8);
+    memcpy(out + 12, pay, pn);
+    keystream_xor(out + 12, pn, nonce);
+    on = 12 + pn;
+#endif
+    char tmp[1110];
+    snprintf(tmp, sizeof tmp, "%s.tmp", s_path);
+    FILE *f = fopen(tmp, "wb");
     if (!f) return;
-    fwrite("MMA1", 1, 4, f);
-    for (int i = 0; i < ACH_COUNT; i++) {
-        if (!s_got[i]) continue;
-        uint8_t rec[16];
-        wr32(rec, id_hash(k_ach[i].id));
-        wr32(rec + 4, (uint32_t)s_when[i]);
-        wr64(rec + 8, siphash8(rec));
-        fwrite(rec, 1, 16, f);
+    bool ok = fwrite(out, 1, on, f) == on;
+    ok = (fclose(f) == 0) && ok;
+    if (!ok) { remove(tmp); return; }
+    bool moved;
+#ifdef _WIN32
+    moved = MoveFileExA(tmp, s_path, MOVEFILE_REPLACE_EXISTING) != 0;
+#else
+    moved = rename(tmp, s_path) == 0;
+#endif
+    if (!moved) { remove(tmp); return; }
+    {   /* the file under its first name has been carried over: drop it */
+        char old[1110];
+        size_t k = strlen(s_path), nl = strlen(ACH_FILE_NAME);
+        if (k >= nl) { snprintf(old, sizeof old, "%.*s" ACH_OLD_FILE_NAME, (int)(k - nl), s_path); remove(old); }
     }
-    for (int i = 0; i < s_nforeign; i++) fwrite(s_foreign[i], 1, 16, f);   /* the other ROM's progress */
-    fclose(f);
 }
 
 void ach_init(const char *dir)
 {
-#ifndef MM_SIM
-    (void)dir;
-    {   /* tidy up leftovers of the last rewrite of the executable */
-        char path[1100], x[1110];
-        if (exe_path(path, sizeof path)) {
-            snprintf(x, sizeof x, "%s.old", path); remove(x);
-            snprintf(x, sizeof x, "%s.new", path); remove(x);
-        }
-    }
-    size_t n = (size_t)s_blob[BLOB_MARK] | ((size_t)s_blob[BLOB_MARK + 1] << 8);
-    if (n <= BLOB_CAP) load_payload(s_blob + BLOB_MARK + 2, n);
-    return;
-#endif
-    snprintf(s_path, sizeof s_path, "%sManiacMansion.achievements", dir ? dir : "");
+    snprintf(s_path, sizeof s_path, "%s" ACH_FILE_NAME, dir ? dir : "");
     FILE *f = fopen(s_path, "rb");
-    if (!f) return;
-    uint8_t magic[4];
-    if (fread(magic, 1, 4, f) == 4 && !memcmp(magic, "MMA1", 4)) {
-        uint8_t rec[16];
-        while (fread(rec, 1, 16, f) == 16) {
-            if (rd64(rec + 8) != siphash8(rec)) continue;            /* tampered or not ours: ignore */
-            take_record(rec);
-        }
+    if (!f) {
+        char old[1110];
+        snprintf(old, sizeof old, "%s" ACH_OLD_FILE_NAME, dir ? dir : "");
+        f = fopen(old, "rb");
     }
+    if (!f) return;
+    static uint8_t buf[12 + PAYLOAD_MAX];
+    size_t n = fread(buf, 1, sizeof buf, f);
     fclose(f);
+    if (n >= 12 && !memcmp(buf, "MMA2", 4)) {
+        keystream_xor(buf + 12, n - 12, buf + 4);
+        load_payload(buf + 12, n - 12);
+    } else if (n >= 4 && !memcmp(buf, "MMA1", 4)) {
+        load_payload(buf, n);   /* test builds, and files written before the encrypted format */
+    }
 }
 
 static bool     s_resync = false;     /* set when a state was loaded; consumed by the test-build logic in ach_poll */
