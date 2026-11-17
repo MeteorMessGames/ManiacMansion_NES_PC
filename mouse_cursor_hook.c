@@ -611,21 +611,21 @@ enum { MODE_MAIN, MODE_SAVE, MODE_LOAD, MODE_DISPLAY, MODE_QUIT, MODE_ACH, MODE_
 static void display_toast(const char *what, const char *value);
 static void set_achievements(bool on);
 #define MAX_SLOTS 999       /* save slots are unlimited in practice: the list shows the saves that exist plus one new slot */
-#define ACH_ROWS_VISIBLE 5    /* achievement list rows on screen (two lines each) */
+#define ACH_ROWS_VISIBLE 6    /* achievement list rows on screen (two lines each) */
 /* Menu geometry, all in units of u (= window height / 240) so every screen shares it: rows start at ML_ITEM_Y0, plain rows are
  * ML_ROW_H tall (Music / Sound FX sliders ML_SLIDER_H, achievement cards ML_CARD_H), the Back row of the long-list screens is pinned
- * at ML_BACK_Y, one info / status line sits at ML_INFO_Y, and the footer (separator + two hint lines) is at the bottom. */
+ * at ML_BACK_Y, and one info / status line sits at ML_INFO_Y (no footer). */
 #define ML_ITEM_Y0   54
 #define ML_ROW_H     14
 #define ML_GAP        2
 #define ML_CARD_H    23
+#define ML_MAIN_ROW_H 18   /* the first screen is spaced out: taller rows, wider gaps */
+#define ML_MAIN_GAP   9
+#define ML_OPT_GAP    4   /* Options rows: a little more air than the default gap */
 #define ML_SLIDER_H  21
-#define ML_BACK_Y   184
-#define ML_INFO_Y   203
-#define ML_FOOT_SEP 213
-#define ML_HINT1_Y  217
-#define ML_HINT2_Y  226
-#define SLOT_ROWS_VISIBLE 7   /* slot list rows on screen; the rest scroll (wheel, Up/Down) */
+#define ML_BACK_Y   208
+#define ML_INFO_Y   226
+#define SLOT_ROWS_VISIBLE 9   /* slot list rows on screen; the rest scroll (wheel, Up/Down) */
 #define THUMB_W 128
 #define THUMB_H 120
 typedef struct {
@@ -1009,9 +1009,9 @@ static int row_slot(int row) {
     return slot <= slot_rows() ? slot : -1;
 }
 
-/* Sidebar geometry for a presented size (all derived from the height). Every screen uses the same row start, gap and footer;
+/* Sidebar geometry for a presented size (all derived from the height). Every screen uses the same row start, gap and bottom rows;
  * only the achievement cards are taller, and only that screen's panel is wider (the card text needs the room). */
-typedef struct { int sw, pad, item_y0, item_h, item_gap, title_y, sub_y, sep_y, back_y, info_y, foot_sep, hint1_y, hint2_y; float u; } MenuLayout;
+typedef struct { int sw, pad, item_y0, item_h, item_gap, title_y, sub_y, sep_y, back_y, info_y; float u; } MenuLayout;
 static MenuLayout menu_layout(int w, int h) {
     MenuLayout L;
     L.u = (float)h / 240.0f;
@@ -1033,9 +1033,6 @@ static MenuLayout menu_layout(int w, int h) {
     L.item_gap = (int)(ML_GAP * L.u);
     L.back_y = (int)(ML_BACK_Y * L.u);
     L.info_y = (int)(ML_INFO_Y * L.u);
-    L.foot_sep = (int)(ML_FOOT_SEP * L.u);
-    L.hint1_y = (int)(ML_HINT1_Y * L.u);
-    L.hint2_y = (int)(ML_HINT2_Y * L.u);
     return L;
 }
 
@@ -1044,6 +1041,7 @@ static MenuLayout menu_layout(int w, int h) {
 static int menu_row_height(const MenuLayout *L, int row) {
     if (s_menu_mode == MODE_DISPLAY && (row == DI_MUSIC || row == DI_SFX)) return (int)(ML_SLIDER_H * L->u);
     if (menu_pinned_back() && row == menu_row_count() - 1) return (int)(ML_ROW_H * L->u);
+    if (s_menu_mode == MODE_MAIN) return (int)(ML_MAIN_ROW_H * L->u);
     return L->item_h;
 }
 /* Where a row is on screen (false: scrolled out of view). The ONE place that knows row positions, used by drawing,
@@ -1054,8 +1052,13 @@ static bool menu_row_rect(const MenuLayout *L, int row, int *y, int *h) {
     if (menu_pinned_back() && row == n - 1) { *y = L->back_y; *h = (int)(ML_ROW_H * L->u); return true; }
     if (s_menu_mode == MODE_DISPLAY) {   /* rows differ in height: walk down from the first */
         int yy = L->item_y0;
-        for (int r = 0; r < row; r++) yy += menu_row_height(L, r) + L->item_gap;
+        for (int r = 0; r < row; r++) yy += menu_row_height(L, r) + (int)(ML_OPT_GAP * L->u);
         *y = yy; *h = menu_row_height(L, row);
+        return true;
+    }
+    if (s_menu_mode == MODE_MAIN) {
+        *y = L->item_y0 + row * (int)((ML_MAIN_ROW_H + ML_MAIN_GAP) * L->u);
+        *h = (int)(ML_MAIN_ROW_H * L->u);
         return true;
     }
     int k = row - s_menu_scroll;
@@ -1409,7 +1412,7 @@ static bool      s_splash_enabled = true;      /* config [Game] Splash */
 static int       s_mouse_speed = 100;          /* config [Game] MouseSpeed (percent): cursor speed with the mouse */
 static int       s_pad_speed = 100;            /* config [Game] PadSpeed (percent): cursor speed with arrow keys / d-pad */
 static bool      s_update_check = true;        /* config [Game] UpdateCheck: ask GitHub for a newer release at launch */
-#define MM_MOD_VERSION "1.3.1"                 /* the release this build is based on; bump with each release */
+#define MM_MOD_VERSION "1.3.2"                 /* the release this build is based on; bump with each release */
 static int       s_splash_frame = 0;
 static bool      s_splash_skip = false;
 static uint8_t  *s_splash_snap = NULL;
@@ -1593,18 +1596,6 @@ static const char *display_row_value(int item, char *buf, size_t n) {
     return "";
 }
 
-/* First footer line: only shown where Left / Right changes the selected row (Options value rows, the Achievements switch). */
-static void menu_hint(char *out, size_t n) {
-    const char *t = "";
-    int sel = s_menu_sel;
-    switch (s_menu_mode) {
-    case MODE_DISPLAY: t = sel == DI_BACK ? "" : "Left / Right Change"; break;
-    case MODE_ACH:     t = sel == 0 ? "Left / Right Change" : ""; break;
-    default: break;
-    }
-    snprintf(out, n, "%s", t);
-}
-
 static const uint32_t *menu_present_inner(void *ctx, int *w, int *h);
 static const uint32_t *menu_present(void *ctx, int *w, int *h) {   /* timed wrapper: one frame of the menu */
     uint64_t pf_t0 = perf_begin();
@@ -1660,7 +1651,6 @@ static const uint32_t *menu_present_inner(void *ctx, int *w, int *h) {
         mr_scale_nearest(d, pw, ph, s_menu_frozen, s_frozen_w, MENU_H, slots ? 90 : 170);
     }
     mr_rect(d, pw, ph, 0, 0, L.sw, ph, 0x15161D, 236);                 /* sidebar */
-    if (s_menu_mode != MODE_RESET) mr_rect(d, pw, ph, L.sw, 0, (int)(2 * u) > 1 ? (int)(2 * u) : 1, ph, 0x2C6FE0, 200);  /* edge accent (not on the reset confirmation) */
 
     {   /* title, shrunk to fit the sidebar */
         float tpx = 13.0f * u;
@@ -1845,7 +1835,7 @@ static const uint32_t *menu_present_inner(void *ctx, int *w, int *h) {
         mr_text(d, pw, ph, L.pad, (int)(118 * u), fit_px(7.0f * u, avail, "This cannot be undone."), 0xFF7070, 255, "This cannot be undone.");
         mr_text(d, pw, ph, L.pad, (int)(132 * u), fit_px(6.5f * u, avail, "The other version keeps its own list."), 0x9AA0B4, 255, "The other version keeps its own list.");
     }
-    {   /* one info / status line above the footer, the same place on every screen */
+    {   /* one info / status line at the bottom, the same place on every screen */
         char info[96];
         info[0] = 0;
         if (s_menu_mode == MODE_QUIT) snprintf(info, sizeof info, "%s", s_dirty ? "Unsaved progress will be lost." : "");
@@ -1854,16 +1844,6 @@ static const uint32_t *menu_present_inner(void *ctx, int *w, int *h) {
         if (s_menu_status[0]) mr_text(d, pw, ph, L.pad, L.info_y, fit_px(6.5f * u, avail, s_menu_status), s_menu_status_rgb, 255, s_menu_status);
         else if (info[0]) mr_text(d, pw, ph, L.pad, L.info_y, fit_px(6.5f * u, avail, info), 0x9AA0B4, 255, info);
     }
-    {   /* footer: a separator and two hint lines; the first follows the selected row, the second is the same everywhere */
-        int avail = L.sw - 2 * L.pad;
-        char h1[64];
-        menu_hint(h1, sizeof h1);
-        const char *h2 = s_menu_mode == MODE_MAIN ? "Esc Resume   Up / Down Select" : "Esc Back   Up / Down Select";
-        mr_rect(d, pw, ph, L.pad, L.foot_sep, avail, (int)u > 1 ? (int)u : 1, 0x3A3D4C, 255);
-        if (h1[0]) mr_text(d, pw, ph, L.pad, L.hint1_y, fit_px(6.0f * u, avail, h1), 0xB4B9CC, 255, h1);
-        mr_text(d, pw, ph, L.pad, L.hint2_y, fit_px(6.0f * u, avail, h2), 0x7D8296, 255, h2);
-    }
-
     *w = pw;
     *h = ph;
     return d;
