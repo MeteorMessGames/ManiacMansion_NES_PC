@@ -59,10 +59,15 @@ static uint64_t siphash8(const uint8_t *m)
 static const char *rom_salt(void)
 {
     static char salt[32];
-    char tag[24];
-    mm_rom_tag(cyc_prg_hash(), tag, sizeof tag);   /* "" prototype, "retail", else "x<HASH>": one list per ROM */
-    if (!tag[0]) return "";
-    snprintf(salt, sizeof salt, "#%s", tag);
+    static uint32_t for_hash = 0;
+    if (!for_hash) {   /* cyc_prg_hash() walks the whole PRG on every call and this is asked for every id of every record: once */
+        uint32_t h = cyc_prg_hash();
+        if (h == 2166136261u) return "";   /* nothing loaded yet: do not keep it */
+        char tag[24];
+        mm_rom_tag(h, tag, sizeof tag);   /* "" prototype, "retail", else "x<HASH>": one list per ROM */
+        if (tag[0]) snprintf(salt, sizeof salt, "#%s", tag); else salt[0] = 0;
+        for_hash = h;
+    }
     return salt;
 }
 

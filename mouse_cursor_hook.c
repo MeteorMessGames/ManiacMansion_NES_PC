@@ -100,6 +100,7 @@
 #include "cyc_render.h"
 #include "cyc_video.h"
 #include <sys/stat.h>
+#include <dirent.h>
 #include <time.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -829,20 +830,29 @@ static uint8_t ach_rd(uint16_t addr) {
 /* The retail US cartridge (PRG hash of the second ROM accepted by the release build); anything else is the prototype. */
 /* The loaded ROM's file tag from its PRG hash: "" for the prototype (its files keep the old names), "retail", else "x<HASH>". Every ROM
  * (and so every patch permutation) has its own save states, cartridge save and achievements. */
-static const char *rom_file_tag(void) { static char tag[24]; mm_rom_tag(cyc_prg_hash(), tag, sizeof tag); return tag; }
+/* cyc_prg_hash() walks the whole PRG (256 or 512 KB) on every call: hash once (the ROM never changes in a run) or the slot scan and the menu crawl. */
+static uint32_t rom_hash_cached(void) {
+    static uint32_t h = 0;
+    if (getenv("MM_NO_HASH_CACHE")) return cyc_prg_hash();   /* A/B check of the old, slow behaviour */
+    if (!h) { uint32_t v = cyc_prg_hash(); if (v != 2166136261u) h = v; else return v; }   /* 2166136261 = nothing loaded yet: do not keep it */
+    return h;
+}
+static const char *rom_file_tag(void) { static char tag[24]; static uint32_t for_hash = 0; uint32_t h = rom_hash_cached(); if (h != for_hash) { mm_rom_tag(h, tag, sizeof tag); for_hash = h; } return tag; }
 /* "(Prototype)" / "(USA)" / "(custom ROM XXXXXXXX)": the loaded ROM's title from its hash, without the game name. */
 static const char *rom_edition(void) {
     static char t[64];
-    mm_rom_title(cyc_prg_hash(), t, sizeof t);
+    static uint32_t for_hash = 0;
+    uint32_t h = rom_hash_cached();
+    if (h != for_hash) { mm_rom_title(h, t, sizeof t); for_hash = h; }
     const char *p = strchr(t, '(');
     return p ? p : "";
 }
 
 static void slot_file(int slot, const char *ext, char *out, size_t n) {
-    char *base = SDL_GetBasePath();
+    static char *base = NULL;   /* the exe folder never changes: ask the OS once (the slot scan calls this ~2000 times) */
+    if (!base) base = SDL_GetBasePath();
     /* the retail ROM has its own slots: a state only loads in the ROM that wrote it */
     snprintf(out, n, "%sManiacMansion.%s%sslot%d.%s", base ? base : "", rom_file_tag(), rom_file_tag()[0] ? "." : "", slot, ext);
-    if (base) SDL_free(base);
 }
 
 static void slot_name(int slot, char *out, size_t n) {
@@ -874,19 +884,55 @@ static void write_thumb(int slot, const uint32_t *frame) {
     fclose(f);
 }
 
+/* Slow-spot log: anything in the menu that takes 12 ms or more is written to mouse_debug.log as "[perf] name N ms", so a laggy menu on
+ * some machine can be pinned down from the log. */
+static uint64_t perf_begin(void) { return SDL_GetPerformanceCounter(); }
+static void perf_end(const char *name, uint64_t t0) {
+    double ms = (double)(SDL_GetPerformanceCounter() - t0) * 1000.0 / (double)SDL_GetPerformanceFrequency();
+    if (ms < 12.0) return;
+    FILE *log = dbg_log();
+    if (log) { fprintf(log, "[perf] %s %.1f ms\n", name, ms); fflush(log); }
+}
+
 static void refresh_slots(void) {
+    uint64_t pf_t0 = perf_begin();
     s_slot_high = 0;
     for (int s = 0; s <= MAX_SLOTS; s++) {
         SlotInfo *si = &s_slots[s];
-        char path[1100];
-        struct stat st;
-        slot_file(s, "state", path, sizeof path);
-        si->used = stat(path, &st) == 0;
-        si->mtime = si->used ? st.st_mtime : 0;
+        si->used = false;
+        si->mtime = 0;
         si->thumb_ok = false;
         si->thumb_tried = false;
-        if (si->used && s > s_slot_high) s_slot_high = s;
     }
+    /* Read the folder once and pick out this ROM's ".state" files (a stat per possible slot, 1000 of them, cost ~20 ms on Windows). */
+    char probe[1100], dir[1100], prefix[96];
+    slot_file(0, "state", probe, sizeof probe);
+    snprintf(prefix, sizeof prefix, "ManiacMansion.%s%sslot", rom_file_tag(), rom_file_tag()[0] ? "." : "");
+    snprintf(dir, sizeof dir, "%s", probe);
+    char *cut = strrchr(dir, '/'), *bcut = strrchr(dir, '\\');
+    if (bcut && (!cut || bcut > cut)) cut = bcut;
+    if (cut) cut[1] = 0; else snprintf(dir, sizeof dir, "./");
+    DIR *dh = opendir(dir);
+    if (dh) {
+        struct dirent *de;
+        size_t pl = strlen(prefix);
+        while ((de = readdir(dh))) {
+            const char *n = de->d_name;
+            if (strncmp(n, prefix, pl) != 0) continue;
+            char *end = NULL;
+            long v = strtol(n + pl, &end, 10);
+            if (end == n + pl || v < 0 || v > MAX_SLOTS || strcmp(end, ".state") != 0) continue;
+            char path[1100];
+            struct stat st;
+            slot_file((int)v, "state", path, sizeof path);
+            if (stat(path, &st) != 0) continue;
+            s_slots[v].used = true;
+            s_slots[v].mtime = st.st_mtime;
+            if ((int)v > s_slot_high) s_slot_high = (int)v;
+        }
+        closedir(dh);
+    }
+    perf_end("refresh_slots", pf_t0);
 }
 
 /* Thumbnail of a slot, read from disk the first time it is shown. */
@@ -1105,6 +1151,7 @@ static void grab_frozen(void) {
 }
 
 static void menu_open_now(void) {
+    uint64_t pf_t0 = perf_begin();
     char err[160];
     uint8_t *buf = NULL;
     size_t len = 0;
@@ -1121,6 +1168,7 @@ static void menu_open_now(void) {
     s_menu_sel = MI_RESUME;
     menu_os_cursor(true);
     menu_log("open", NULL);
+    perf_end("menu open", pf_t0);
 }
 
 static void slot_activate(int slot) {
@@ -1178,7 +1226,13 @@ static void slot_activate(int slot) {
 static void menu_back(void);
 static void display_activate(int item);
 
-static void menu_activate(int item) {
+static void menu_activate_inner(int item);
+static void menu_activate(int item) {   /* timed wrapper: one menu action (Save, Load, Options, ...) */
+    uint64_t pf_t0 = perf_begin();
+    menu_activate_inner(item);
+    perf_end("menu action", pf_t0);
+}
+static void menu_activate_inner(int item) {
     char err[160] = "";
     if (s_menu_mode == MODE_DISPLAY) {
         if (item == DI_BACK) menu_back();
@@ -1546,7 +1600,14 @@ static void menu_hint(char *out, size_t n) {
     snprintf(out, n, "%s", t);
 }
 
-static const uint32_t *menu_present(void *ctx, int *w, int *h) {
+static const uint32_t *menu_present_inner(void *ctx, int *w, int *h);
+static const uint32_t *menu_present(void *ctx, int *w, int *h) {   /* timed wrapper: one frame of the menu */
+    uint64_t pf_t0 = perf_begin();
+    const uint32_t *r = menu_present_inner(ctx, w, h);
+    perf_end("menu frame", pf_t0);
+    return r;
+}
+static const uint32_t *menu_present_inner(void *ctx, int *w, int *h) {
     (void)ctx;
     if (!s_menu_open) return display_present(w, h);
     s_pres_kind = PRES_MENU;
@@ -3591,4 +3652,12 @@ static const CycHostExtras s_extras = {
 const CycHostExtras *cyc_host_extras(void) { return &s_extras; }
 #else
 const CycHostExtras *cyc_host_extras(void) { return NULL; }
+#endif
+
+/* The recompiled-game build (not the release stub) accepts only its own ROM and keeps the old file names. The host's weak defaults for these
+ * hooks do not link on MinGW (a weak definition in the static archive is not pulled in), so give the build strong ones. */
+#ifdef MM_NATIVE_BUILD
+int cyc_native_alt_rom_ok(uint32_t prg_hash) { (void)prg_hash; return 0; }
+int cyc_native_has_alt_roms(void) { return 0; }
+const char *cyc_native_save_stem_get(void) { return NULL; }
 #endif

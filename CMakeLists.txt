@@ -18,6 +18,10 @@ nesrecomp_add_cycle_game(nes_game
     RECOMPILER "${NESRECOMP_ROOT}/build/recompiler/NESRecomp"
 )
 
+if(NOT MM_ROMLESS)
+    target_compile_definitions(nes_game PRIVATE MM_NATIVE_BUILD=1)   # recompiled-game build: see the stubs at the end of mouse_cursor_hook.c
+endif()
+
 # Release build without any of the game: drop the generated translation units
 # (recompiled code + the embedded PRG ROM copy) and run the player's ROM on the
 # interpreter. The ROM is still needed at configure time, only to read the
