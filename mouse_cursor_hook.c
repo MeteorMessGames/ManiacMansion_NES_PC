@@ -843,7 +843,12 @@ static const char *rom_edition(void) {
     static char t[64];
     static uint32_t for_hash = 0;
     uint32_t h = rom_hash_cached();
-    if (h != for_hash) { mm_rom_title(h, t, sizeof t); for_hash = h; }
+    if (h != for_hash) {
+        mm_rom_title(h, t, sizeof t);
+        char *c = strstr(t, "custom ROM ");   /* "(custom ROM 3D4DF25C)" is too long for the sidebar: "(custom 3D4DF25C)" */
+        if (c) memmove(c + 7, c + 11, strlen(c + 11) + 1);
+        for_hash = h;
+    }
     const char *p = strchr(t, '(');
     return p ? p : "";
 }
@@ -1404,7 +1409,7 @@ static bool      s_splash_enabled = true;      /* config [Game] Splash */
 static int       s_mouse_speed = 100;          /* config [Game] MouseSpeed (percent): cursor speed with the mouse */
 static int       s_pad_speed = 100;            /* config [Game] PadSpeed (percent): cursor speed with arrow keys / d-pad */
 static bool      s_update_check = true;        /* config [Game] UpdateCheck: ask GitHub for a newer release at launch */
-#define MM_MOD_VERSION "1.3.0"                 /* the release this build is based on; bump with each release */
+#define MM_MOD_VERSION "1.3.1"                 /* the release this build is based on; bump with each release */
 static int       s_splash_frame = 0;
 static bool      s_splash_skip = false;
 static uint8_t  *s_splash_snap = NULL;
@@ -1672,7 +1677,7 @@ static const uint32_t *menu_present_inner(void *ctx, int *w, int *h) {
                       s_menu_mode == MODE_RESET ? "Reset Achievements" : "Paused";
     char subbuf[64];
     if (s_menu_mode == MODE_MAIN && rom_edition()[0]) { snprintf(subbuf, sizeof subbuf, "Paused  %s", rom_edition()); sub = subbuf; }
-    mr_text(d, pw, ph, L.pad, L.sub_y, 7.5f * u, 0x9AA0B4, 255, sub);
+    mr_text(d, pw, ph, L.pad, L.sub_y, fit_px(7.5f * u, L.sw - 2 * L.pad, sub), 0x9AA0B4, 255, sub);   /* shrinks a long ROM title to the sidebar */
     mr_rect(d, pw, ph, L.pad, L.sep_y, L.sw - 2 * L.pad, (int)u > 1 ? (int)u : 1, 0x3A3D4C, 255);
 
     int n = menu_row_count();
