@@ -1111,9 +1111,20 @@ static bool menu_row_rect(const MenuLayout *L, int row, int *y, int *h) {
     return true;
 }
 
+/* The layout the menu is drawn with and a presented-picture mouse position mapped into it: the sharp menu is drawn at
+ * window resolution, the filtered one at the game's native size (then filtered). */
+static MenuLayout menu_mouse_layout(int *x, int *y) {
+    if (s_filter != FILTER_SHARP && s_hi_w > 0 && s_hi_h > 0) {
+        *x = (int)((long)*x * s_frozen_w / s_hi_w);
+        *y = (int)((long)*y * MENU_H / s_hi_h);
+        return menu_layout(s_frozen_w, MENU_H);
+    }
+    return menu_layout(s_hi_w, s_hi_h);
+}
+
 static int menu_row_at(int x, int y) {
     if (s_hi_w <= 0) return -1;
-    MenuLayout L = menu_layout(s_hi_w, s_hi_h);
+    MenuLayout L = menu_mouse_layout(&x, &y);
     int lx = (x - L.ox) / L.s, ly = (y - L.oy) / L.s;
     if (x < L.ox || y < L.oy) return -1;
     if (lx < L.px + 2 || lx >= L.px + L.pw - 2) return -1;
@@ -1707,59 +1718,10 @@ static void draw_ach_card(uint32_t *d, int pw, int ph, const MenuLayout *L, int 
     ltext_r(d, pw, ph, L, cx + cw - 5, gy + 24, pc, pts, 8);
 }
 
-static const uint32_t *menu_present_inner(void *ctx, int *w, int *h);
-static const uint32_t *menu_present(void *ctx, int *w, int *h) {   /* timed wrapper: one frame of the menu */
-    uint64_t pf_t0 = perf_begin();
-    const uint32_t *r = menu_present_inner(ctx, w, h);
-    perf_end("menu frame", pf_t0);
-    return r;
-}
-static const uint32_t *menu_present_inner(void *ctx, int *w, int *h) {
-    (void)ctx;
-    if (!s_menu_open) return display_present(w, h);
-    s_pres_kind = PRES_MENU;
-    if (cyc_video_width() != s_frozen_w) grab_frozen();   /* widescreen changed in the menu */
-    int pw, ph;
-    menu_target_size(&pw, &ph);
-    if (pw != s_hi_w || ph != s_hi_h || !s_hi_pic) {
-        uint32_t *np = (uint32_t *)realloc(s_hi_pic, (size_t)pw * ph * 4);
-        if (!np) return NULL;
-        s_hi_pic = np;
-        s_hi_w = pw;
-        s_hi_h = ph;
-    }
-    uint32_t *d = s_hi_pic;
-    MenuLayout L = menu_layout(pw, ph);
-    bool slots = s_menu_mode == MODE_SAVE || s_menu_mode == MODE_LOAD;
-
-    /* game, lightly dimmed (darker behind the slot preview) */
-    if (s_filter != FILTER_SHARP) {
-        /* keep the CRT look behind the menu: filter the frozen picture once
-         * per menu opening / size, then dim a copy each frame */
-        static uint32_t *crt_bg = NULL;
-        static size_t crt_cap = 0;
-        static int crt_w = 0, crt_h = 0, crt_filter = -1, crt_aspect = -1;
-        static uint64_t crt_gen = 0;
-        if ((size_t)pw * ph > crt_cap) {
-            uint32_t *np = (uint32_t *)realloc(crt_bg, (size_t)pw * ph * 4);
-            if (np) { crt_bg = np; crt_cap = (size_t)pw * ph; crt_w = 0; }
-        }
-        if (crt_bg) {
-            if (crt_w != pw || crt_h != ph || crt_filter != s_filter || crt_aspect != s_aspect || crt_gen != s_frozen_gen) {
-                int keep = crt_get_scale();
-                crt_set_scale(0);                 /* the menu always fills the screen */
-                crt_render(crt_bg, pw, ph, s_menu_frozen, s_frozen_w, MENU_H, false);
-                crt_set_scale(keep);
-                crt_w = pw; crt_h = ph; crt_filter = s_filter; crt_aspect = s_aspect; crt_gen = s_frozen_gen;
-            }
-            memcpy(d, crt_bg, (size_t)pw * ph * 4);
-            mr_rect(d, pw, ph, 0, 0, pw, ph, 0x000000, slots ? 165 : 85);
-        } else {
-            mr_scale_nearest(d, pw, ph, s_menu_frozen, s_frozen_w, MENU_H, slots ? 90 : 170);
-        }
-    } else {
-        mr_scale_nearest(d, pw, ph, s_menu_frozen, s_frozen_w, MENU_H, slots ? 90 : 170);
-    }
+/* Draw the menu panels onto d (pw x ph) with layout Lp. Used for the sharp picture at window resolution and for the
+ * native 256x240 picture that goes through the game's CRT filter. */
+static void menu_draw_ui(uint32_t *d, int pw, int ph, const MenuLayout *Lp, bool slots) {
+    MenuLayout L = *Lp;
     int n = menu_row_count();
     menu_scroll_clamp();
     int lrows = menu_list_rows();
@@ -1870,7 +1832,56 @@ static const uint32_t *menu_present_inner(void *ctx, int *w, int *h) {
             ltext_c(d, pw, ph, &L, pcx, L.info_y, s_menu_status[0] ? s_menu_status_rgb : C_DIM, ib, 7);
         }
     }
+}
 
+static const uint32_t *menu_present_inner(void *ctx, int *w, int *h);
+static const uint32_t *menu_present(void *ctx, int *w, int *h) {   /* timed wrapper: one frame of the menu */
+    uint64_t pf_t0 = perf_begin();
+    const uint32_t *r = menu_present_inner(ctx, w, h);
+    perf_end("menu frame", pf_t0);
+    return r;
+}
+static const uint32_t *menu_present_inner(void *ctx, int *w, int *h) {
+    (void)ctx;
+    if (!s_menu_open) return display_present(w, h);
+    s_pres_kind = PRES_MENU;
+    if (cyc_video_width() != s_frozen_w) grab_frozen();   /* widescreen changed in the menu */
+    int pw, ph;
+    menu_target_size(&pw, &ph);
+    if (pw != s_hi_w || ph != s_hi_h || !s_hi_pic) {
+        uint32_t *np = (uint32_t *)realloc(s_hi_pic, (size_t)pw * ph * 4);
+        if (!np) return NULL;
+        s_hi_pic = np;
+        s_hi_w = pw;
+        s_hi_h = ph;
+    }
+    uint32_t *d = s_hi_pic;
+    int fw = s_frozen_w;
+    bool slots = s_menu_mode == MODE_SAVE || s_menu_mode == MODE_LOAD;
+    int dimv = slots ? 90 : 170;   /* the game, lightly dimmed (darker behind the slot preview) */
+    if (s_filter != FILTER_SHARP) {
+        /* The menu goes through the same CRT filter as the game: dim the frozen picture and draw the panels at the
+         * game's native size, then filter that. The filtered result is reused until the native picture changes. */
+        static uint32_t native[CYC_VIDEO_MAX_WIDTH * MENU_H], prev[CYC_VIDEO_MAX_WIDTH * MENU_H];
+        static int prev_w = 0, prev_h = 0, prev_fw = 0, prev_filter = -1, prev_aspect = -1;
+        mr_scale_nearest(native, fw, MENU_H, s_menu_frozen, fw, MENU_H, dimv);
+        MenuLayout NL = menu_layout(fw, MENU_H);
+        menu_draw_ui(native, fw, MENU_H, &NL, slots);
+        size_t nbytes = (size_t)fw * MENU_H * 4;
+        if (prev_w != pw || prev_h != ph || prev_fw != fw || prev_filter != s_filter || prev_aspect != s_aspect ||
+            memcmp(native, prev, nbytes)) {
+            int keep = crt_get_scale();
+            crt_set_scale(0);                 /* the menu always fills the screen */
+            crt_render(d, pw, ph, native, fw, MENU_H, false);
+            crt_set_scale(keep);
+            memcpy(prev, native, nbytes);
+            prev_w = pw; prev_h = ph; prev_fw = fw; prev_filter = s_filter; prev_aspect = s_aspect;
+        }
+    } else {
+        mr_scale_nearest(d, pw, ph, s_menu_frozen, fw, MENU_H, dimv);
+        MenuLayout L = menu_layout(pw, ph);
+        menu_draw_ui(d, pw, ph, &L, slots);
+    }
     *w = pw;
     *h = ph;
     return d;
@@ -1993,12 +2004,13 @@ static void menu_event(void *ctx, const void *event, int player) {
         /* volume sliders: click or drag on the bar sets the level */
         int x = ev->type == SDL_MOUSEMOTION ? ev->motion.x : ev->button.x;
         int y = ev->type == SDL_MOUSEMOTION ? ev->motion.y : ev->button.y;
-        MenuLayout L = menu_layout(s_hi_w, s_hi_h);
         int row = s_vol_drag >= 0 ? s_vol_drag : menu_row_at(x, y);
+        int mx = x, my = y;
+        MenuLayout L = menu_mouse_layout(&mx, &my);   /* the bar is in the layout's own pixels */
         int bx, by, bw, bh;
         if (row >= 0 && volume_bar(&L, row, &bx, &by, &bw, &bh) &&
-            (s_vol_drag >= 0 || y >= by - 5 * L.s)) {
-            int v = (int)((float)(x - bx) * 100.0f / bw + 0.5f);
+            (s_vol_drag >= 0 || my >= by - 5 * L.s)) {
+            int v = (int)((float)(mx - bx) * 100.0f / bw + 0.5f);
             s_vol_drag = row;
             s_menu_sel = row;
             s_vol_req_row = row;
