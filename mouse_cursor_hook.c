@@ -967,21 +967,23 @@ static int menu_row_count(void) {
 }
 /* The long-list screens (Save, Load, Achievements) keep their Back row pinned below the scrolling list. */
 static bool menu_pinned_back(void) { return s_menu_mode == MODE_SAVE || s_menu_mode == MODE_LOAD || s_menu_mode == MODE_ACH; }
+/* Screens whose list scrolls (the debug build adds its own). */
+static bool menu_scrolls(void) { return menu_pinned_back(); }
 /* Rows that scroll: every row except a pinned Back. */
 static int menu_list_rows(void) { return menu_row_count() - (menu_pinned_back() ? 1 : 0); }
 /* Rows drawn at once in the scrolling part: as many as fit from the first shown one (rows differ in height). */
 static int menu_fit_from(int first);
-static int menu_visible_rows(void) { return menu_fit_from(menu_pinned_back() ? s_menu_scroll : 0); }
+static int menu_visible_rows(void) { return menu_fit_from(menu_scrolls() ? s_menu_scroll : 0); }
 static void menu_scroll_clamp(void) {
     int n = menu_list_rows(), max = 0;
-    if (!menu_pinned_back()) { s_menu_scroll = 0; return; }
+    if (!menu_scrolls()) { s_menu_scroll = 0; return; }
     while (max < n && menu_fit_from(max) < n - max) max++;
     if (s_menu_scroll > max) s_menu_scroll = max;
     if (s_menu_scroll < 0) s_menu_scroll = 0;
 }
 /* scroll so the selected row is on screen (the pinned Back row never scrolls) */
 static void menu_keep_visible(void) {
-    if (!menu_pinned_back()) { s_menu_scroll = 0; return; }
+    if (!menu_scrolls()) { s_menu_scroll = 0; return; }
     if (s_menu_sel >= menu_list_rows()) { menu_scroll_clamp(); return; }
     if (s_menu_sel < s_menu_scroll) s_menu_scroll = s_menu_sel;
     while (s_menu_scroll < s_menu_sel && s_menu_sel >= s_menu_scroll + menu_fit_from(s_menu_scroll)) s_menu_scroll++;
@@ -1091,7 +1093,7 @@ static bool menu_row_geom(const MenuLayout *L, int row, int *y, int *h) {
     int n = menu_row_count();
     if (row < 0 || row >= n) return false;
     if (menu_pinned_back() && row == n - 1) { *y = L->back_y; *h = menu_row_h(row); return true; }
-    int first = menu_pinned_back() ? s_menu_scroll : 0;
+    int first = menu_scrolls() ? s_menu_scroll : 0;
     if (row < first || row >= first + menu_fit_from(first)) return false;
     int yy = L->ly0;
     for (int r = first; r < row; r++) yy += menu_row_h(r) + menu_row_gap();
@@ -1763,7 +1765,7 @@ static const uint32_t *menu_present_inner(void *ctx, int *w, int *h) {
     int lrows = menu_list_rows();
     int vis = menu_visible_rows();
     bool pinned = menu_pinned_back();
-    int first = pinned ? s_menu_scroll : 0;
+    int first = menu_scrolls() ? s_menu_scroll : 0;
     if (s_menu_mode != MODE_ACH) s_card_ai = -1;
 
     lpanel(d, pw, ph, &L, L.px, L.py, L.pw, L.ph);
