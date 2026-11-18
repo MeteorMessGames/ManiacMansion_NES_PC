@@ -1456,7 +1456,7 @@ static void draw_slot_preview(uint32_t *d, int pw, int ph, const MenuLayout *L) 
         ltext_c(d, pw, ph, L, 198, 96, C_DIM, s_slots[slot].used ? "NO PREVIEW" : "EMPTY SLOT", 8);
     }
     ltext_c(d, pw, ph, L, 198, 158, C_WHITE, name, 8);
-    ltext_c(d, pw, ph, L, 198, 168, C_OLIVE, when, 7);
+    ltext_c(d, pw, ph, L, 198, 170, C_OLIVE, when, 7);
 }
 
 /* 2026-11-10: Meteor Mess Games startup splash (splash_data.h, from
@@ -1721,18 +1721,18 @@ static void draw_ach_card(uint32_t *d, int pw, int ph, const MenuLayout *L, int 
     char nb[96];
     int np = mr_glyph_width(name, 8) <= area ? 8 : 7;
     ltrunc(nb, sizeof nb, name, np, area);
-    ltext(d, pw, ph, L, ax, gy + 3, sel ? C_WHITE : (got ? C_OLIVE : C_DIM), nb, np);
+    ltext(d, pw, ph, L, ax, gy + 2, sel ? C_WHITE : (got ? C_OLIVE : C_DIM), nb, np);
     uint32_t dc = sel ? C_OLIVE : (got ? 0x96AA1E : C_DIM);
     char lines[3][48], upper[160];
     snprintf(upper, sizeof upper, "%s", desc);
     int nl = lwrap(lines, 3, area, upper);
-    for (int i = 0; i < nl; i++) ltext(d, pw, ph, L, ax, gy + 12 + 8 * i, dc, lines[i], 7);
+    for (int i = 0; i < nl; i++) ltext(d, pw, ph, L, ax, gy + 11 + 8 * i, dc, lines[i], 7);
     uint32_t pc = got ? body : tint(body, 70);
     char lab[48], pts[16];
     snprintf(lab, sizeof lab, "%s%s", ach_rarity_name(ach_rarity(ai)), got ? "  EARNED" : "");
-    ltext(d, pw, ph, L, ax, gy + 38, pc, lab, 7);
+    ltext(d, pw, ph, L, ax, gy + 39, pc, lab, 7);
     snprintf(pts, sizeof pts, "%dP", ach_points(ai));
-    ltext_r(d, pw, ph, L, cx + cw - 5, gy + 38, pc, pts, 8);
+    ltext_r(d, pw, ph, L, cx + cw - 5, gy + 39, pc, pts, 8);
 }
 
 /* Draw the menu panels onto d (pw x ph) with layout Lp. Used for the sharp picture at window resolution and for the
@@ -1823,8 +1823,8 @@ static void menu_draw_ui(uint32_t *d, int pw, int ph, const MenuLayout *Lp, bool
             char name[32], when[48];
             slot_name(slot, name, sizeof name);
             slot_time_text(slot, when, sizeof when);
-            ltext(d, pw, ph, &L, ax, gy + 4, fg, name, 8);
-            ltext(d, pw, ph, &L, ax, gy + 13, sel ? C_OLIVE : (s_slots[slot].used ? C_DIM : tint(C_DIM, 70)), when, 7);
+            ltext(d, pw, ph, &L, ax, gy + 3, fg, name, 8);
+            ltext(d, pw, ph, &L, ax, gy + 14, sel ? C_OLIVE : (s_slots[slot].used ? C_DIM : tint(C_DIM, 70)), when, 7);
         }
     }
 
@@ -1835,7 +1835,7 @@ static void menu_draw_ui(uint32_t *d, int pw, int ph, const MenuLayout *Lp, bool
         ltext_c(d, pw, ph, &L, pcx, y0 + 10, C_WHITE, "for this ROM?", 8);
         ltext_c(d, pw, ph, &L, pcx, y0 + 24, C_RED, "This cannot be undone.", 8);
         ltext_c(d, pw, ph, &L, pcx, y0 + 38, C_DIM, "Other ROMs keep their", 7);
-        ltext_c(d, pw, ph, &L, pcx, y0 + 47, C_DIM, "own lists.", 7);
+        ltext_c(d, pw, ph, &L, pcx, y0 + 49, C_DIM, "own lists.", 7);
     }
     {   /* one info / status line at the bottom of the panel */
         char info[96], ib[96];
