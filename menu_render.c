@@ -154,21 +154,41 @@ int mr_text(uint32_t *d, int w, int h, int x, int y, float px, uint32_t rgb, int
     return (int)pen;
 }
 
+/* Proportional spacing: every glyph advances by its own ink width plus one fixed gap (pitch-6 px), so the space between
+ * any two letters is the same. A space is pitch-2 px wide. */
+static void glyph_ink(int c, int *lo, int *hi) {
+    int l = 8, h = -1;
+    for (int r = 0; r < 7; r++)
+        for (int b = 0; b < 8; b++)
+            if (mr_font8[c][r] & (0x80 >> b)) { if (b < l) l = b; if (b > h) h = b; }
+    *lo = h < 0 ? 0 : l; *hi = h < 0 ? 0 : h;
+}
+static int glyph_adv(int c, int pitch, int *lo) {
+    int l, h;
+    if (c < 33 || c > 127) { *lo = 0; return pitch - 2; }
+    glyph_ink(c, &l, &h);
+    *lo = l;
+    return (h - l + 1) + (pitch - 6);
+}
 int mr_glyph_width(const char *str, int pitch) {
-    int n = str ? (int)strlen(str) : 0;
-    return n ? n * pitch - 2 : 0;
+    int w = 0, lo;
+    if (!str || !*str) return 0;
+    for (const unsigned char *p = (const unsigned char *)str; *p; p++) w += glyph_adv(toupper(*p), pitch, &lo);
+    return w - (pitch - 6);
 }
 
 int mr_glyph_text(uint32_t *d, int w, int h, int x, int y, int s, uint32_t rgb, const char *str, int pitch, int clip0, int clip1) {
     if (!str || s < 1) return 0;
     if (clip0 < 0) clip0 = 0;
     if (clip1 > w) clip1 = w;
-    int n = 0;
+    int n = 0, pen = 0;
     for (const unsigned char *p = (const unsigned char *)str; *p; p++, n++) {
-        int c = toupper(*p);
+        int c = toupper(*p), lo;
+        int adv = glyph_adv(c, pitch, &lo);
+        int cx = x + (pen - lo) * s;
+        pen += adv;
         if (c < 33 || c > 127) continue;
         const uint8_t *g = mr_font8[c];
-        int cx = x + n * pitch * s;
         if (cx + 8 * s <= clip0 || cx >= clip1) continue;
         for (int r = 0; r < 7; r++) {
             if (!g[r]) continue;
@@ -187,5 +207,5 @@ int mr_glyph_text(uint32_t *d, int w, int h, int x, int y, int s, uint32_t rgb, 
             }
         }
     }
-    return n ? n * pitch - 2 : 0;
+    return mr_glyph_width(str, pitch);
 }
