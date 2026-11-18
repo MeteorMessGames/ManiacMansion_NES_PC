@@ -1,3 +1,17 @@
+diff --git a/runner/cyc/cyc_diagnostics.c b/runner/cyc/cyc_diagnostics.c
+index 2193bc2..2339761 100644
+--- a/runner/cyc/cyc_diagnostics.c
++++ b/runner/cyc/cyc_diagnostics.c
+@@ -247,6 +247,9 @@ static void diagnostics_at_exit(void)
+ 
+ bool cyc_diagnostics_enable(void)
+ {
++#ifndef MM_SIM
++    return false;   /* release builds write no diagnostics log or crash dump */
++#endif
+     if (s_log) return true;
+     ++s_session;
+     int fd = open_log();
 diff --git a/runner/cyc/cyc_fds_save.inc b/runner/cyc/cyc_fds_save.inc
 index c2b1d97..453674f 100644
 --- a/runner/cyc/cyc_fds_save.inc
@@ -12,7 +26,7 @@ index c2b1d97..453674f 100644
      int stem = (int)(dot ? (size_t)(dot - base) : strlen(base));
      char saves[1000];
 diff --git a/runner/cyc/cyc_host.c b/runner/cyc/cyc_host.c
-index 82df696..c81d2d5 100644
+index 82df696..5c37a40 100644
 --- a/runner/cyc/cyc_host.c
 +++ b/runner/cyc/cyc_host.c
 @@ -175,6 +175,10 @@
@@ -26,7 +40,46 @@ index 82df696..c81d2d5 100644
  #include "cyc_render.h"
  #include "cyc_run.h"
  #include "cyc_session.h"
-@@ -1380,7 +1384,7 @@ session_restart:
+@@ -989,6 +993,28 @@ static bool s_saves_enabled = true;
+ bool cyc_host_saves_enabled(void) { return s_saves_enabled; }
+ #endif
+ 
++#ifndef MM_SIM
++/* Release builds take no developer options: the command line is ignored and the developer / trace / dump environment variables are
++ * removed before anything reads them. */
++static void release_scrub(int *argc, char **argv)
++{
++    static const char *const names[] = {
++        "NESRECOMP_CYC_TCP", "NESRECOMP_DIAGNOSTICS_DIR", "NESRECOMP_CYC_RING_DUMP", "NESRECOMP_FDS_HLE",
++        "CYC_ORACLE_ADDRESS_REPORT", "NES_LOBBY_SELFTEST_ROUNDS", "NES_NET_TEST_PAD", "NES_NET_MATCH_TICKS",
++        "NES_NET_FINAL_STATE", "CYC_MMC3_TRACE", "CYC_MMC5_TRACE", "NESRECOMP_GPU_PROFILE", "NESRECOMP_NO_LAUNCHER",
++    };
++    for (size_t i = 0; i < sizeof names / sizeof names[0]; i++) {
++#ifdef _WIN32
++        char b[96]; snprintf(b, sizeof b, "%s=", names[i]); _putenv(b);
++#else
++        unsetenv(names[i]);
++#endif
++    }
++    /* keep only a ROM file given as the last argument (drag a ROM onto the exe) */
++    if (*argc > 1 && argv[*argc - 1][0] != '-') { argv[1] = argv[*argc - 1]; *argc = 2; } else *argc = 1;
++}
++#endif
++
+ #ifdef CYC_ORACLE
+ int main(int argc, char **argv) {
+ #else
+@@ -1028,6 +1054,9 @@ static int host_main(int argc, char **argv) {
+     long ring_first = 0, ring_last = -1, log_first = 0, log_last = -1;
+     CycFdsOptions fds_opt;
+     cyc_fds_default_options(&fds_opt);
++#ifndef MM_SIM
++    release_scrub(&argc, argv);
++#endif
+     cyc_ring_dump_at_exit_from_env();
+ #endif
+     for (int i = 1; i < argc; i++) {
+@@ -1380,7 +1409,7 @@ session_restart:
      if (identity_region < 0) identity_region = CYC_GAME_REGION;
  #endif
      if (identity_region < 0) identity_region = cyc_cart_region();
@@ -35,7 +88,7 @@ index 82df696..c81d2d5 100644
                                                                       identity_region == CYC_REGION_PAL)) {
          cyc_diagnostics_error("Cartridge metadata differs from the compiled program; regenerate native code\n");
  #if defined(CYC_WITH_SDL)
-@@ -1388,7 +1392,8 @@ session_restart:
+@@ -1388,7 +1417,8 @@ session_restart:
  #endif
          return 2;
      }

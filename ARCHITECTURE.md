@@ -73,3 +73,5 @@ At launch a background thread asks GitHub once whether a newer release exists, a
 - The ROM's identity is its PRG hash, and the runner recomputes it over the whole PRG (256 or 512 KB) on every call, so the menu and the achievement code take it once per run (`rom_hash_cached`, `s_salt_hash`).
 - The save-slot scan reads the folder once and keeps the exe folder path; it used to ask the OS for the path and stat a file for each of up to 999 slots.
 - Menu steps that take 12 ms or more are written to `mouse_debug.log` as `[perf]` lines (`perf_end` in `mouse_cursor_hook.c`) in test builds only (`MM_SIM`); release builds write no log and ignore the test environment variables (`mm_test_env`).
+
+- Release builds carry no developer hooks: the runner patch (`runner-patches/`) compiles the TCP server, the command-line options, the developer environment variables and the crash-diagnostics log out unless `MM_SIM` is defined (test builds), and `mouse_cursor_hook.c` does the same for its own log and variables (`mm_test_env`). A release exe accepts only a ROM file as an argument.
