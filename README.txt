@@ -210,8 +210,6 @@ ManiacMansion.slotN.state    Save-state slots of the prototype (+ .thumb
                              ManiacMansion.retail.slotN.*, any other ROM
                              ManiacMansion.x<HASH>.slotN.*, so no two ROMs
                              share saves
-mouse_debug.log              Log for bug reports; slow menu steps (12 ms or
-                             more) are listed in it as [perf] lines
 README.txt                   This guide
 LICENSE.txt, licenses\       License terms for this program and the parts
                              it is built from

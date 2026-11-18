@@ -207,7 +207,19 @@ static bool find_cursor_oam(uint16_t *y_addr, uint16_t *x_addr) {
 static FILE *s_dbg_log = NULL;
 static int   s_dbg_log_state = -1;
 
+/* Test-only switches (environment variables) and the debug log exist only in test builds (MM_SIM); a release build ignores them. */
+static const char *mm_test_env(const char *name) {
+#ifdef MM_SIM
+    return getenv(name);
+#else
+    (void)name; return NULL;
+#endif
+}
+
 static FILE *dbg_log(void) {
+#ifndef MM_SIM
+    return NULL;   /* release builds write no debug log */
+#endif
     if (s_dbg_log_state < 0) {
         s_dbg_log = fopen("mouse_debug.log", "a");
         s_dbg_log_state = s_dbg_log ? 1 : 0;
@@ -818,7 +830,7 @@ static uint8_t ach_rd(uint16_t addr) {
 /* cyc_prg_hash() walks the whole PRG (256 or 512 KB) on every call: hash once (the ROM never changes in a run) or the slot scan and the menu crawl. */
 static uint32_t rom_hash_cached(void) {
     static uint32_t h = 0;
-    if (getenv("MM_NO_HASH_CACHE")) return cyc_prg_hash();   /* A/B check of the old, slow behaviour */
+    if (mm_test_env("MM_NO_HASH_CACHE")) return cyc_prg_hash();   /* A/B check of the old, slow behaviour */
     if (!h) { uint32_t v = cyc_prg_hash(); if (v != 2166136261u) h = v; else return v; }   /* 2166136261 = nothing loaded yet: do not keep it */
     return h;
 }
@@ -2340,7 +2352,7 @@ static void update_step(void) {
 static void splash_step(void) {
     if (s_splash_state == 0) {
         s_splash_state = 2;
-        if (!s_splash_enabled || getenv("NESRECOMP_NO_SPLASH")) return;
+        if (!s_splash_enabled || mm_test_env("NESRECOMP_NO_SPLASH")) return;
         char err[160];
         if (!cyc_state_save(&s_splash_snap, &s_splash_snap_len, err, sizeof err)) { menu_log("splash snapshot failed", err); return; }
         splash_decode();
@@ -3460,7 +3472,7 @@ static uint8_t s_re_probe_prev[0x800];
 
 static void re_probe_frame(void) {
     if (s_re_probe_state < 0) {
-        const char *e = getenv("NESRECOMP_RE_PROBE");
+        const char *e = mm_test_env("NESRECOMP_RE_PROBE");
         s_re_probe_f = (e && *e) ? fopen(e, "w") : NULL;
         s_re_probe_state = s_re_probe_f ? 1 : 0;
     }
@@ -3480,7 +3492,7 @@ static void re_probe_frame(void) {
 
 static int joypad_poll_hook(uint16_t addr) {
     static uint32_t fire_count = 0;
-    if (s_re_probe_state == 1 || getenv("NESRECOMP_RE_PROBE")) {
+    if (s_re_probe_state == 1 || mm_test_env("NESRECOMP_RE_PROBE")) {
         re_probe_frame();
         return 0; /* let the real $4016 poll run underneath */
     }
@@ -3626,7 +3638,7 @@ NES_MOD_CONSTRUCTOR(register_mouse_cursor_hook) {
     /* RE experiments need stock $4016 polling so --input scripts drive the
      * real controller path; NESRECOMP_MOUSE_HOOK_DISABLE=1 leaves the hook
      * registered but inactive. Unset (the normal case) behaves as before. */
-    int enabled = getenv("NESRECOMP_MOUSE_HOOK_DISABLE") ? 0 : 1;
+    int enabled = mm_test_env("NESRECOMP_MOUSE_HOOK_DISABLE") ? 0 : 1;
     nes_mod_set_function_hook_enabled(HOOK_ID, enabled);
     nes_mod_set_function_hook_enabled(HOOK_ID_BANK0, enabled);
 #ifdef MM_HACKDRV_HOOK
