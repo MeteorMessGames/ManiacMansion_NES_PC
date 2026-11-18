@@ -1019,7 +1019,7 @@ static int menu_row_h(int row) {
     case MODE_LOAD:    return row == menu_row_count() - 1 ? 14 : 24;
     case MODE_ACH: {
         int n = ach_count();
-        return (row == 0 || row >= n + 1) ? 12 : 35;
+        return (row == 0 || row >= n + 1) ? 12 : 48;
     }
     default:           return 14;
     }
@@ -1056,7 +1056,7 @@ static MenuLayout menu_layout(int w, int h) {
         break;
     case MODE_ACH:
         L.px = 6; L.py = 6; L.pw = 244; L.ph = 228;
-        L.ly0 = L.py + 32; L.back_y = L.py + 200; L.ly1 = L.back_y - 6; L.info_y = L.py + 216;
+        L.ly0 = L.py + 32; L.back_y = L.py + 200; L.ly1 = L.back_y - 3; L.info_y = L.py + 216;
         break;
     case MODE_QUIT:
         L.pw = 232; L.ph = 30 + 3 * 14 + 2 * 2 + 36;
@@ -1422,11 +1422,6 @@ static void lpanel(uint32_t *d, int pw, int ph, const MenuLayout *L, int x, int 
 static int ltext(uint32_t *d, int pw, int ph, const MenuLayout *L, int x, int y, uint32_t rgb, const char *str, int pitch) {
     return mr_glyph_text(d, pw, ph, L->ox + x * L->s, L->oy + y * L->s, L->s, rgb, str, pitch, 0, pw);
 }
-static int ltext_clip(uint32_t *d, int pw, int ph, const MenuLayout *L, int x, int y, uint32_t rgb, const char *str, int pitch,
-                      int clip_x, int clip_w) {   /* x may start left of the clip window (scrolling text) */
-    return mr_glyph_text(d, pw, ph, L->ox + x * L->s, L->oy + y * L->s, L->s, rgb, str, pitch,
-                         L->ox + clip_x * L->s, L->ox + (clip_x + clip_w) * L->s);
-}
 static void ltext_r(uint32_t *d, int pw, int ph, const MenuLayout *L, int xr, int y, uint32_t rgb, const char *str, int pitch) {
     ltext(d, pw, ph, L, xr - mr_glyph_width(str, pitch), y, rgb, str, pitch);
 }
@@ -1662,19 +1657,46 @@ static const char *display_row_value(int item, char *buf, size_t n) {
     return "";
 }
 
-/* One achievement card: trophy in the rarity colour, name, description (scrolls on the selected card when it does not fit),
- * rarity word and points. Everything stays inside the card. */
-static int      s_card_ai = -1;       /* card whose description is scrolling */
-static uint32_t s_card_t0 = 0;
+/* Word-wrap text into at most maxl lines of n characters; whatever does not fit ends the last line with "..". */
+static int lwrap(char lines[][48], int maxl, int n, const char *text) {
+    int nl = 0;
+    char cur[96] = "";
+    bool cut = false;
+    for (const char *w = text; *w && !cut; ) {
+        while (*w == ' ') w++;
+        const char *e = w;
+        while (*e && *e != ' ') e++;
+        int wl = (int)(e - w), cl = (int)strlen(cur);
+        if (!wl) break;
+        if (cl && cl + 1 + wl > n) {
+            snprintf(lines[nl++], 48, "%s", cur);
+            cur[0] = 0; cl = 0;
+            if (nl >= maxl) { cut = true; break; }
+        }
+        if (cl) cur[cl++] = ' ';
+        snprintf(cur + cl, sizeof cur - cl, "%.*s", wl, w);
+        w = e;
+    }
+    if (!cut && cur[0] && nl < maxl) snprintf(lines[nl++], 48, "%s", cur);
+    if (cut && nl > 0) {   /* more text than fits: end the last line with ".." */
+        size_t len = strlen(lines[nl - 1]);
+        if ((int)len + 2 > n) len = (size_t)n - 2;
+        lines[nl - 1][len] = '.'; lines[nl - 1][len + 1] = '.'; lines[nl - 1][len + 2] = 0;
+    }
+    return nl;
+}
+
+/* One achievement card: trophy in the rarity colour, name, the whole description (up to three lines), rarity word and
+ * points. Everything stays inside the card. */
 static void draw_ach_card(uint32_t *d, int pw, int ph, const MenuLayout *L, int ai, int gy, bool sel) {
-    int cx = L->px + 16, cw = L->pw - 36;
+    int cx = L->px + 16, cw = L->pw - 36, ch = 48;
     bool got = ach_unlocked(ai);
     uint32_t body, shine, edge;
     rarity_colors(ach_rarity(ai), &body, &shine, &edge);
     uint32_t border = sel ? C_WHITE : (got ? body : 0x40402C);
-    lr(d, pw, ph, L, cx, gy, cw, 35, got ? tint(body, 22) : 0x161612);
-    lbox(d, pw, ph, L, cx, gy, cw, 35, border);
-    if (sel) larrow(d, pw, ph, L, L->px + 8, gy + 14);
+    lr(d, pw, ph, L, cx, gy, cw, ch, got ? tint(body, 22) : 0x161612);
+    lbox(d, pw, ph, L, cx, gy, cw, ch, border);
+    if (sel) larrow(d, pw, ph, L, L->px + 8, gy + ch / 2 - 3);
     int pct = got ? 100 : 55;
     for (int y = 0; y < 19; y++)
         for (int x = 0; x < 14; x++) {
@@ -1685,7 +1707,7 @@ static void draw_ach_card(uint32_t *d, int pw, int ph, const MenuLayout *L, int 
                 case 'D': c = edge; break;
                 default: continue;
             }
-            lr(d, pw, ph, L, cx + 5 + x, gy + 8 + y, 1, 1, tint(c, pct));
+            lr(d, pw, ph, L, cx + 5 + x, gy + 15 + y, 1, 1, tint(c, pct));
         }
     int ax = cx + 24, area = cw - 24 - 6;
     bool veil = ach_hidden(ai) && !got;   /* hidden until unlocked */
@@ -1694,28 +1716,18 @@ static void draw_ach_card(uint32_t *d, int pw, int ph, const MenuLayout *L, int 
     char nb[96];
     int np = mr_glyph_width(name, 8) <= area ? 8 : 7;
     ltrunc(nb, sizeof nb, name, np, area);
-    ltext(d, pw, ph, L, ax, gy + 4, sel ? C_WHITE : (got ? C_OLIVE : C_DIM), nb, np);
+    ltext(d, pw, ph, L, ax, gy + 3, sel ? C_WHITE : (got ? C_OLIVE : C_DIM), nb, np);
     uint32_t dc = sel ? C_OLIVE : (got ? 0x96AA1E : C_DIM);
-    int dw = mr_glyph_width(desc, 7);
-    if (sel && dw > area) {
-        uint32_t now = SDL_GetTicks();
-        if (s_card_ai != ai) { s_card_ai = ai; s_card_t0 = now; }
-        int maxoff = dw - area, scroll_ms = maxoff * 1000 / 30;
-        uint32_t k = (now - s_card_t0) % (uint32_t)(1000 + scroll_ms + 1300);
-        int off = k < 1000 ? 0 : (int)((k - 1000) * 30 / 1000);
-        if (off > maxoff) off = maxoff;
-        ltext_clip(d, pw, ph, L, ax - off, gy + 14, dc, desc, 7, ax, area);
-    } else {
-        char db[160];
-        ltrunc(db, sizeof db, desc, 7, area);
-        ltext(d, pw, ph, L, ax, gy + 14, dc, db, 7);
-    }
+    char lines[3][48], upper[160];
+    snprintf(upper, sizeof upper, "%s", desc);
+    int nl = lwrap(lines, 3, (area + 2) / 7, upper);
+    for (int i = 0; i < nl; i++) ltext(d, pw, ph, L, ax, gy + 12 + 8 * i, dc, lines[i], 7);
     uint32_t pc = got ? body : tint(body, 70);
     char lab[48], pts[16];
     snprintf(lab, sizeof lab, "%s%s", ach_rarity_name(ach_rarity(ai)), got ? "  EARNED" : "");
-    ltext(d, pw, ph, L, ax, gy + 24, pc, lab, 7);
+    ltext(d, pw, ph, L, ax, gy + 38, pc, lab, 7);
     snprintf(pts, sizeof pts, "%dP", ach_points(ai));
-    ltext_r(d, pw, ph, L, cx + cw - 5, gy + 24, pc, pts, 8);
+    ltext_r(d, pw, ph, L, cx + cw - 5, gy + 38, pc, pts, 8);
 }
 
 /* Draw the menu panels onto d (pw x ph) with layout Lp. Used for the sharp picture at window resolution and for the
@@ -1728,7 +1740,6 @@ static void menu_draw_ui(uint32_t *d, int pw, int ph, const MenuLayout *Lp, bool
     int vis = menu_visible_rows();
     bool pinned = menu_pinned_back();
     int first = menu_scrolls() ? s_menu_scroll : 0;
-    if (s_menu_mode != MODE_ACH) s_card_ai = -1;
 
     lpanel(d, pw, ph, &L, L.px, L.py, L.pw, L.ph);
     const char *title = s_menu_mode == MODE_SAVE ? "Save State" :
