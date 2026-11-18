@@ -51,6 +51,8 @@ cmake --build build-win -j
 
 ## Notes
 
+- **Release builds have no developer hooks.** Without `MM_SIM` (a test build defines it) the runner patch compiles out the TCP remote-control server, the command-line options (only a ROM file as the last argument is kept), the developer / trace / dump environment variables and the crash-diagnostics log, and `mouse_cursor_hook.c` writes no `mouse_debug.log` and ignores its test variables (`mm_test_env`). Strip the finished binary before packaging (`x86_64-w64-mingw32-strip` for the Windows exe, `strip` on Linux); the release archives ship stripped binaries.
+
 - `-DMM_NO_SIM=ON` keeps the developer-only simulator out of the build; the repo does not contain it, so a normal clone builds the same either way.
 - Unlocked achievements are stored in an encrypted file next to the exe (`ManiacMansion.dat`), not in the exe, so rebuilding or replacing the exe keeps them.
 - `git apply` the runner patch only to the pinned NESRecomp commit above. Verified: a fresh clone at that commit plus the patch plus this repo builds the recompiler and the game from scratch.
