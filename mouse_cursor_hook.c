@@ -1657,7 +1657,12 @@ static const char *display_row_value(int item, char *buf, size_t n) {
     return "";
 }
 
-/* Word-wrap text into at most maxl lines of n characters; whatever does not fit ends the last line with "..". */
+/* Word-wrap text (pitch 7) into at most maxl lines no wider than n pixels; whatever does not fit ends the last line with "..". */
+static int lwidth7(const char *cur, const char *w, int wl) {
+    char t[160];
+    snprintf(t, sizeof t, "%s %.*s", cur, wl, w);
+    return mr_glyph_width(t, 7);
+}
 static int lwrap(char lines[][48], int maxl, int n, const char *text) {
     int nl = 0;
     char cur[96] = "";
@@ -1668,7 +1673,7 @@ static int lwrap(char lines[][48], int maxl, int n, const char *text) {
         while (*e && *e != ' ') e++;
         int wl = (int)(e - w), cl = (int)strlen(cur);
         if (!wl) break;
-        if (cl && cl + 1 + wl > n) {
+        if (cl && lwidth7(cur, w, wl) > n) {
             snprintf(lines[nl++], 48, "%s", cur);
             cur[0] = 0; cl = 0;
             if (nl >= maxl) { cut = true; break; }
@@ -1680,7 +1685,7 @@ static int lwrap(char lines[][48], int maxl, int n, const char *text) {
     if (!cut && cur[0] && nl < maxl) snprintf(lines[nl++], 48, "%s", cur);
     if (cut && nl > 0) {   /* more text than fits: end the last line with ".." */
         size_t len = strlen(lines[nl - 1]);
-        if ((int)len + 2 > n) len = (size_t)n - 2;
+        while (len > 1 && mr_glyph_width(lines[nl - 1], 7) + 8 > n) lines[nl - 1][--len] = 0;
         lines[nl - 1][len] = '.'; lines[nl - 1][len + 1] = '.'; lines[nl - 1][len + 2] = 0;
     }
     return nl;
@@ -1720,7 +1725,7 @@ static void draw_ach_card(uint32_t *d, int pw, int ph, const MenuLayout *L, int 
     uint32_t dc = sel ? C_OLIVE : (got ? 0x96AA1E : C_DIM);
     char lines[3][48], upper[160];
     snprintf(upper, sizeof upper, "%s", desc);
-    int nl = lwrap(lines, 3, (area + 2) / 7, upper);
+    int nl = lwrap(lines, 3, area, upper);
     for (int i = 0; i < nl; i++) ltext(d, pw, ph, L, ax, gy + 12 + 8 * i, dc, lines[i], 7);
     uint32_t pc = got ? body : tint(body, 70);
     char lab[48], pts[16];
