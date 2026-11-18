@@ -9,7 +9,7 @@ The port is a mod on top of [NESRecomp](https://github.com/mstan/nesrecomp). NES
 | File | Responsibility |
 |---|---|
 | `mouse_cursor_hook.c` | Input (mouse, keyboard, controller), context verbs, the pause menu, options, save-state slots, audio routing |
-| `menu_render.c`, `menu_font8.h` | Menu drawing: the game's own 6x7 letters (`menu_font8.h`, drawn at an integer scale) for the pause menu and the ROM picker. `menu_font.h` (an embedded DejaVu Sans Bold, drawn by stb_truetype) is no longer used for drawing |
+| `menu_render.c`, `menu_font8.h` | Menu drawing: the game's own 6x7 letters (`menu_font8.h`, drawn at an integer scale) for the pause menu and the ROM picker. Spacing is proportional: each letter advances by its own ink width plus a fixed 2 px gap, so the gap between any two letters is the same (`mr_glyph_width` measures it; card descriptions wrap by pixel width in `lwrap`). `menu_font.h` (an embedded DejaVu Sans Bold, drawn by stb_truetype) is no longer used for drawing |
 | `achievements.c`, `achievements_table.h` | Achievement engine, and the generated table of conditions, rarities and points |
 | `achievement_sfx.h` | The unlock chime |
 | `update_check.c` | The launch-time update check (background thread) |

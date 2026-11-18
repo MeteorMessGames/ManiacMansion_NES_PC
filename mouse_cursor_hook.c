@@ -1840,7 +1840,7 @@ static void menu_draw_ui(uint32_t *d, int pw, int ph, const MenuLayout *Lp, bool
     {   /* one info / status line at the bottom of the panel */
         char info[96], ib[96];
         info[0] = 0;
-        if (s_menu_mode == MODE_QUIT) snprintf(info, sizeof info, "%s", s_dirty ? "Unsaved progress will be lost." : "");
+        if (s_menu_mode == MODE_QUIT) snprintf(info, sizeof info, "%s", s_dirty ? "Unsaved progress is lost." : "");
         else if (s_menu_mode == MODE_MAIN) snprintf(info, sizeof info, "%s", rom_edition());
         const char *txt = s_menu_status[0] ? s_menu_status : info;
         if (txt[0]) {
