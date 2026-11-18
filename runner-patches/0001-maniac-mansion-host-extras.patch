@@ -138,7 +138,7 @@ index 0ccaf3d..c89a3a6 100644
   * bios/disksys.toml, and game.toml's [fds] bios and image, resolved to
   * absolute paths at compile time as the host's defaults. 0 / NULL for
 diff --git a/runner/cyc/cyc_sdl.c b/runner/cyc/cyc_sdl.c
-index 91b2647..ea6fb15 100644
+index 91b2647..2f44255 100644
 --- a/runner/cyc/cyc_sdl.c
 +++ b/runner/cyc/cyc_sdl.c
 @@ -117,6 +117,7 @@ static const char *s_vpad_path;
@@ -242,7 +242,17 @@ index 91b2647..ea6fb15 100644
  static bool ensure_texture(int w, int h)
  {
      if (s_tex && w == s_tex_w && h == s_tex_h) return true;
-@@ -1229,6 +1303,13 @@ static void show(bool loading, const char *toast_title, const char *toast_body)
+@@ -1046,6 +1120,9 @@ static void tcp_zapper(int id, const char *line)
+ 
+ static void tcp_setup(void)
+ {
++#ifndef MM_SIM
++    return;   /* release builds carry no remote-control (TCP debug) server: --tcp, NESRECOMP_CYC_TCP and debug.ini do nothing */
++#endif
+     int port = s_tcp_port;
+     const char *env = getenv("NESRECOMP_CYC_TCP");
+     if (!port && env && *env) port = atoi(env);
+@@ -1229,6 +1306,13 @@ static void show(bool loading, const char *toast_title, const char *toast_body)
          }
      }
  #endif
@@ -256,7 +266,7 @@ index 91b2647..ea6fb15 100644
      if(!gpu_texture)pic=picture(&w,&h);
  #ifdef CYC_WITH_RECOMP_UI
      /* Rewind captures refresh their exact preview above the presentation step.
-@@ -1261,6 +1342,7 @@ static void show(bool loading, const char *toast_title, const char *toast_body)
+@@ -1261,6 +1345,7 @@ static void show(bool loading, const char *toast_title, const char *toast_body)
      (void)toast_body;
  #endif
      if(!gpu_texture)SDL_UpdateTexture(s_tex, NULL, pic, w * 4);
@@ -264,7 +274,7 @@ index 91b2647..ea6fb15 100644
      SDL_SetRenderDrawColor(s_ren, 0, 0, 0, 255);
      SDL_RenderClear(s_ren);
      SDL_Rect dst = { 0, 0, w, h };
-@@ -1413,7 +1495,8 @@ int cyc_sdl_main(const char *title_in, int scale)
+@@ -1413,7 +1498,8 @@ int cyc_sdl_main(const char *title_in, int scale)
      s_tex_h = h;
      s_win = SDL_CreateWindow(title, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, w * s_set.window_scale,
                               logical_h() * s_set.window_scale,
@@ -274,7 +284,7 @@ index 91b2647..ea6fb15 100644
      s_ren = NULL;
      if (!create_renderer() || !ensure_texture(w, h)) {
          char message[700]; snprintf(message, sizeof(message), "Could not create the game window or renderer: %s", SDL_GetError());
-@@ -1516,7 +1599,9 @@ int cyc_sdl_main(const char *title_in, int scale)
+@@ -1516,7 +1602,9 @@ int cyc_sdl_main(const char *title_in, int scale)
  #endif
                  cyc_session_event(&ev, player);
              }
@@ -285,7 +295,7 @@ index 91b2647..ea6fb15 100644
  #ifdef NESRECOMP_CYCLE_HDPACK
              else if(ev.type==SDL_RENDER_TARGETS_RESET || ev.type==SDL_RENDER_DEVICE_RESET){
                  cyc_hd_gpu_destroy(s_hd_gpu,ev.type==SDL_RENDER_DEVICE_RESET);
-@@ -1702,6 +1787,7 @@ int cyc_sdl_main(const char *title_in, int scale)
+@@ -1702,6 +1790,7 @@ int cyc_sdl_main(const char *title_in, int scale)
              if(s_gpu_picture)cyc_hd_gpu_present_end(s_hd_gpu);
  #endif
              SDL_RenderPresent(s_ren);
