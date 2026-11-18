@@ -9,12 +9,12 @@ The port is a mod on top of [NESRecomp](https://github.com/mstan/nesrecomp). NES
 | File | Responsibility |
 |---|---|
 | `mouse_cursor_hook.c` | Input (mouse, keyboard, controller), context verbs, the pause menu, options, save-state slots, audio routing |
-| `menu_render.c` | Menu drawing (stb_truetype with an embedded DejaVu Sans Bold) |
+| `menu_render.c`, `menu_font8.h` | Menu drawing: the game's own 6x7 letters (`menu_font8.h`, drawn at an integer scale) for the pause menu and the ROM picker. `menu_font.h` (an embedded DejaVu Sans Bold, drawn by stb_truetype) is no longer used for drawing |
 | `achievements.c`, `achievements_table.h` | Achievement engine, and the generated table of conditions, rarities and points |
 | `achievement_sfx.h` | The unlock chime |
 | `update_check.c` | The launch-time update check (background thread) |
 | `crt_gpu.c`, `crt_filter.c` | The CRT filters and the TV-shape sharp scaler, GPU and CPU versions |
-| `rom_db.h`, `rom_picker.c` | The known ROMs by PRG hash, and the window that asks which to play |
+| `rom_db.h`, `rom_picker.c` | The known ROMs by PRG hash, and the window that asks which to play (drawn like the pause menu) |
 | `romless_native.c.in` | Stand-in for the generated game code in the release build (ROM hashes and hook sites only; finds the ROM next to the exe) |
 | `game.toml` | Hook sites and their CRC32 checks |
 | `runner-patches/` | The small NESRecomp patch (display controls, GPU present hook, APU write hook, per-channel volume, a second accepted ROM and its cartridge-save name for the release build, no window flash while loading) |
@@ -55,6 +55,10 @@ The game's own save is separate: it is the cartridge battery save, and survives 
 ## Rendering
 
 The runner presents a 256x240 frame. The mod chooses the scale (automatic whole-number scale or a fixed one) and the shape (square pixels or 4:3 TV, with NES pixels 8:7 wide). *Sharp* is integer scaling, kept crisp at TV shape with a sharp-bilinear blend. *CRT* and *CRT Strong* draw scanlines that widen on bright colours, an RGB stripe mask and a soft glow; they run on the GPU through OpenGL with a CPU fallback.
+
+## Pause menu
+
+The menu is laid out on the game's own 256x240 grid (`menu_layout`, `menu_row_geom`) and drawn by `menu_draw_ui` as bordered panels in the game's colours, with an arrow marker and `< value >` on the selected setting. Row heights differ per screen (two-line volume sliders, 24 px save slots, 48 px achievement cards), so the number of rows that fit is computed from the layout (`menu_fit_from`), and the scrolling lists, the mouse hit test and the volume sliders all use that one geometry. With the Sharp filter the menu is drawn at window resolution at the largest whole scale that fits. With a CRT filter it is drawn at the game's native size on the dimmed frozen picture and that picture goes through the same CRT code as the game (redone only when it changes), so the menu has the same scanlines and glow; mouse positions are mapped back to the native grid (`menu_mouse_layout`). An achievement card shows a trophy in the rarity colour, the name, the description wrapped over up to three lines, the rarity word and the points.
 
 ## Achievements
 

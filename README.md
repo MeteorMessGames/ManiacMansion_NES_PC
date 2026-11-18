@@ -26,13 +26,13 @@ Release notes for every version are on the [Releases](https://github.com/MeteorM
 - Context-sensitive right click that uses the game's own object and verb logic.
 - Inventory scrolling with the mouse wheel, and the classic two-step commands.
 - The game's own save and restore, from the middle mouse button.
-- Pause menu with unlimited save-state slots, each with a screenshot.
+- Pause menu drawn in the game's own letters and colours, with unlimited save-state slots, each with a screenshot. It uses the same picture filter as the game.
 - Music and sound effect volume, mouse and controller speed.
 - Three picture filters (Sharp, CRT, CRT Strong), including a GPU CRT.
 - Fullscreen, fixed or automatic scaling, square pixels or 4:3 TV shape.
 - Controller support.
 - Prototype (recommended) and retail US ROM, plus patched versions such as the community "Uncensored" hack in any patch combination. Every ROM, by its contents, gets its own saves and achievements.
-- 47 achievements in four rarities, with a trophy page in the pause menu.
+- 47 achievements in four rarities, shown as trophy cards in the pause menu.
 - A launch-time update check (turn off with `UpdateCheck = 0` in `config.ini`).
 
 The full player guide (controls, saving, tips) is in [README.txt](README.txt), which ships next to the exe.
@@ -41,7 +41,9 @@ The full player guide (controls, saving, tips) is in [README.txt](README.txt), w
 
 ![Achievement unlocked](docs/screenshots/achievement-toast.png)
 
-47 achievements in four rarities (Common, Rare, Epic, Legendary). A banner and a sound announce each one, and Esc > Achievements lists them all. Some are secret until earned. Unlocks are kept in an encrypted file, `ManiacMansion.dat`, next to the exe (a newer exe keeps them), with a separate list for every ROM.
+![The achievements page](docs/screenshots/achievements.png)
+
+47 achievements in four rarities (Common, Rare, Epic, Legendary). A banner and a sound announce each one, and Esc > Achievements lists them all as cards: a trophy coloured by rarity (bronze, silver, purple, gold, dimmed until earned), the name, the whole description, the rarity and the points. Some are secret until earned. Unlocks are kept in an encrypted file, `ManiacMansion.dat`, next to the exe (a newer exe keeps them), with a separate list for every ROM.
 
 ## ROMs
 
@@ -112,7 +114,7 @@ cmake --build build
 
 This project's code is licensed under the **MIT License**; see [LICENSE](LICENSE).
 
-Bundled third-party files keep their own licenses: `third_party/stb_truetype.h` (public domain / MIT) and the DejaVu Sans Bold font embedded in `menu_font.h` (DejaVu fonts license). The Windows release also contains the NESRecomp runner (PolyForm Noncommercial 1.0.0) and SDL2 (zlib); their license texts ship in the release's `licenses` folder. The runner patch is a small derivative of NESRecomp and keeps its license; see [BUILDING.md](BUILDING.md).
+Bundled third-party files keep their own licenses: `third_party/stb_truetype.h` (public domain / MIT) and the DejaVu Sans Bold font embedded in `menu_font.h` (DejaVu fonts license; it is no longer used to draw anything, the pause menu and the ROM picker use the game's own letter shapes in `menu_font8.h`). The Windows release also contains the NESRecomp runner (PolyForm Noncommercial 1.0.0) and SDL2 (zlib); their license texts ship in the release's `licenses` folder. The runner patch is a small derivative of NESRecomp and keeps its license; see [BUILDING.md](BUILDING.md).
 
 ## Credits
 

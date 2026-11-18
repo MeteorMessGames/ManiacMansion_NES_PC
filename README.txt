@@ -79,17 +79,20 @@ Arrow keys     NES d-pad
 
 PAUSE MENU (Esc)
 ----------------
-The game is paused and silent while it is open. Use the mouse, or Up/Down and
-Enter. Esc or right click goes back. Resume, Save State and Load State
+The game is paused and silent while it is open. The menu is drawn in the
+game's own letters and colours and uses the same picture filter as the game.
+Use the mouse, or Up/Down and Enter. Esc or right click goes back. Resume, Save State and Load State
 (unlimited slots, each with a screenshot), Options, Exit Game (asks first if
 you have unsaved progress). Back is the last row on every screen, and Left /
-Right changes any value row.
+Right changes any value row (the selected one shows as < value >).
 
 
 ACHIEVEMENTS
 ------------
-There are 47. Esc -> Achievements lists them; each is rated by how
-obscure and involved its trigger is:
+There are 47. Esc -> Achievements lists them as cards, each with a trophy
+coloured by its rating (dimmed until you earn it), the name, the whole
+description, the rating and the points. Each is rated by how obscure and
+involved its trigger is:
   Common     bronze   5 points
   Rare       silver   10 points
   Epic       purple   20 points
@@ -138,6 +141,7 @@ Filter (F9)
                an arcade monitor. Looks best at larger sizes (5x, 6x).
                Both CRT filters run on the graphics card (OpenGL); without
                OpenGL they fall back to the CPU, which is slower.
+  The pause menu is drawn with the same filter as the game.
 
 Scale (pause menu -> Options)
   Auto         Sharp: the largest whole scale that fits (default).
@@ -146,8 +150,8 @@ Scale (pause menu -> Options)
                centered picture. Click or Enter steps through the sizes,
                Left/Right go up and down. Only sizes that fit your screen
                are offered; if a saved size doesn't fit (e.g. 6x on a 1080p
-               screen), Auto is used. The pause menu itself always fills
-               the screen.
+               screen), Auto is used. The pause menu is drawn at the
+               largest whole scale that fits the screen.
 
 Shape (pause menu -> Options)
   Square       Every NES pixel is square (default).

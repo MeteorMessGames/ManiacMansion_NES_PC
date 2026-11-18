@@ -1,4 +1,5 @@
-/* rom_picker.c - the small window that asks which Maniac Mansion ROM to play, drawn with the same look as the Esc menu.
+/* rom_picker.c - the small window that asks which Maniac Mansion ROM to play, drawn like the pause menu: the game's own
+ * letters and colours, a bordered panel, an arrow beside the selected row.
  * Runs before the game starts (called from the release build's ROM finder), so it has its own SDL window and no game state. */
 #include <SDL.h>
 #include <stdbool.h>
@@ -7,8 +8,28 @@
 #include <stdlib.h>
 #include "menu_render.h"
 
-#define PW 560
 #define MAX_ROWS 16
+#define LW 256            /* the picker is laid out on the game's 256-wide grid */
+#define C_OLIVE  0xB8D808u
+#define C_ORANGE 0xD86000u
+#define C_WHITE  0xFCFCFCu
+#define C_DIM    0x707828u
+
+typedef struct { uint32_t *d; int w, h, s; } Canvas;
+
+static void px_rect(const Canvas *c, int x, int y, int w, int h, uint32_t rgb) {
+    mr_rect(c->d, c->w, c->h, x * c->s, y * c->s, w * c->s, h * c->s, rgb, 255);
+}
+static void px_box(const Canvas *c, int x, int y, int w, int h, uint32_t rgb) {
+    px_rect(c, x, y, w, 1, rgb); px_rect(c, x, y + h - 1, w, 1, rgb);
+    px_rect(c, x, y, 1, h, rgb); px_rect(c, x + w - 1, y, 1, h, rgb);
+}
+static void px_text(const Canvas *c, int x, int y, uint32_t rgb, const char *s, int pitch) {
+    mr_glyph_text(c->d, c->w, c->h, x * c->s, y * c->s, c->s, rgb, s, pitch, 0, c->w);
+}
+static void px_text_c(const Canvas *c, int cx, int y, uint32_t rgb, const char *s, int pitch) {
+    px_text(c, cx - mr_glyph_width(s, pitch) / 2 - 1, y, rgb, s, pitch);
+}
 
 /* titles[0..n-1] are the ROMs found in the folder. Returns the chosen index, or -1 to quit. */
 int mm_rom_picker(const char *const *titles, int n, int *remember) {
@@ -18,12 +39,15 @@ int mm_rom_picker(const char *const *titles, int n, int *remember) {
     for (int i = 0; i < n && rows < MAX_ROWS - 1; i++) labels[rows++] = titles[i];
     n = rows;
     quit_row = rows; labels[rows++] = "Quit";
-    const int row_h = 34, gap = 6, top = 96, pad = 28;
-    int ph = top + rows * (row_h + gap) + 20;
-    SDL_Window *win = SDL_CreateWindow("Maniac Mansion NES PC", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, PW, ph, SDL_WINDOW_SHOWN);
+    const int row_h = 16, top = 40;
+    int lh = top + rows * row_h + 14;                 /* logical height of the panel = the window */
+    int s = lh * 3 <= 900 ? 3 : 2;
+    int pw = LW * s, ph = lh * s;
+    SDL_Window *win = SDL_CreateWindow("Maniac Mansion NES PC", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, pw, ph, SDL_WINDOW_SHOWN);
     if (!win) { SDL_QuitSubSystem(SDL_INIT_VIDEO); return n > 0 ? 0 : -1; }
     SDL_Surface *ws = SDL_GetWindowSurface(win);
-    uint32_t *buf = (uint32_t *)malloc((size_t)PW * ph * 4);
+    uint32_t *buf = (uint32_t *)malloc((size_t)pw * ph * 4);
+    Canvas c = { buf, pw, ph, s };
     int sel = 0, hover = -1, result = -2;
     while (result == -2) {
         SDL_Event e;
@@ -39,11 +63,12 @@ int mm_rom_picker(const char *const *titles, int n, int *remember) {
                     else result = sel;
                 }
             } else if (e.type == SDL_MOUSEMOTION || e.type == SDL_MOUSEBUTTONDOWN) {
-                int my = e.type == SDL_MOUSEMOTION ? e.motion.y : e.button.y, mx = e.type == SDL_MOUSEMOTION ? e.motion.x : e.button.x;
+                int my = (e.type == SDL_MOUSEMOTION ? e.motion.y : e.button.y) / s;
+                int mx = (e.type == SDL_MOUSEMOTION ? e.motion.x : e.button.x) / s;
                 hover = -1;
                 for (int i = 0; i < rows; i++) {
-                    int y0 = top + i * (row_h + gap);
-                    if (my >= y0 && my < y0 + row_h && mx >= pad / 2 && mx < PW - pad / 2) hover = i;
+                    int y0 = top + i * row_h;
+                    if (my >= y0 && my < y0 + row_h && mx >= 4 && mx < LW - 4) hover = i;
                 }
                 if (hover >= 0) sel = hover;
                 if (e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_LEFT && hover >= 0) {
@@ -52,23 +77,26 @@ int mm_rom_picker(const char *const *titles, int n, int *remember) {
                 }
             }
         }
-        /* same look as the Esc menu: dark panel, white title, grey subtitle, blue selection */
-        mr_rect(buf, PW, ph, 0, 0, PW, ph, 0x14161F, 255);
-        mr_text(buf, PW, ph, pad, 20, 26.0f, 0xFFFFFF, 255, "Maniac Mansion");
-        mr_text(buf, PW, ph, pad, 54, 14.0f, 0x9AA0B4, 255, "Choose a version to play");
-        mr_rect(buf, PW, ph, pad, 80, PW - 2 * pad, 1, 0x3A3D4C, 255);
+        /* the same look as the pause menu: black panel, olive and orange double border, arrow on the selected row */
+        px_rect(&c, 0, 0, LW, lh, 0x000000);
+        px_box(&c, 0, 0, LW, lh, C_OLIVE);
+        px_box(&c, 2, 2, LW - 4, lh - 4, C_ORANGE);
+        px_text_c(&c, LW / 2, 7, C_OLIVE, "Maniac Mansion", 8);
+        px_text_c(&c, LW / 2, 17, C_DIM, "Choose a version to play", 8);
+        px_rect(&c, 8, 28, LW - 16, 1, C_ORANGE);
         for (int i = 0; i < rows; i++) {
-            int y0 = top + i * (row_h + gap);
-            bool s = i == sel;
-            if (s) mr_round_rect(buf, PW, ph, pad / 2, y0, PW - pad, row_h, 6, 0x2C6FE0, 215);
-            else mr_round_rect(buf, PW, ph, pad / 2, y0, PW - pad, row_h, 6, 0xFFFFFF, 20);
-            uint32_t fg = s ? 0xFFFFFF : 0xE6E9F4;
-            if (i == quit_row) mr_text(buf, PW, ph, pad, y0 + 8, 16.0f, s ? 0xFFFFFF : 0xB4B9CC, 255, labels[i]);
-            else mr_text(buf, PW, ph, pad, y0 + 8, 16.0f, fg, 255, labels[i]);
+            int y0 = top + i * row_h, ty = y0 + (row_h - 7) / 2;
+            bool is_sel = i == sel;
+            if (is_sel) for (int k = 0; k < 4; k++) px_rect(&c, 8 + k, ty + k, 1, 7 - 2 * k, C_WHITE);
+            char lb[64];
+            snprintf(lb, sizeof lb, "%s", labels[i]);
+            int pitch = mr_glyph_width(lb, 8) <= LW - 28 ? 8 : 7;
+            while (strlen(lb) > 4 && mr_glyph_width(lb, pitch) > LW - 28) lb[strlen(lb) - 1] = 0;
+            px_text(&c, 18, ty, is_sel ? C_WHITE : C_OLIVE, lb, pitch);
         }
         ws = SDL_GetWindowSurface(win);
         if (ws) {
-            SDL_Surface *src = SDL_CreateRGBSurfaceWithFormatFrom(buf, PW, ph, 32, PW * 4, SDL_PIXELFORMAT_ARGB8888);
+            SDL_Surface *src = SDL_CreateRGBSurfaceWithFormatFrom(buf, pw, ph, 32, pw * 4, SDL_PIXELFORMAT_ARGB8888);
             if (src) { SDL_BlitSurface(src, NULL, ws, NULL); SDL_FreeSurface(src); }
             SDL_UpdateWindowSurface(win);
         }
